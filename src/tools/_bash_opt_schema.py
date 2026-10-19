@@ -34,7 +34,8 @@ def build_bash_opt_schema() -> dict[str, Any]:
                 "op：read（读取当前已产生的全部输出并清空缓冲，立即返回不等待完成；"
                 "包含前台超时自动转后台之前的输出，默认最多返回最后 1000 行）、"
                 "wait（等待完成取结果 JSON：task_id/status/stdout/stderr/returncode，"
-                "timeout 秒，默认 300/0 无限）、"
+                "timeout 秒，默认 300/0 无限；超时同样返回 JSON"
+                "（timeout=true / done=false / waited / hint），任务继续运行）、"
                 "kill（杀整个进程树：进程组 + 全部递归后代（Windows 原生用"
                 "Toolhelp32 进程表收集，根进程已退出时也能找到孤儿后代），"
                 "杀后校验是否真正退出、未死自动补杀，最多 3 轮尝试，残留进程"
@@ -42,7 +43,8 @@ def build_bash_opt_schema() -> dict[str, Any]:
                 "拒绝杀，避免误杀无关进程）、stdin（发文本到 stdin，需 text）、"
                 "keys（发送按键，需 key：目标进程有 GUI 窗口时自动作为窗口级"
                 "键盘消息注入该窗口，否则写入终端；支持 ctrl+c 等组合键、"
-                "esc/pageup 等别名与单个字符，repeat 可一次连按多次）、"
+                "esc/pageup 等别名与单个字符，repeat 可一次连按多次；"
+                "Ctrl+C 在 ConPTY 下对部分程序有效、不保证中断所有程序）、"
                 "screenshot（把该命令进程树的窗口截图存为 PNG，需 path，"
                 "可选 crop 指定只截取的像素区域，格式 'x,y,width,height'，"
                 "可选 window 选择目标窗口（'#1'/'title:子串'/'popup' 等）、"
@@ -120,13 +122,20 @@ def build_bash_opt_schema() -> dict[str, Any]:
                             "轮尝试）；校验时仍存活的残留 PID 会在结果中列出；"
                             "记录的 PID 已被系统复用（创建时间不匹配）时拒绝杀"
                             "\n- stdin：向任务 stdin 发送文本输入（需 text；"
-                            "encoding 指定文本编码，默认 utf-8——Windows 原生"
-                            "控制台程序按 OEM 代码页读 stdin 时传 gbk / cp936）"
+                            "encoding 指定文本编码，缺省随平台：Windows 取系统"
+                            " ANSI 代码页（中文系统即 gbk——cmd 内建 / sort /"
+                            " findstr 等原生控制台程序按该代码页读管道 stdin），"
+                            "其它平台 utf-8；按 UTF-8 读 stdin 的程序请显式传"
+                            " encoding='utf-8'）"
                             "\n- close_stdin：关闭任务 stdin（发送 EOF）。"
                             "依赖输入结束才输出 / 退出的命令（sort / findstr / "
                             "cat / more / cmd 的 set / p 等）用它能正常跑完并"
                             "返回结果，不必 kill 丢掉输出；关闭后 stdin / keys "
-                            "写入会提示 stdin 已关闭"
+                            "写入会提示 stdin 已关闭。注意：PTY 任务（pty=true）"
+                            "没有真正的 EOF，只是写入 EOT（ConPTY 为 Ctrl+Z、"
+                            "POSIX 为 Ctrl+D）模拟按键，程序不一定会退出（实测"
+                            "python REPL 收到 EOT 后仍在运行）——依赖 EOF 的命令"
+                            "请用非 PTY 任务，结束 PTY 任务请用 op=kill"
                             "\n- keys：向任务发送光标/键盘消息（需 key；"
                             "目标进程有 GUI 窗口时自动作为窗口级键盘消息注入该窗口，"
                             "没有 GUI 窗口则写入终端 PTY/stdin；"
@@ -135,9 +144,9 @@ def build_bash_opt_schema() -> dict[str, Any]:
                             "（如部分 TextBox 收到 Ctrl+A 但不全选），效果需用 "
                             "screenshot / diff 复核；管道 stdin（任务未以 pty=true "
                             "启动）中的 ctrl+c 只是普通字节，不会中断进程；"
-                            "Windows ConPTY 任务（pty=true）下 ctrl+c 也可能只取消"
-                            "当前输入行而不中断运行中的进程（系统限制）——"
-                            "需要终止任务请用 op=kill"
+                            "Windows ConPTY（pty=true）下 ctrl+c 对部分程序可中断"
+                            "（实测可中断 Python 的 sleep），但不保证所有程序——"
+                            "进程无响应时请用 op=kill"
                             "\n- screenshot：把任务进程树（含其启动的 GUI 子进程）的窗口"
                             "或整个屏幕截图保存为 PNG 文件（需 path；可选 crop 指定只截取的像素区域，"
                             "screen=true/'primary'/序号 整屏 / 多显示器截取（不再需要进程句柄），"
@@ -198,7 +207,14 @@ def build_bash_opt_schema() -> dict[str, Any]:
                             "「文字」，返回坐标（与输入 op 同源，可直接点击）。"
                             "给 template=模板图片路径 做模板匹配；给 query="
                             "要查找的文字 做 OCR 文字识别（Windows 用系统自带 "
-                            "OCR，其它平台用 tesseract）。适合没有可枚举控件的"
+                            "OCR，其它平台用 tesseract），ocr_lang 可指定 OCR "
+                            "语言标签（如 zh-Hans-CN / en-US，缺省按用户配置）。"
+                            "精确匹配失败时自动做近似匹配（OCR 易混字符与"
+                            "下划线 / 破折号等分隔符归一，结果里 match_mode="
+                            "'fuzzy' 并提示复核）；中文查询还会在字符折叠失败后"
+                            "按**整行相似度**兜底（OCR 把汉字认错，如「钮」→"
+                            "「田」，命中时 match_mode='similar'，同样需要复核）。"
+                            "适合没有可枚举控件的"
                             "界面（游戏 / canvas / 图片按钮）；crop 可限定"
                             "搜索区域"
                             "\n- sequence：一次调用按序执行多个动作"
@@ -232,8 +248,10 @@ def build_bash_opt_schema() -> dict[str, Any]:
                         "description": (
                             "仅 wait / wait_window 生效：wait 为等待任务完成的"
                             "超时秒数（默认 300；传 0 表示无限等待，支持小数"
-                            "如 0.5）——超时后任务继续运行，可再次 wait 或 "
-                            "kill；wait_window 为等待窗口**可用**的秒数（默认 15）。"
+                            "如 0.5）——超时后任务继续运行，返回 JSON"
+                            "（timeout=true / done=false / waited / hint），"
+                            "可再次 wait 或 kill；wait_window 为等待窗口**可用**"
+                            "的秒数（默认 15）。"
                         ),
                     },
                     "allow_hidden": {
@@ -251,7 +269,8 @@ def build_bash_opt_schema() -> dict[str, Any]:
                         "description": (
                             "stdin / type 操作的文本内容："
                             "stdin 为发送到后台命令 stdin 的内容（按 encoding "
-                            "指定的编码编码，默认 UTF-8；不经过 shell 解释）；"
+                            "指定的编码编码；缺省随平台，Windows 为系统 ANSI "
+                            "代码页即中文系统的 gbk；不经过 shell 解释）；"
                             "type 为注入到 GUI 窗口的文本（逐字符输入，支持任意 "
                             "Unicode，'\\n' 与 '\\t' 转为回车/制表键）。"
                         ),
@@ -268,12 +287,13 @@ def build_bash_opt_schema() -> dict[str, Any]:
                     "encoding": {
                         "type": "string",
                         "description": (
-                            "仅 stdin 生效：发送文本使用的编码（Python 编码名），"
-                            "默认 'utf-8'。Windows 原生控制台程序（cmd 内建命令 / "
-                            "findstr / sort / more 等）按控制台 OEM 代码页读取 "
-                            "stdin，中文场景可传 'gbk' / 'cp936' / 'gb18030'，"
-                            "否则 UTF-8 字节会被按 cp936 解码成乱码；"
-                            "PowerShell / Python 子进程保持默认 utf-8 即可。"
+                            "仅 stdin 生效：发送文本使用的编码（Python 编码名）。"
+                            "缺省随平台：Windows 取系统 ANSI 代码页对应编码"
+                            "（中文系统为 gbk / cp936——cmd 内建命令 / sort / "
+                            "findstr / more 等按该代码页读管道 stdin，写 UTF-8 "
+                            "会显示成乱码），其它平台 utf-8。按 UTF-8 读 stdin "
+                            "的程序（Python / PowerShell 脚本）可显式传 "
+                            "'utf-8'。"
                         ),
                     },
                     "max_lines": {
@@ -366,7 +386,8 @@ def build_bash_opt_schema() -> dict[str, Any]:
                     "shot": {
                         "type": ["string", "boolean"],
                         "description": (
-                            "仅输入 op（click/move/drag/scroll/key/type）可选："
+                            "仅输入 op（click/move/drag/scroll/key/type，"
+                            "op=keys 走 GUI 窗口时同样支持）可选："
                             "注入完成后自动截图，省去额外一次 screenshot 调用。"
                             "取值为截图路径（无扩展名自动补 .png），或 true 表示"
                             "自动命名到 'bash_opt_shots/' 目录。结果 JSON 的 "
@@ -378,7 +399,8 @@ def build_bash_opt_schema() -> dict[str, Any]:
                     "settle": {
                         "type": "number",
                         "description": (
-                            "仅输入 op 可选（sequence 的步骤也可带）：注入后等待的"
+                            "仅输入 op（含 op=keys 走 GUI 窗口时）可选"
+                            "（sequence 的步骤也可带）：注入后等待的"
                             "秒数再返回（默认 0；指定 shot 时默认 0.2 秒），用于等"
                             "界面完成刷新，避免截图拍到旧画面。需要「等界面真的变了」"
                             "而不是固定等待时，改用 wait_for='change'。"
@@ -774,7 +796,8 @@ def build_bash_opt_schema() -> dict[str, Any]:
                     "wait_for": {
                         "type": "string",
                         "description": (
-                            "仅输入 op 可选：注入后等待界面满足条件再返回。"
+                            "仅输入 op（含 op=keys 走 GUI 窗口时）可选："
+                            "注入后等待界面满足条件再返回。"
                             "'change' 等待画面发生变化（点击后等界面刷新，"
                             "变化区域会一并回报）；"
                             "'stable' 等待画面稳定（动画 / 加载结束；连续两次"
@@ -788,7 +811,8 @@ def build_bash_opt_schema() -> dict[str, Any]:
                     "wait_timeout": {
                         "type": "number",
                         "description": (
-                            "仅输入 op 可选：wait_for 的超时秒数（默认 5，"
+                            "仅输入 op（含 op=keys 走 GUI 窗口时）可选："
+                            "wait_for 的超时秒数（默认 5，"
                             "上限 120）。超时返回 satisfied=false，"
                             "不会阻塞后续操作。"
                         ),
@@ -796,7 +820,8 @@ def build_bash_opt_schema() -> dict[str, Any]:
                     "diff": {
                         "type": "boolean",
                         "description": (
-                            "仅输入 op 可选：true 时注入前后各截一张图并比较像素"
+                            "仅输入 op（含 op=keys 走 GUI 窗口时）可选："
+                            "true 时注入前后各截一张图并比较像素"
                             "差异，结果放在返回 JSON 的 diff 字段"
                             "（changed / changed_ratio / region / summary），"
                             "用于确认操作是否真的让界面发生了变化。"
@@ -806,7 +831,8 @@ def build_bash_opt_schema() -> dict[str, Any]:
                     "tolerance": {
                         "type": "number",
                         "description": (
-                            "输入 op 的 diff / op=locate 可选：像素比较的"
+                            "输入 op（含 op=keys 走 GUI 窗口时）的 diff / "
+                            "op=locate 可选：像素比较的"
                             "颜色容差（每通道 0..255）。diff 默认 8（0 表示"
                             "要求像素完全一致，界面有抗锯齿 / 淡入淡出动画时"
                             "可调大）；locate 模板匹配默认 25（模板与截图"
@@ -835,9 +861,29 @@ def build_bash_opt_schema() -> dict[str, Any]:
                             "仅 locate：要在画面里查找的文字（OCR）。"
                             "返回匹配文字的包围盒坐标（支持跨词短语）；"
                             "与 template 二选一。也可用 text 传该查询。"
-                            "未命中时会附带 recognized_texts（识别到的文字"
-                            "样本），便于判断是 OCR 识别偏差还是画面里确实"
+                            "精确匹配失败时自动做近似匹配：折叠 OCR 易混字符"
+                            "（l/I/1、O/0、S/5 等）并忽略下划线 / 破折号 / "
+                            "点号 / 空格等分隔符（实测 bash_opt 会被识别成 "
+                            "bash—opt），命中时 match_mode='fuzzy' 并提示坐标"
+                            "需复核；中文查询在字符折叠仍失败时按整行文本"
+                            "相似度（>= 80%）兜底，match_mode='similar'（OCR "
+                            "把「钮」认成「田」这类错字），同样提示复核；"
+                            "未命中时会附带 recognized_texts（识别到的"
+                            "文字样本），便于判断是 OCR 识别偏差还是画面里确实"
                             "没有该文字；crop 可把命中范围限定在指定区域内。"
+                            "OCR 语言可用 ocr_lang 指定。"
+                        ),
+                    },
+                    "ocr_lang": {
+                        "type": "string",
+                        "description": (
+                            "仅 locate 的 OCR 文字定位可选：OCR 语言标签"
+                            "（BCP-47，如 'zh-Hans-CN' / 'en-US' / 'ja-JP'）。"
+                            "缺省按用户配置语言（Windows 系统 OCR 的 "
+                            "TryCreateFromUserProfileLanguages）；系统没装该语言"
+                            "的 OCR 语言包时返回可读错误。Windows 可用 "
+                            "OcrEngine.AvailableRecognizerLanguages 查询本机"
+                            "可用语言；其它平台按 tesseract 语言包名传入。"
                         ),
                     },
                     "max_results": {

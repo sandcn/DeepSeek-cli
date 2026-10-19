@@ -266,3 +266,75 @@ def test_find_text_wrapper_still_returns_matches_only():
     """``find_text`` 保持旧签名（只返回匹配列表），近似命中也返回。"""
     boxes = [_box("Select", 0, 0, 60, 14), _box("AII", 65, 0, 30, 14)]
     assert len(find_text(boxes, "Select All")) == 1
+
+
+# ── 近似匹配（分隔符：OCR 把下划线认成破折号等） ────────
+
+def test_find_text_ex_folds_separator_variants():
+    """实测 Windows OCR 把 ``bash_opt`` 识别成 ``bash—opt``：仍需命中。"""
+    boxes = [_box("bash—opt", 10, 5, 60, 14)]
+    matches, mode = find_text_ex(boxes, "bash_opt")
+    assert mode == "fuzzy"
+    assert matches and matches[0].left == 10
+
+
+def test_find_text_ex_ignores_spaces_and_dots_in_fuzzy():
+    """下划线 / 空格 / 点号在近似匹配时等价（``save_as`` ≈ ``Save As...``）。"""
+    boxes = [_box("Save As...", 0, 0, 80, 14)]
+    matches, mode = find_text_ex(boxes, "save_as")
+    assert mode == "fuzzy"
+    assert matches and matches[0].left == 0
+
+
+def test_find_text_ex_separator_fold_still_requires_two_chars():
+    """分隔符折叠后不足 2 字符时不启用近似匹配（避免误匹配）。"""
+    boxes = [_box("_", 0, 0, 8, 12)]
+    matches, mode = find_text_ex(boxes, "-")
+    assert matches == [] and mode == "exact"
+
+
+# ── 相似度近似匹配（中文 OCR 错字兜底） ─────────────────
+
+def test_find_text_ex_similar_matches_chinese_ocr_typo():
+    """实测：Windows OCR 把「确定取消按钮」拆成单字，且把「钮」认成「田」。
+
+    字符级易混表（l/I/1 等）覆盖不了汉字错字，整句精确匹配因此全部落空；
+    相似度兜底（5/6 ≈ 0.83 >= 0.8）应命中并给出合并包围盒。
+    """
+    boxes = [_box(ch, index * 12, 5, 10, 16)
+             for index, ch in enumerate("确定取消按田")]
+    matches, mode = find_text_ex(boxes, "确定取消按钮")
+    assert mode == "similar"
+    assert len(matches) == 1
+    assert matches[0].left == 0 and matches[0].width == 60 + 10
+
+
+def test_find_text_ex_similar_requires_cjk():
+    """不含中文的查询不启用相似度兜底（避免英文近似误命中）。"""
+    boxes = [_box("Hallo", 0, 0, 50, 12)]
+    matches, mode = find_text_ex(boxes, "Hello")
+    assert matches == [] and mode == "exact"
+
+
+def test_find_text_ex_similar_skips_short_chinese_query():
+    """小于 3 个字符的中文查询不启用相似度兜底（误匹配风险过高）。"""
+    boxes = [_box("确", 0, 0, 10, 16), _box("锭", 12, 0, 10, 16)]
+    matches, mode = find_text_ex(boxes, "确定")
+    assert matches == [] and mode == "exact"
+
+
+def test_find_text_ex_similar_rejects_unrelated_text():
+    """相似度不足（无关文字）时不返回命中，仍报 exact 未找到。"""
+    boxes = [_box("取消", 0, 0, 20, 16), _box("关闭窗口", 30, 0, 60, 16)]
+    matches, mode = find_text_ex(boxes, "确定取消按钮")
+    assert matches == [] and mode == "exact"
+
+
+def test_similar_phrase_matches_prefers_highest_score():
+    """同一画面有多个相近候选时按相似度排序，最匹配的排在前面。"""
+    boxes = [_box("确定取消按田", 0, 0, 72, 16),
+             _box("确定取取消按钮", 100, 60, 84, 16)]
+    matches, mode = find_text_ex(boxes, "确定取消按钮")
+    assert mode == "similar"
+    # 「确定取取消按钮」多一个字（6/7 ≈ 0.92）比「确定取消按田」（5/6 ≈ 0.83）更接近
+    assert matches[0].left == 100

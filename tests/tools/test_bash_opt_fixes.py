@@ -3,6 +3,7 @@
 覆盖以下修复（每条对应一个测试组）：
 
 1. ``op=read`` 等只读观察 op **不再接管**任务（不再让任务结果被静默丢弃）；
+   ``op=wait`` 超时返回结构化 JSON（timeout=true / done=false / waited / hint）；
 2. ``read_buffer`` 内存上限 + ``op=read`` 返回截断；
 3. ``_await_screen``（wait_for=stable）不再泄漏临时截图；
 4. ``op=keys`` 的窗口探测在线程中执行（不阻塞事件循环）；
@@ -105,7 +106,12 @@ async def test_stdin_takes_over_task():
     assert "发送 stdin" in result
 
 
-async def test_wait_timeout_does_not_take_over_task():
+async def test_wait_timeout_returns_structured_json():
+    """op=wait 超时返回结构化 JSON（不再返回散文错误文本）。
+
+    超时不是失败：任务继续运行、记录保留、不接管生命周期；调用方按
+    ``timeout=true`` / ``done=false`` 判断「再等 / 看输出 / 杀掉」。
+    """
     async def _never():
         await asyncio.sleep(5)
 
@@ -113,8 +119,16 @@ async def test_wait_timeout_does_not_take_over_task():
     agent = _FakeAgent({"bg-1": _record(task=task)})
     try:
         result = await _call(agent, op="wait", timeout=0.01)
-        assert "超时" in result
+        payload = json.loads(result)
+        assert payload["task_id"] == "bg-1"
+        assert payload["status"] == "running"
+        assert payload["timeout"] is True
+        assert payload["done"] is False
+        assert payload["waited"] == pytest.approx(0.01)
+        assert "op=kill" in payload["hint"]
         assert not agent._background_tasks["bg-1"].get("managed_by_tool")
+        # 任务记录保留（未被消费）
+        assert "bg-1" in agent._background_tasks
     finally:
         task.cancel()
         await asyncio.sleep(0)

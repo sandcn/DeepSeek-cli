@@ -6,22 +6,29 @@ bash_opt — 按 task_id 操作后台 bash 任务
 大模型可据此用 bash_opt 工具按 task_id 操作：
 
 - op=read   读取后台命令**当前已产生**的全部输出并清空缓冲，立即返回（不等待完成）
-- op=wait   等待任务执行完成并获取结果（JSON：task_id/status/stdout/stderr/returncode）
+- op=wait   等待任务执行完成并获取结果（JSON：task_id/status/stdout/stderr/returncode；
+            超时同样返回 JSON：timeout=true / done=false / waited / hint，任务继续运行）
 - op=kill   杀死后台命令的所有进程树（进程组 + 全部递归后代），杀完后
             **校验**进程是否真正退出（僵尸视为已终止）；仍有存活则**自动
             补杀**（最多 3 轮尝试），返回信息报告校验结论与残留 PID
 - op=stdin  向后台命令的 stdin 发送文本输入（text 参数，newline 可选是否追加换行，
-            encoding 指定文本编码，默认 utf-8；Windows 原生控制台程序按
-            OEM 代码页读 stdin 时可用 gbk / cp936 / gb18030）
+            encoding 指定文本编码；缺省随平台：Windows 取系统 ANSI 代码页
+            （中文系统即 gbk——原生控制台程序按该代码页读管道 stdin），其它平台
+            utf-8；按 UTF-8 读 stdin 的程序请显式传 encoding='utf-8'）
 - op=close_stdin  关闭后台命令的 stdin（发送 EOF）：pipe 模式关闭 stdin
             写端——依赖输入结束才输出 / 退出的命令（sort / findstr / cat /
             more / cmd 的 set /p 等）可以正常跑完并给出结果，不必 kill
-            丢掉输出；PTY 模式写入 EOT（Ctrl+D）。关闭后 stdin / keys 写入
-            会明确提示「stdin 已关闭」
+            丢掉输出。PTY（pty=true）**没有真正的 EOF**：只是写入 EOT
+            （ConPTY 为 \\x1a / POSIX 为 \\x04）模拟按键，程序不一定会退出
+            （实测 python REPL 收到 EOT 后继续运行）——依赖 EOF 的命令请用
+            非 PTY 任务，需要结束 PTY 任务请用 op=kill。关闭后 stdin / keys
+            写入会明确提示「stdin 已关闭」
 - op=keys   向后台命令发送光标/键盘消息（自动路由：目标进程有 GUI 窗口时
             作为窗口级键盘消息注入该窗口，否则回退写入终端——跨平台
             ANSI/VT100 转义序列；支持 ctrl+c 等修饰键组合、esc/pageup 等
-            别名、单个字符与 f1-f24，repeat 可一次连按多次）
+            别名、单个字符与 f1-f24，repeat 可一次连按多次）。Ctrl+C 在
+            ConPTY 下对部分程序有效（实测可中断 Python 的 sleep），但不保证
+            中断所有程序；无响应时用 op=kill
 - op=screenshot  把后台命令（及其子进程）的窗口，或整个屏幕，截图保存为 PNG
                  （path 参数指定文件路径；可选 crop 指定只截取的像素区域，
                  window 选择目标窗口，grid 叠加等距坐标参考线；
@@ -195,6 +202,7 @@ master 或 stdin 管道写入后台进程，不依赖平台特定 API。键名�
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import logging
 import math
@@ -319,6 +327,65 @@ logger = logging.getLogger(__name__)
 
 #: 参数「未显式传入」的哨兵（与显式 None / 空值区分，供内部方法复用参数）
 _UNSET: object = object()
+
+#: 代码页 → Python 编码名（未登记的按 ``cp<代码页>`` 交给 codecs 探测）
+_CODEPAGE_ENCODINGS: dict = {
+    65001: "utf-8",
+    936: "gbk",
+    54936: "gb18030",
+    950: "cp950",
+    932: "cp932",
+    949: "cp949",
+    1252: "cp1252",
+}
+
+
+def _windows_ansi_codepage():
+    """系统 ANSI 代码页（Windows ``GetACP``；非 Windows / 取不到返回 ``None``）。
+
+    ★ 不用 ``GetConsoleCP``：本机终端可被 ``chcp 65001`` 改成 UTF-8（实测
+    Windows Terminal 为 65001），而原生控制台程序从**管道**读 stdin 时按
+    系统 ANSI 代码页（中文 Windows = 936）解码——按控制台代码页取会得到
+    UTF-8，中文仍然乱码。
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        return int(ctypes.windll.kernel32.GetACP())
+    except (AttributeError, OSError, ValueError):  # pragma: no cover - 平台相关
+        return None
+
+
+def _codepage_to_encoding(codepage) -> str:
+    """代码页 → Python 编码名（未知 / UTF-8 代码页均返回 ``utf-8``）。"""
+    if not codepage or int(codepage) == 65001:
+        return "utf-8"
+    known = _CODEPAGE_ENCODINGS.get(int(codepage))
+    if known:
+        return known
+    name = f"cp{int(codepage)}"
+    try:
+        codecs.lookup(name)
+    except LookupError:
+        return "utf-8"
+    return name
+
+
+def default_stdin_encoding() -> str:
+    """``op=stdin`` 的默认文本编码（随平台 / 系统代码页）。
+
+    Windows 原生控制台程序（``cmd`` 内建命令 / ``sort`` / ``findstr`` /
+    ``more`` 等）从管道读 stdin 时按**系统 ANSI 代码页**解码（中文 Windows
+    = 936）；写入 UTF-8 会显示成乱码（实测 ``cmd /c sort`` 收到 UTF-8 中文，
+    输出 ``涓�鏂囪�?``）。因此 Windows 上默认取 ``GetACP()`` 对应编码
+    （中文系统即 GBK / cp936），非 Windows 或取不到时用 ``utf-8``。
+
+    确实按 UTF-8 读 stdin 的程序（Python / PowerShell 脚本等）请显式传
+    ``encoding='utf-8'``。
+    """
+    return _codepage_to_encoding(_windows_ansi_codepage())
+
 
 #: PTY master 写入的总超时（秒）——子进程长时间不读取输入时，写缓冲区会持续
 #: 占满；无上限重试会让工具调用永久挂住，这里给出兜底超时（超时转可读错误）。
@@ -468,6 +535,12 @@ class BashOptFunc(Func):
     _STABLE_CHANGE_RATIO: float = 0.001
     #: 界面比较的默认颜色容差（每通道）
     _DIFF_TOLERANCE: int = DEFAULT_TOLERANCE
+    #: 快捷键探针：注入后**能可靠检测效果**的组合键。
+    #: Ctrl+A（全选）会改变选中高亮 → 用截图差异判断；Ctrl+C（复制）会改变
+    #: 剪贴板 → 用剪贴板前后比较判断。未生效时返回 warning 并给出替代方案
+    #: （实测部分 WinForms TextBox 收到 Ctrl+A 的 keydown/keyup 却不全选）。
+    _SHORTCUT_SCREEN_PROBES: frozenset[str] = frozenset({"ctrl+a"})
+    _SHORTCUT_CLIPBOARD_PROBES: frozenset[str] = frozenset({"ctrl+c"})
     #: 输入动作后等待界面变化的判定模式
     _WAIT_FOR_MODES: tuple[str, ...] = ("change", "stable")
     #: elements 默认返回的控件条数上限
@@ -514,8 +587,10 @@ class BashOptFunc(Func):
     _READ_MAX_LINES_DEFAULT: int = 1000
     #: op=close_stdin 关闭写端时的等待上限（秒）——管道对端不响应时不无限挂住
     _STDIN_CLOSE_TIMEOUT: float = 3.0
-    #: op=stdin 的默认文本编码（Windows 原生控制台程序按 OEM 代码页读 stdin
-    #: 时可显式传 encoding='gbk' / 'cp936' / 'gb18030'）
+    #: 非 Windows 平台的 stdin 默认文本编码。Windows 的默认值按系统 ANSI
+    #: 代码页动态取（见模块级 :func:`default_stdin_encoding`）：中文 Windows
+    #: 即 ``gbk``，避免原生控制台程序（sort / findstr / cmd 内建）读管道
+    #: stdin 时按 936 解码把 UTF-8 字节显示成乱码。
     _DEFAULT_STDIN_ENCODING: str = "utf-8"
     #: 由 bash_opt **接管生命周期**的 op：这些操作要么输入交互（stdin /
     #: close_stdin / keys / 窗口输入）、要么显式终止任务（kill）、要么是批量
@@ -766,6 +841,7 @@ class BashOptFunc(Func):
                  via: str | None = None, paste_key: str | None = None,
                  restore_clipboard=None, max_elements=None,
                  template: str | None = None, query: str | None = None,
+                 ocr_lang: str | None = None,
                  max_results=None, min_scale=None, max_scale=None,
                  scale_steps=None,
                  screen=None, margin=None,
@@ -799,9 +875,9 @@ class BashOptFunc(Func):
         self.text = text
         # newline 三态：None = 未指定（stdin 默认追加换行、type 默认原样）
         self.newline = None if newline is None else bool(newline)
-        # stdin 文本编码（默认 utf-8）：Windows 原生控制台程序（cmd 内建 /
-        # findstr / sort 等按 OEM 代码页读 stdin）可传 gbk / cp936 / gb18030，
-        # 否则 UTF-8 字节会被按 cp936 解码成乱码。空串按默认处理。
+        # stdin 文本编码（缺省随平台：Windows 取系统 ANSI 代码页，中文系统即
+        # gbk——cmd 内建 / findstr / sort 等原生控制台程序按该代码页读管道
+        # stdin，写 UTF-8 会乱码；其它平台 utf-8）。显式 encoding 始终优先。
         self.encoding = self._normalize_encoding(encoding)
         # read 的行数上限（默认 1000 行，与 bash 工具的 MAX_LINES 对齐）：
         # None = 默认；0 / 负数 = 不按行截断；非法值回退默认。
@@ -875,6 +951,10 @@ class BashOptFunc(Func):
         # ── 图像 / 文字定位（op=locate）──
         self.template = template      # 模板图片路径（图像匹配）
         self.query = query            # OCR 查找文本
+        # OCR 语言标签（BCP-47，如 zh-Hans-CN / en-US）：缺省按用户配置；
+        # 指定语言没装 OCR 语言包时后端会返回可读错误。
+        self.ocr_lang = (str(ocr_lang).strip() or None
+                         if ocr_lang is not None else None)
         self.max_results = max_results
         self.min_scale = min_scale    # 模板缩放搜索范围
         self.max_scale = max_scale
@@ -907,16 +987,19 @@ class BashOptFunc(Func):
 
     @classmethod
     def _normalize_encoding(cls, encoding) -> str:
-        """归一化 stdin 文本编码名（缺省 / 空串 → 默认 UTF-8）。
+        """归一化 stdin 文本编码名（缺省 / 空串 → 平台默认编码）。
+
+        默认值见 :func:`default_stdin_encoding`：Windows 取系统 ANSI 代码页
+        （中文系统 → ``gbk``），其它平台 → ``utf-8``。
 
         不在构造期校验编码名是否合法：非法编码名在真正写入时由
         :meth:`_op_stdin` 返回可读错误（``encoding='utf8x'`` 这类笔误能直接
         看到提示，而不是被静默改成默认值）。
         """
         if encoding is None:
-            return cls._DEFAULT_STDIN_ENCODING
+            return default_stdin_encoding()
         text = str(encoding).strip()
-        return text or cls._DEFAULT_STDIN_ENCODING
+        return text or default_stdin_encoding()
 
     @classmethod
     def _normalize_max_lines(cls, max_lines) -> int:
@@ -1190,7 +1273,10 @@ class BashOptFunc(Func):
         拿到输出，避免 _process_background_tasks 再以用户消息重复插入。
 
         ★ 使用 asyncio.wait 而非 wait_for：wait_for 超时会 cancel 后台任务
-        本身（任务被误杀），wait 只观察不干预，超时后任务继续运行。
+        本身（任务被误杀），wait 只观察不干预，超时后任务继续运行——
+        超时返回**结构化 JSON**（task_id / status / timeout=True / done=False /
+        waited / hint），不是散文错误：调用方可据此决定「再等 / op=read 看
+        实时输出 / op=kill 终止」。
         """
         task = rec.get("task")
         if not rec.get("done") and task is not None:
@@ -1198,8 +1284,19 @@ class BashOptFunc(Func):
                 if self.timeout:
                     done, _pending = await asyncio.wait({task}, timeout=self.timeout)
                     if not done:
-                        return (f"(等待后台任务 {self.task_id} 超时（{self.timeout} 秒），"
-                                f"任务仍在运行。可再次 wait 或 op=kill 终止)")
+                        # 超时不是失败：任务仍在运行（wait 只观察不干预）。
+                        # 返回结构化 JSON，与完成分支同一契约（task_id/status），
+                        # 另带 timeout / done / waited / hint，调用方可直接判断
+                        # 「再等 / 去看实时输出 / 杀掉」，不必解析散文。
+                        return json.dumps({
+                            "task_id": self.task_id,
+                            "status": rec.get("status", "running"),
+                            "timeout": True,
+                            "done": False,
+                            "waited": self.timeout,
+                            "hint": ("等待超时，任务仍在运行：可再次 op=wait 继续等，"
+                                     "或用 op=read 查看实时输出、op=kill 终止"),
+                        }, ensure_ascii=False)
                 else:
                     await task
             except asyncio.CancelledError:
@@ -1327,9 +1424,12 @@ class BashOptFunc(Func):
     async def _op_stdin(self, rec: dict) -> str:
         """向后台任务 stdin 发送文本输入（按 :attr:`encoding` 编码）。
 
-        默认 UTF-8；Windows 原生控制台程序常按 OEM / ANSI 代码页（cp936）
-        读取 stdin，此时传 ``encoding='gbk'``（或 cp936 / gb18030）可避免
-        中文乱码。``newline`` 未指定或为 true 时按同一编码追加换行。
+        默认编码随平台：Windows 取系统 ANSI 代码页（中文系统 → ``gbk``），
+        因为原生控制台程序（cmd 内建 / sort / findstr / more）按该代码页
+        解码管道 stdin，用 UTF-8 会乱码（实测 ``cmd /c sort`` 输出
+        ``涓�鏂囪�?``）；其它平台 ``utf-8``。按 UTF-8 读 stdin 的程序
+        （Python / PowerShell 脚本）可显式传 ``encoding='utf-8'``。
+        ``newline`` 未指定或为 true 时按同一编码追加换行。
 
         ★ PTY 任务（``bash background=true pty=true``）的「回车」是 **CR**
         （``\\r``）而不是 ``\\n``：终端里 ``\\n`` 只是下移一行、不会提交输入
@@ -1366,14 +1466,17 @@ class BashOptFunc(Func):
         """关闭后台任务的 stdin（发送 EOF）。
 
         依赖 stdin EOF 才会输出 / 退出的命令（``sort`` / ``findstr`` /
-        ``cat`` / ``more`` / cmd 的 ``set /p`` 等）在 Windows 上无法用
-        Ctrl+C / Ctrl+D 结束（bash 工具在原生 Windows 用管道而非 PTY），
-        关闭写端后子进程读到 EOF 即可正常走完并输出，不必 kill 丢掉结果。
+        ``cat`` / ``more`` / cmd 的 ``set /p`` 等）用 pipe 模式关闭写端后
+        子进程读到 EOF 即可正常走完并输出，不必 kill 丢掉结果。
 
         - ``mode='pipe'``：关闭 stdin 写端（StreamWriter.close），并等
           ``wait_closed`` 完成（有超时，避免对端不响应时挂住）；
-        - ``mode='pty'``：写入 EOT（``0x04``，等同 Ctrl+D），由终端驱动
-          转成 EOF；PTY 本身不能关闭（master 关闭会同时断开输出读取）。
+        - ``mode='pty'``：PTY **没有真正的 EOF 语义**，只能写入 EOT
+          （``0x04``，Windows ConPTY 为 ``0x1a``）模拟 Ctrl+D / Ctrl+Z 按键。
+          程序不一定会因此退出（实测 ``python -i -q`` 收到 EOT 后仍在运行），
+          返回文本会如实说明；依赖 EOF 的命令请改用非 PTY 任务，需要结束
+          PTY 任务请用 ``op=kill``（PTY master 关闭会同时断开输出读取，
+          因此这里不能直接关闭 PTY）。
         """
         mode = rec.get("mode")
         if mode is None:
@@ -1407,9 +1510,13 @@ class BashOptFunc(Func):
             except OSError as exc:
                 return (f"(向后台任务 {self.task_id} 的 PTY 写入 EOT 失败: {exc})")
             rec["stdin_closed"] = True
-            return (f"(已向后台任务 {self.task_id} 的 PTY 发送 EOT（Ctrl+D），"
-                    f"依赖 EOF 的程序可正常读到输入结束；后续 stdin / keys 写入"
-                    f"会提示 stdin 已关闭，需要继续交互请重新启动任务)")
+            return (f"(已向后台任务 {self.task_id} 的 PTY 写入 EOT"
+                    f"（ConPTY 为 Ctrl+Z、POSIX 为 Ctrl+D）；注意 PTY 没有真正的"
+                    f" EOF：这只是模拟按键，程序不一定会退出（实测 python REPL "
+                    f"收到 EOT 后仍在运行）。依赖 stdin EOF 才输出 / 退出的命令"
+                    f"请改用非 PTY 任务（pty=false）再 close_stdin；需要结束该"
+                    f"任务请用 op=kill。后续 stdin / keys 写入会提示 stdin 已关闭，"
+                    f"需要继续交互请重新启动任务)")
 
         if mode != "pipe":
             return f"(后台任务 {self.task_id} 写入模式异常: {mode})"
@@ -1462,6 +1569,10 @@ class BashOptFunc(Func):
         优先用 ``type`` / ``element``，或注入后用 screenshot / diff 复核；
         终端通道下 ``ctrl+c`` 这类控制字符只有在 PTY 中才会变成信号，管道
         stdin 只是普通字节（见 :meth:`_terminal_key_note`）。
+
+        增强参数（``shot`` / ``settle`` / ``wait_for`` / ``diff``）：GUI 通路
+        走 :meth:`_keys_via_window`，与 click / key 等输入 op 行为一致；终端
+        通路没有可截图的画面，带这些参数时直接返回说明，不再静默忽略。
         """
         if self.key is None:
             return "(keys 操作需要 key 参数指定按键，如 key='up' / key='ctrl_c')"
@@ -1474,12 +1585,30 @@ class BashOptFunc(Func):
         window_pid = (pid if isinstance(pid, int) and not isinstance(pid, bool)
                       and pid > 0 else None)
         window_failure: str | None = None
+        enhancements = self._has_keys_enhancements()
         if window_pid is not None and await self._probe_window_async(window_pid):
             try:
+                if enhancements:
+                    # shot / settle / wait_for / diff 只在 GUI 通路上有意义：
+                    # 走增强版，与 click / key 等输入 op 完全一致的实现。
+                    return await self._keys_via_window(
+                        window_pid, key_text, repeat, rec)
                 return await self._send_keys_to_window(window_pid, key_text, repeat)
             except (InputNoWindowError, InputError) as exc:
+                if enhancements:
+                    # 带了增强参数时不再静默回退终端：否则调用方会拿到「已发送」
+                    # 却没有任何截图 / 变化判定，误以为参数被忽略或截图失败。
+                    return (f"(按键发送失败：目标 GUI 窗口注入失败（{exc}）；"
+                            f"settle / wait_for / diff / shot 只对 GUI 窗口有效，"
+                            f"因此没有回退到终端通道。只发送按键请去掉这些参数"
+                            f"后重试，或改用 op=kill 终止任务)")
                 # 探测到窗口但注入失败（窗口已关闭 / 无法置前等）：尝试终端回退
                 window_failure = str(exc)
+        if enhancements:
+            return ("(keys 参数不受支持: settle / wait_for / diff / shot 需要"
+                    "可截图的 GUI 窗口，而目标进程没有可接收键盘输入的 GUI "
+                    "窗口（按键走 PTY / stdin 终端通道）。需要截图请单独用 "
+                    "op=screenshot；只发送按键请去掉这些参数)")
         ok, message = await self._send_keys_to_terminal(rec, key_text, repeat)
         if ok:
             return message
@@ -1493,6 +1622,18 @@ class BashOptFunc(Func):
                 f"也没有可写入的终端句柄 —— {self._plain(message)}。"
                 f"若为 GUI 程序请等窗口出现后用 op=key 注入（可用 op=screenshot "
                 f"确认窗口状态）；纯命令行进程请确认已启动（可用 op=wait 查看状态）)")
+
+    def _has_keys_enhancements(self) -> bool:
+        """``op=keys`` 是否带了「只对 GUI 窗口有意义」的增强参数。
+
+        这些参数（``shot`` / ``settle`` / ``wait_for`` / ``diff``）此前被
+        ``_op_keys`` 静默丢弃：既不出图也不等待，调用方只能看到「按键已发送」，
+        与 ``click`` / ``key`` 的行为不一致（实测带 ``shot`` 的 keys 不生成
+        截图且无任何提示）。现在 GUI 通路走 :meth:`_keys_via_window` 完整
+        支持它们，终端通路则明确报错。
+        """
+        return bool(self.shot) or self.settle is not None or bool(self.wait_for) \
+            or bool(self.diff)
 
     def _resolve_key_repeat(self) -> int:
         """解析 key / keys 的连按次数（缺省 1）。
@@ -1559,7 +1700,13 @@ class BashOptFunc(Func):
             InputError: 平台不支持或注入失败。
         """
         action = build_action("key", {"key": key_text, "repeat": repeat})
-        result = await self._send_input_with_retry(pid, action)
+        shortcut_probe = await self._probe_shortcut_before(pid, key_text)
+        try:
+            result = await self._send_input_with_retry(pid, action)
+        except BaseException:
+            if shortcut_probe is not None:
+                self._remove_temp(shortcut_probe.get("path"))
+            raise
         payload = {
             "task_id": self.task_id,
             "op": "keys",
@@ -1572,6 +1719,82 @@ class BashOptFunc(Func):
                      "type / element"),
         }
         payload.update(result.to_dict())
+        probe = await self._probe_shortcut_after(pid, shortcut_probe)
+        if probe is not None:
+            payload["shortcut_probe"] = probe
+        return json.dumps(payload, ensure_ascii=False)
+
+    async def _keys_via_window(self, pid: int, key_text: str, repeat: int,
+                               rec: dict) -> str:
+        """GUI 通路的 ``op=keys`` 增强版：注入后按增强参数回报界面结果。
+
+        与 ``click`` / ``key`` 等输入 op 复用同一套增强实现（``settle`` 等待、
+        ``wait_for`` 等变化 / 稳定、``diff`` 前后截图比较、``shot`` 自动截图），
+        让 ``op=keys`` 不再静默忽略这些参数。
+
+        Args:
+            pid: 目标进程 PID（其窗口接收按键）。
+            key_text: 按键文本（与 ``op=key`` 同一套键名规则）。
+            repeat: 连按次数。
+            rec: 后台任务记录（``shot`` 需要进程句柄）。
+
+        Raises:
+            InputNoWindowError / InputError: 注入失败（由调用方决定是否回退）。
+        """
+        try:
+            wait_mode, wait_timeout, extra_wait = self._resolve_wait_target()
+            settle = self._resolve_settle()
+            if extra_wait:
+                settle = max(settle, extra_wait)
+            diff_enabled = self._resolve_diff_flag()
+            tolerance = self._resolve_tolerance()
+        except ValueError as exc:
+            return f"(按键参数非法: {exc})"
+        action = build_action("key", {"key": key_text, "repeat": repeat})
+        shortcut_probe = await self._probe_shortcut_before(pid, key_text)
+        temporaries: list[str] = []
+        before_path = None
+        if diff_enabled or wait_mode is not None:
+            before_path = await self._temp_screenshot(pid, self.window)
+            if before_path is not None:
+                temporaries.append(before_path)
+        try:
+            result = await self._send_input_with_retry(pid, action)
+        except (InputNoWindowError, InputError):
+            self._cleanup_temps(temporaries)
+            if shortcut_probe is not None:
+                self._remove_temp(shortcut_probe.get("path"))
+            raise
+        payload = {
+            "task_id": self.task_id,
+            "op": "keys",
+            "channel": "gui",
+            "hint": ("检测到目标进程有 GUI 窗口，按键已作为窗口级键盘消息注入该窗口；"
+                     "可用 op=screenshot 截图后 read_image 核对界面变化"
+                     "（纯 GUI 按键可直接用 op=key）。注意：事件送达不等于目标控件"
+                     "执行了对应动作（如部分 TextBox 收到 Ctrl+A 但不全选），"
+                     "组合键效果需用界面变化复核；确定生效的文本操作优先用 "
+                     "type / element"),
+        }
+        payload.update(result.to_dict())
+        try:
+            if settle:
+                await asyncio.sleep(settle)
+            probe = await self._probe_shortcut_after(pid, shortcut_probe)
+            if probe is not None:
+                payload["shortcut_probe"] = probe
+            if wait_mode is not None:
+                payload["wait_for"] = await self._await_screen(
+                    pid, mode=wait_mode, before_path=before_path,
+                    window=self.window, timeout=wait_timeout)
+            if diff_enabled:
+                payload["diff"] = await self._diff_result(
+                    pid, before_path, window=self.window, tolerance=tolerance)
+            shot_error = await self._attach_shot(payload, rec)
+            if shot_error:
+                payload["screenshot_error"] = shot_error
+        finally:
+            self._cleanup_temps(temporaries)
         return json.dumps(payload, ensure_ascii=False)
 
     async def _send_keys_to_terminal(self, rec: dict, key_text: str,
@@ -1626,12 +1849,13 @@ class BashOptFunc(Func):
                     "需要结束任务请用 op=kill）")
         if mode == "pty":
             if os.name == "nt":
-                # 平台限制（实测）：ConPTY 下写入 \x03 不会让运行中的进程收到
-                # CTRL_C_EVENT（GenerateConsoleCtrlEvent 对伪控制台进程组也只有
-                # CTRL_BREAK 有效），因此必须提示用 kill 终止。
-                return ("；提示：Windows ConPTY 下控制字符不会变成控制台事件"
-                        "（ctrl+c 只取消当前输入行，不会中断运行中的进程，系统限制）"
-                        "——需要终止任务请用 op=kill")
+                # 2026-10-20 在 Windows 11 26220 的 ConPTY 上复测：写入 \x03
+                # 对部分程序有效（python 的 time.sleep 会被 KeyboardInterrupt
+                # 中断），但不保证所有程序都响应（cmd 内建可能只取消输入行）。
+                # 文案必须与实际一致，并给出 kill 兜底。
+                return ("；提示：Windows ConPTY 下控制字符能否变成 Ctrl+C 事件"
+                        "取决于目标程序（实测可中断 Python 等进程，但部分程序不"
+                        "响应）——若进程没有反应，请用 op=kill 终止任务")
             # POSIX PTY：子进程已建立控制终端（setsid + TIOCSCTTY），正常情况下
             # ctrl+c 会变成 SIGINT；程序可能自行忽略 / 接管该信号，仍给出兜底提示。
             return ("；提示：若目标进程没有响应（例如自行忽略 SIGINT），"
@@ -1645,6 +1869,107 @@ class BashOptFunc(Func):
         if text.startswith("(") and text.endswith(")"):
             return text[1:-1]
         return text
+
+    # ── 快捷键探针（Ctrl+A / Ctrl+C 是否真的生效） ────────
+
+    @staticmethod
+    def _shortcut_token(key_text) -> str:
+        """归一化按键文本（``ctrl_c`` / ``control-c`` / ``Ctrl+C`` → ``ctrl+c``）。
+
+        只用于探针判断（不参与按键解析），因此宽松归一；非组合键返回原样。
+        """
+        raw = str(key_text or "").strip().lower()
+        if not raw:
+            return ""
+        raw = raw.replace("_", "+").replace("-", "+")
+        parts = [part.strip() for part in raw.split("+") if part.strip()]
+        if not parts:
+            return ""
+        parts = ["ctrl" if part == "control" else part for part in parts]
+        return "+".join(parts)
+
+    async def _probe_shortcut_before(self, pid: int, key_text):
+        """快捷键探针：注入前采样（全选截基准图 / 复制读剪贴板）。
+
+        Returns:
+            ``None``（该快捷键不参与探针）或 ``{kind, key, ...}`` 的探针上下文。
+        """
+        token = self._shortcut_token(key_text)
+        if token in self._SHORTCUT_SCREEN_PROBES:
+            path = await self._temp_screenshot(pid, self.window)
+            return {"kind": "screen", "key": token, "path": path}
+        if token in self._SHORTCUT_CLIPBOARD_PROBES:
+            try:
+                text = await asyncio.to_thread(read_clipboard_text)
+            except Exception:  # pragma: no cover - 剪贴板后端不可用时不做探针
+                logger.debug("快捷键探针读取剪贴板失败", exc_info=True)
+                return None
+            return {"kind": "clipboard", "key": token, "text": text}
+        return None
+
+    async def _probe_shortcut_after(self, pid: int, probe):
+        """快捷键探针：注入后复核效果，未生效时给出替代方案提示。
+
+        只对「效果可可靠观测」的快捷键生效：
+          - ``ctrl+a``：比较注入前后的窗口截图（全选会改变选中高亮）；
+          - ``ctrl+c``：比较注入前后的剪贴板文本（复制会改变剪贴板）。
+        其它快捷键（如 ``ctrl+s``）不做探针，避免误报。
+
+        Returns:
+            ``None``（没有探针）或结果字典
+            ``{key, method, changed, [changed_ratio], [warning]}``。
+        """
+        if probe is None:
+            return None
+        key = probe.get("key", "")
+        if probe.get("kind") == "screen":
+            path = probe.get("path")
+            try:
+                if not path:
+                    return {
+                        "key": key, "method": "screen", "changed": None,
+                        "warning": ("无法截取注入前的截图，未能确认快捷键是否生效；"
+                                    "可用 op=elements 读取控件文本复核"),
+                    }
+                diff = await self._diff_result(
+                    pid, path, window=self.window,
+                    tolerance=self._DIFF_TOLERANCE)
+            finally:
+                self._remove_temp(path)
+            payload = {
+                "key": key,
+                "method": "screen",
+                "changed": diff.get("changed"),
+            }
+            if "changed_ratio" in diff:
+                payload["changed_ratio"] = diff["changed_ratio"]
+            if diff.get("changed") is False:
+                payload["warning"] = (
+                    "未检测到界面变化：该快捷键在目标控件上可能没有生效"
+                    "（实测部分 WinForms TextBox 收到 Ctrl+A 但不全选）。"
+                    "可改用 element + type（按控件名聚焦后输入）或 op=type "
+                    "via='clipboard' 直接粘贴；也可用 op=elements 读取控件文本复核"
+                )
+            elif diff.get("changed") is None:
+                payload["warning"] = (
+                    f"未能比较界面变化（{diff.get('reason', '截图失败')}）；"
+                    f"可用 op=elements 读取控件文本复核")
+            return payload
+        if probe.get("kind") == "clipboard":
+            try:
+                after = await asyncio.to_thread(read_clipboard_text)
+            except Exception:  # pragma: no cover - 剪贴板后端不可用
+                logger.debug("快捷键探针读取剪贴板失败", exc_info=True)
+                return None
+            changed = after != probe.get("text")
+            payload = {"key": key, "method": "clipboard", "changed": changed}
+            if not changed:
+                payload["warning"] = (
+                    "剪贴板内容没有变化：Ctrl+C 可能没有生效（或控件中没有选中内容）。"
+                    "可先用 element + click 聚焦控件，或用 op=elements 读取控件文本复核"
+                )
+            return payload
+        return None
 
     # ── op=screenshot ────────────────────────────────────
 
@@ -2146,6 +2471,10 @@ class BashOptFunc(Func):
                 "note": ("为使键盘输入落到该控件，已在控件中心先点击一次（左键）；"
                          "若该控件本身是按钮 / 复选框，这次点击会触发它"),
             }
+        # ── 快捷键探针：Ctrl+A / Ctrl+C 注入前采样，注入后复核是否真的生效 ──
+        shortcut_probe = None
+        if self.op == "key":
+            shortcut_probe = await self._probe_shortcut_before(pid, self.key)
         # ── 变化判定 / 差异比较需要基准图：注入前先截一张 ──
         temporaries: list[str] = []
         before_path = None
@@ -2160,6 +2489,8 @@ class BashOptFunc(Func):
                 pid, action, via, restore_clipboard=restore_clipboard)
         except (InputNoWindowError, InputError) as exc:
             self._cleanup_temps(temporaries)
+            if shortcut_probe is not None:
+                self._remove_temp(shortcut_probe.get("path"))
             message = str(exc)
             if "窗口选择器" in message:
                 return (f"(输入失败: {message}。弹出菜单 / 下拉浮层这类窗口在失焦"
@@ -2192,6 +2523,9 @@ class BashOptFunc(Func):
         try:
             if settle:
                 await asyncio.sleep(settle)
+            probe = await self._probe_shortcut_after(pid, shortcut_probe)
+            if probe is not None:
+                payload["shortcut_probe"] = probe
             if wait_mode is not None:
                 payload["wait_for"] = await self._await_screen(
                     pid, mode=wait_mode, before_path=before_path,
@@ -3281,7 +3615,9 @@ class BashOptFunc(Func):
 
         ``crop`` 可把搜索范围限制在窗口内某区域（减少误匹配 / 提速）；
         ``tolerance``（模板匹配容差）、``max_results``、``min_scale`` /
-        ``max_scale`` / ``scale_steps``（模板多尺度搜索）可微调。
+        ``max_scale`` / ``scale_steps``（模板多尺度搜索）可微调；
+        ``ocr_lang`` 指定 OCR 语言标签（如 ``zh-Hans-CN`` / ``en-US``），
+        缺省按用户配置语言识别。
         """
         pid = rec.get("pid")
         if pid is None:
@@ -3317,7 +3653,7 @@ class BashOptFunc(Func):
                     min_scale, max_scale, scale_steps)
             else:
                 payload = await self._locate_text(
-                    query_raw, path, crop, max_results)
+                    query_raw, path, crop, max_results, self.ocr_lang)
         except (ImageMatchError, OcrError, ScreenshotError, OSError,
                 ValueError) as exc:
             return f"(locate 失败: {exc})"
@@ -3331,13 +3667,17 @@ class BashOptFunc(Func):
                 item["screen_center_x"] = item["center_x"] + frame.screen_x
                 item["screen_center_y"] = item["center_y"] + frame.screen_y
             payload["frame"] = frame.to_dict()
+        ocr_hint = payload.pop("ocr_hint", None)
+        hint = ("matches 里的 x/y/center_x/center_y 与输入 op 坐标同源"
+                "（窗口截图左上角为原点），可直接交给 click / move 的 x / y；"
+                "screen_* 是换算后的屏幕坐标。找到多个时可用 score 或 text "
+                "挑选；不确认时可 first 用 op=screenshot 复核")
+        if ocr_hint:
+            hint = f"{hint}；{ocr_hint}"
         payload.update({
             "task_id": self.task_id,
             "op": "locate",
-            "hint": ("matches 里的 x/y/center_x/center_y 与输入 op 坐标同源"
-                     "（窗口截图左上角为原点），可直接交给 click / move 的 x / y；"
-                     "screen_* 是换算后的屏幕坐标。找到多个时可用 score 或 text "
-                     "挑选；不确认时可 first 用 op=screenshot 复核"),
+            "hint": hint,
         })
         if self.window:
             payload["window"] = str(self.window)
@@ -3375,7 +3715,8 @@ class BashOptFunc(Func):
         }
 
     async def _locate_text(self, query: str, shot_path: str, crop,
-                           max_results: int) -> dict:
+                           max_results: int,
+                           ocr_lang: str | None = None) -> dict:
         """OCR 文字定位：识别截图文字并按查询过滤（支持跨词短语）。
 
         ``crop`` 只用于**限定命中范围**（识别始终在整幅窗口截图上进行），
@@ -3383,10 +3724,15 @@ class BashOptFunc(Func):
         —— 模板匹配那条路径会真正裁剪图像（见 :meth:`_locate_template`），
         两者的坐标系处理据此区分。
 
+        ``ocr_lang`` 传给 OCR 后端（Windows 系统 OCR 的语言标签，如
+        ``zh-Hans-CN`` / ``en-US``）；缺省按用户配置语言。
+
         未命中时会附上识别到的文字样本（``recognized_texts``），便于判断是
-        「OCR 识别偏差」（如把 OK 认成 0K）还是「画面里确实没有该文字」。
+        「OCR 识别偏差」（如把 OK 认成 0K）还是「画面里确实没有该文字」；
+        未指定语言时还会提示可用 ``ocr_lang`` 切换 OCR 语言。
         """
-        boxes = await asyncio.to_thread(recognize_text, shot_path)
+        boxes = await asyncio.to_thread(
+            recognize_text, shot_path, lang=ocr_lang)
         recognized_total = len(boxes)
         scoped = boxes
         if crop is not None:
@@ -3406,6 +3752,8 @@ class BashOptFunc(Func):
             "returned": len(items),
             "matches": items,
         }
+        if ocr_lang:
+            payload["ocr_lang"] = ocr_lang
         if crop is not None:
             payload["in_crop"] = len(scoped)
         if not items and recognized_total:
@@ -3417,11 +3765,23 @@ class BashOptFunc(Func):
             payload["recognized_texts"] = [
                 box.text for box in sample_source[:self._LOCATE_DIAGNOSTIC_TEXTS]
             ]
+            if not ocr_lang:
+                payload["ocr_hint"] = (
+                    "OCR 未命中查询文字。本机 OCR 语言可能与画面语言不一致："
+                    "可用 ocr_lang 指定语言（如 'zh-Hans-CN' / 'en-US'，"
+                    "Windows 需安装对应 OCR 语言包），或用 op=screenshot 复核画面后"
+                    "改用模板匹配 / pixel 定位")
         if items and match_mode == "fuzzy":
             payload["note"] = (
                 "命中来自近似匹配：OCR 常见易混字符（l / I / 1、O / 0、S / 5 等）"
                 "折叠后比较（如把 Select AII 认成 Select All），坐标请先用 "
                 "op=screenshot / op=annotate 复核再点击")
+        elif items and match_mode == "similar":
+            payload["note"] = (
+                "命中来自相似度近似匹配：OCR 对中文可能有错字（如把「钮」认成"
+                "「田」），本次按同一行文本的相似度命中（>= 80%），坐标与包围盒"
+                "请先用 op=screenshot / op=annotate 复核再点击；需要精确结果时"
+                "可改用 element + click 或模板匹配")
         return payload
 
     @staticmethod

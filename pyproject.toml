@@ -18,7 +18,9 @@ dependencies = [
     "Pillow>=8.4",
     # 状态栏 CPU/内存与 shell 探测（缺失时回退平台自带实现，仍列为必需
     # 以保证默认安装下功能完整）
-    "psutil>=5.9",
+    # Cygwin / MSYS2：psutil 上游 setup.py 明确拒绝该平台（"platform cygwin
+    # is not supported"），带 sys_platform 标记跳过，否则 `pip install .` 直接失败。
+    "psutil>=5.9; sys_platform != 'cygwin' and sys_platform != 'msys'",
     # 插件清单 / 技能 frontmatter 解析（缺失时回退 src/kernel/_yaml.py
     # 的 YAML 子集解析器，能力受限）
     "PyYAML>=6.0",
@@ -28,7 +30,8 @@ dependencies = [
 
 [project.optional-dependencies]
 # 高性能 JSON 编解码（缺失时回退标准库 json）
-perf = ["orjson>=3.9"]
+# Cygwin / MSYS2：orjson 无该平台 wheel，maturin 也不支持 x86_64-cygwin。
+perf = ["orjson>=3.9; sys_platform != 'cygwin' and sys_platform != 'msys'"]
 # HTTP/2 支持（配置 enable_http2 生效前提）
 http2 = ["h2>=4"]
 dev = [
@@ -36,10 +39,11 @@ dev = [
     "pytest-asyncio",
     "pytest-xdist",
     "pytest-cov>=5",
-    "ruff>=0.3",
+    # Cygwin / MSYS2：ruff 是 Rust 二进制，该平台无 wheel，maturin 不支持 x86_64-cygwin
+    "ruff>=0.3; sys_platform != 'cygwin' and sys_platform != 'msys'",
     "mypy>=1.8",
     "pre-commit>=3.5",
-    "orjson>=3.9",
+    "orjson>=3.9; sys_platform != 'cygwin' and sys_platform != 'msys'",
     "h2>=4",
     "tomli>=2.0; python_version < '3.11'",
 ]

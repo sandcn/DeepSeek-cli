@@ -17,5 +17,12 @@ tomli==2.4.1; python_version < "3.11"
 
 # 静态检查 / 提交钩子：已在本环境实测安装（ruff 0.17 起 `[tool.ruff.format]`
 # 不再支持 `indent-width`，须锁定版本避免配置解析随版本漂移而失败）
-ruff==0.17.1
-pre-commit==4.7.0
+#
+# Cygwin / MSYS2：ruff 是 Rust 二进制，该平台无 wheel，构建后端 maturin 不支持
+# x86_64-cygwin → 用标记跳过（lint 由 CI / Linux 环境承担）。
+ruff==0.17.1; sys_platform != "cygwin" and sys_platform != "msys"
+
+# pre-commit 4.4 起要求 Python ≥3.10、4.7 起要求 ≥3.11；3.9 锁最后一个兼容
+# 版本 4.3.0，否则 pip 在 Python 3.9 上直接 "No matching distribution found"。
+pre-commit==4.7.0; python_version >= "3.11"
+pre-commit==4.3.0; python_version < "3.11"

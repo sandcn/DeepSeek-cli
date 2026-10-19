@@ -212,3 +212,11 @@ async def test_keys_pty_control_char_has_no_warning(monkeypatch, pty_writes):
     result = await _run_keys(_record(mode="pty"), "ctrl+c")
     assert pty_writes == [(9, b"\x03")]
     assert "不是终端" not in result
+
+
+async def test_keys_pty_ctrl_c_note_mentions_conpty_and_kill(monkeypatch, pty_writes):
+    """ConPTY 下 Ctrl+C 只能尽力而为：提示必须给出 kill 兜底（实测部分程序可中断）。"""
+    _set_probe(monkeypatch, False)
+    result = await _run_keys(_record(mode="pty"), "ctrl+c")
+    assert "ConPTY" in result
+    assert "op=kill" in result

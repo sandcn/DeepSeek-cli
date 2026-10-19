@@ -103,6 +103,42 @@ def test_format_result_detects_english_separator_error():
     assert "环境提示" in payload["stderr"]
 
 
+def test_format_result_appends_reserved_redirect_hint():
+    """PowerShell 5.1 拒绝 ``1>&2`` 时附上可用写法。
+
+    回归场景：`... 1>&2` 在 5.1 里是解析错误（「1>&2 运算符是为将来使用
+    而保留的」），整条命令不执行；此前 stderr 只有这句原始错误，模型容易
+    反复重试同一条写法。
+    """
+    stderr = (
+        "所在位置 C:\\tmp\\dsh-bash-x.ps1:16 字符: 96\n"
+        "+ ... onds 1; Write-Output \"line2\"; Write-Output (\"err\" ) 1>&2; Write- ...\n"
+        "+                                                              ~~~~\n"
+        "“1>&2”运算符是为将来使用而保留的。\n"
+        "    + CategoryInfo          : ParserError: (:) [], "
+        "ParentContainsErrorRecordException\n"
+        "    + FullyQualifiedErrorId : RedirectionNotSupported"
+    )
+    payload = json.loads(BashFunc._format_result(
+        {"stdout": "", "stderr": stderr, "returncode": 1}))
+    assert "环境提示" in payload["stderr"]
+    assert "Windows PowerShell 5.1" in payload["stderr"]
+    assert "cmd /c" in payload["stderr"]
+    assert "2> err.txt" in payload["stderr"]
+    # 不应把 && / || 的提示串到重定向错误上
+    assert "语句分隔符" not in payload["stderr"]
+
+
+def test_format_result_detects_english_reserved_redirect():
+    """英文系统下的 ``1>&2`` 解析错误同样给出提示。"""
+    payload = json.loads(BashFunc._format_result(
+        {"stdout": "",
+         "stderr": "The '1>&2' operator is reserved for future use.",
+         "returncode": 1}))
+    assert "环境提示" in payload["stderr"]
+    assert "cmd /c" in payload["stderr"]
+
+
 # ── 2. 端到端：管道输入无 BOM、编码统一 ─────────────────
 
 @requires_powershell

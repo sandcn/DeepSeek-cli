@@ -743,9 +743,9 @@ class BashFunc(Func):
                                 "代价：PTY 只有一条输出流，stdout / stderr 物理合并（stderr 恒为空）——"
                                 "需要分离双流时才用默认 PIPE 模式。"
                                 "交互式后台任务（如 python 交互、ssh、REPL）建议 background=true 且 pty=true。"
-                                "★ 平台限制：Windows ConPTY 下 ctrl+c（写入 \\x03）不会中断运行中的进程"
-                                "（系统行为，实测 GenerateConsoleCtrlEvent 对伪控制台也无效）——"
-                                "需要终止任务请用 bash_opt op=kill。"
+                                "★ 平台限制：Windows ConPTY 下 ctrl+c（写入 \\x03）对部分程序可中断"
+                                "（实测可中断 Python 的 time.sleep），但不保证所有程序都响应——"
+                                "进程无响应时请用 bash_opt op=kill 终止任务。"
                             )
                         }
                     },
@@ -869,6 +869,16 @@ class BashFunc(Func):
         "not a valid statement separator",
     )
 
+    #: PowerShell 5.1 拒绝「把其它流重定向到 stderr」（``1>&2`` / ``3>&2`` 这类）
+    #: 时的错误文本片段（中英文系统均覆盖）；命中后追加可用写法。
+    #: 5.1 只支持 ``2>&1`` / ``3>&1`` 等「合并到成功流」的方向，不像 bash
+    #: 那样允许 ``1>&2``；此前该命令直接解析失败且只回一句「保留运算符」，
+    #: 模型容易反复重试同一条写法。
+    _PS_RESERVED_REDIRECT_MARKERS: tuple[str, ...] = (
+        "运算符是为将来使用而保留的",
+        "operator is reserved for future use",
+    )
+
     @classmethod
     def _format_result(cls, res: dict) -> str:
         """把结构化执行结果 dict 组装为返回给大模型的三元 JSON 字符串。
@@ -907,15 +917,25 @@ class BashFunc(Func):
         """
         if not stderr:
             return stderr
-        if not any(marker in stderr
-                   for marker in cls._PS_STATEMENT_SEPARATOR_MARKERS):
-            return stderr
-        return stderr + (
-            "\n(环境提示：当前环境是 Windows PowerShell 5.1，`&&` / `||` 不是"
-            "有效的语句分隔符。请改用 `;` 顺序执行；需要「前一条成功才执行」"
-            "时用 `if ($?) { ... }`；确需在 cmd 内组合时写成 "
-            "`cmd /c \"a && b\"`（引号内由 cmd 解释）)"
-        )
+        if any(marker in stderr
+               for marker in cls._PS_STATEMENT_SEPARATOR_MARKERS):
+            return stderr + (
+                "\n(环境提示：当前环境是 Windows PowerShell 5.1，`&&` / `||` 不是"
+                "有效的语句分隔符。请改用 `;` 顺序执行；需要「前一条成功才执行」"
+                "时用 `if ($?) { ... }`；确需在 cmd 内组合时写成 "
+                "`cmd /c \"a && b\"`（引号内由 cmd 解释）)"
+            )
+        if any(marker in stderr
+               for marker in cls._PS_RESERVED_REDIRECT_MARKERS):
+            return stderr + (
+                "\n(环境提示：当前环境是 Windows PowerShell 5.1，不支持把标准输出"
+                "重定向到标准错误（`1>&2` / `3>&2` 这类写法；5.1 只支持 `2>&1` "
+                "等合并到成功流的方向）。可改用由 cmd 解释该重定向："
+                "`cmd /c \"... 1>&2\"`；或把输出写到 stderr："
+                "`... | ForEach-Object { [Console]::Error.WriteLine($_) }`；"
+                "只需保留错误日志时直接写文件：`... 2> err.txt`)"
+            )
+        return stderr
 
     @staticmethod
     def _error_result(message: str) -> str:

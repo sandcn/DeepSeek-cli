@@ -9,7 +9,12 @@
 1. ``requirements.txt`` / ``requirements-dev.txt`` 存在且可解析；
 2. ``pyproject`` 的必需依赖全部出现在 ``requirements.txt``；
 3. ``pyproject`` 的 dev 分组依赖全部出现在 ``requirements-dev.txt``；
-4. 两个文件中的直接依赖都带版本约束（``==`` 或 ``>=``）。
+4. 两个文件中的直接依赖都带版本约束（``==`` 或 ``>=``）；
+5. Cygwin / MSYS2 上不可安装的依赖（``orjson`` / ``psutil`` / ``ruff``）在
+   ``requirements*.txt`` 与 ``pyproject`` 中都带 ``sys_platform`` 标记——否则
+   ``pip install -r requirements-dev.txt`` 在这些平台解析阶段即失败；
+6. ``pre-commit`` 的锁定按 Python 版本分支，覆盖 3.9–3.13（4.4 起要求 ≥3.10、
+   4.7 起要求 ≥3.11，单一 pin 会让 3.9 上「找不到可安装版本」）。
 """
 
 from __future__ import annotations
@@ -190,3 +195,94 @@ def test_pillow_pin_matches_installed_pillow():
         f"Pillow 锁定 {mismatched} 与实际安装 {installed} 不一致"
         "（当前 Python 下的锁定必须可直接安装）"
     )
+
+
+# ── 平台标记守卫 ─────────────────────────────────────────────
+#: Cygwin / MSYS2 上没有任何可安装发行版的依赖：orjson / ruff 是 Rust 扩展
+#: （无该平台 wheel，maturin 报 "Unsupported platform: x86_64-cygwin"），
+#: psutil 上游 setup.py 直接拒绝 cygwin（"platform cygwin is not supported"）。
+#: 它们必须带 ``sys_platform`` 标记，否则本机 ``pip install -r requirements*.txt``
+#: 在解析 / 构建阶段就会失败。
+_CYGWIN_UNSUPPORTED = ("orjson", "psutil", "ruff")
+
+#: pip 支持安装本项目的 Python 版本（与 pyproject 的 requires-python 及 CI 矩阵一致）。
+_SUPPORTED_PYTHONS = ("3.9", "3.10", "3.11", "3.12", "3.13")
+
+
+def _marker_of(requirement_line: str):
+    """返回依赖行中的环境标记（无标记返回 ``None``）。"""
+    if ";" not in requirement_line:
+        return None
+    try:
+        from packaging.markers import Marker
+    except ModuleNotFoundError:  # pragma: no cover - 环境缺 packaging（pytest 传递依赖）
+        pytest.skip("需要 packaging 解析环境标记")
+    return Marker(requirement_line.split(";", 1)[1].strip())
+
+
+def test_cygwin_unsupported_deps_are_excluded_by_marker():
+    """orjson / psutil / ruff 必须用 ``sys_platform`` 标记跳过 Cygwin / MSYS2。"""
+    checked: set[str] = set()
+    for path in (_REQUIREMENTS, _REQUIREMENTS_DEV):
+        for line in _raw_requirement_lines(path):
+            name = _requirement_name(line)
+            if name not in _CYGWIN_UNSUPPORTED:
+                continue
+            marker = _marker_of(line)
+            assert marker is not None, f"{path.name}: {line!r} 缺少平台标记（Cygwin 无法安装）"
+            for platform in ("cygwin", "msys"):
+                assert marker.evaluate({"sys_platform": platform}) is False, (
+                    f"{path.name}: {line!r} 在 {platform} 上仍会被安装，pip 将直接失败"
+                )
+            for platform in ("linux", "win32", "darwin"):
+                assert marker.evaluate({"sys_platform": platform}) is True, (
+                    f"{path.name}: {line!r} 不该在 {platform} 上被跳过"
+                )
+            checked.add(name)
+    assert checked == set(_CYGWIN_UNSUPPORTED), (
+        f"依赖锁定文件缺少以下包: {sorted(set(_CYGWIN_UNSUPPORTED) - checked)}"
+    )
+
+
+def test_pyproject_marks_cygwin_unsupported_deps():
+    """``pyproject`` 的同类依赖也必须带标记（``pip install .`` / ``.[dev]`` 同一路径）。"""
+    project = _pyproject()["project"]
+    groups = [project.get("dependencies", [])]
+    groups.extend(project.get("optional-dependencies", {}).values())
+    checked: set[str] = set()
+    for deps in groups:
+        for dep in deps:
+            name = _requirement_name(dep)
+            if name not in _CYGWIN_UNSUPPORTED:
+                continue
+            marker = _marker_of(dep)
+            assert marker is not None, f"pyproject: {dep!r} 缺少平台标记（Cygwin 无法安装）"
+            assert marker.evaluate({"sys_platform": "cygwin"}) is False, (
+                f"pyproject: {dep!r} 在 cygwin 上仍会被安装，pip 将直接失败"
+            )
+            assert marker.evaluate({"sys_platform": "msys"}) is False, (
+                f"pyproject: {dep!r} 在 msys 上仍会被安装，pip 将直接失败"
+            )
+            checked.add(name)
+    assert checked == set(_CYGWIN_UNSUPPORTED), (
+        f"pyproject 缺少以下包的平台标记: {sorted(set(_CYGWIN_UNSUPPORTED) - checked)}"
+    )
+
+
+def test_pre_commit_pin_covers_supported_python_versions():
+    """pre-commit 锁定必须按 Python 版本分支，每个受支持版本恰好命中一条。"""
+    lines = [
+        line
+        for line in _raw_requirement_lines(_REQUIREMENTS_DEV)
+        if _requirement_name(line) == "pre-commit"
+    ]
+    assert lines, "requirements-dev.txt 缺少 pre-commit 锁定"
+    for version in _SUPPORTED_PYTHONS:
+        active = []
+        for line in lines:
+            marker = _marker_of(line)
+            if marker is None or marker.evaluate({"python_version": version}):
+                active.append(line)
+        assert len(active) == 1, (
+            f"Python {version} 下 pre-commit 锁定应恰好 1 条，实际 {len(active)} 条: {active}"
+        )

@@ -227,6 +227,29 @@ async def test_locate_text_matches_cjk_phrase_split_into_single_chars(monkeypatc
     assert (match["screen_center_x"], match["screen_center_y"]) == (124, 62)
 
 
+async def test_locate_text_similar_match_warns_review(monkeypatch, tmp_path):
+    """中文 OCR 错字（「钮」→「田」）用相似度兜底命中，并提示复核。
+
+    实测：Windows 系统 OCR 把「确定取消按钮」拆成单字且认错一个字，此前
+    精确 / 易混字符匹配全部落空（locate 报未命中）。
+    """
+    shot = _make_png(tmp_path / "shot.png", 200, 60)
+    _patch_shot(monkeypatch, shot)
+    monkeypatch.setattr(BashOptFunc, "_window_frame_for", _fake_frame)
+    boxes = [TextBox(ch, 10 + index * 20, 8, 18, 22)
+             for index, ch in enumerate("确定取消按田")]
+    monkeypatch.setattr(bash_opt_module, "recognize_text",
+                        lambda path, lang=None: list(boxes))
+    func = BashOptFunc(task_id="bg-1", op="locate", query="确定取消按钮")
+    func.set_agent(_FakeAgent({"bg-1": _record()}))
+    payload = json.loads(await func.execute())
+    assert payload["match_mode"] == "similar"
+    assert payload["recognized"] == 6
+    assert payload["returned"] == 1
+    assert "相似度" in payload["note"] and "复核" in payload["note"]
+    assert payload["matches"][0]["text"] == "确 定 取 消 按 田"
+
+
 # ── 未命中时的诊断信息 ──────────────────────────────────
 
 async def test_locate_text_without_match_reports_recognized_texts(monkeypatch, tmp_path):
@@ -307,3 +330,60 @@ async def test_locate_text_reports_exact_match_mode(monkeypatch, tmp_path):
     assert payload["returned"] == 1
     assert payload["match_mode"] == "exact"
     assert "note" not in payload
+
+
+# ── OCR 语言（ocr_lang） ────────────────────────────────
+
+def test_schema_exposes_ocr_lang():
+    params = BashOptFunc.to_tool_schema()["function"]["parameters"]
+    assert params["properties"]["ocr_lang"]["type"] == "string"
+    assert "ocr_lang" in params["properties"]["op"]["description"]
+
+
+async def test_locate_text_passes_ocr_lang(monkeypatch, tmp_path):
+    """ocr_lang 必须透传给 OCR 后端，并在结果里如实回显。"""
+    shot = _make_png(tmp_path / "shot.png", 120, 40)
+    _patch_shot(monkeypatch, shot)
+    seen = {}
+
+    def _recognize(path, lang=None):
+        seen["lang"] = lang
+        return [TextBox("确定", 0, 0, 20, 12)]
+
+    monkeypatch.setattr(bash_opt_module, "recognize_text", _recognize)
+    func = BashOptFunc(task_id="bg-1", op="locate", query="确定",
+                       ocr_lang="zh-Hans-CN")
+    func.set_agent(_FakeAgent({"bg-1": _record()}))
+    payload = json.loads(await func.execute())
+    assert seen["lang"] == "zh-Hans-CN"
+    assert payload["ocr_lang"] == "zh-Hans-CN"
+    assert payload["returned"] == 1
+
+
+async def test_locate_text_without_match_hints_ocr_lang(monkeypatch, tmp_path):
+    """未命中且未指定语言时提示可用 ocr_lang（本机语言包可能不匹配）。"""
+    shot = _make_png(tmp_path / "shot.png", 120, 40)
+    _patch_shot(monkeypatch, shot)
+    monkeypatch.setattr(bash_opt_module, "recognize_text",
+                        lambda path, lang=None: [TextBox("开机", 0, 0, 20, 12)])
+    func = BashOptFunc(task_id="bg-1", op="locate", query="OK")
+    func.set_agent(_FakeAgent({"bg-1": _record()}))
+    payload = json.loads(await func.execute())
+    assert payload["matches"] == []
+    assert "ocr_lang" in payload["hint"]
+    assert "zh-Hans-CN" in payload["hint"]
+
+
+async def test_locate_text_with_lang_omits_language_hint(monkeypatch, tmp_path):
+    """已指定 ocr_lang 时不再重复提示切换语言（避免误导）。"""
+    shot = _make_png(tmp_path / "shot.png", 120, 40)
+    _patch_shot(monkeypatch, shot)
+    monkeypatch.setattr(bash_opt_module, "recognize_text",
+                        lambda path, lang=None: [TextBox("开机", 0, 0, 20, 12)])
+    func = BashOptFunc(task_id="bg-1", op="locate", query="OK",
+                       ocr_lang="zh-Hans-CN")
+    func.set_agent(_FakeAgent({"bg-1": _record()}))
+    payload = json.loads(await func.execute())
+    # 基础 hint 始终存在（坐标用法说明），但不应再出现「切换语言」建议
+    assert "ocr_lang 指定语言" not in payload["hint"]
+    assert "未命中查询文字" not in payload["hint"]

@@ -8,11 +8,19 @@ Windows 10 1809+ 的 ConPTY（``CreatePseudoConsole``），让子进程获得一
 真正的伪终端：行缓冲、彩色输出、进度条、stdin 按终端语义解析
 （交互式程序可读、TUI 可用）。
 
-已知平台限制（实测）：Windows ConPTY 下向输入管道写入 ``\\x03`` **不会**让
-正在运行的程序收到 ``CTRL_C_EVENT``（``cmd`` 会取消当前输入行，但如 ``ping`` /
-``sleep`` 这类运行中的进程不受影响；``GenerateConsoleCtrlEvent`` 对伪控制台
-进程组发送 ``CTRL_C_EVENT`` 同样无效，只有 ``CTRL_BREAK_EVENT`` 能终止）。
-因此"中断任务"请用 ``bash_opt op=kill``——本模块不承诺 Ctrl+C 的 SIGINT 语义。
+已知平台限制（2026-10-20 在 Windows 11 26220 的 ConPTY 上复测，结论与旧版
+描述不同）：向输入管道写入 ``\\x03`` 时，**部分程序会收到 Ctrl+C**——实测
+``python -i -q`` 中运行中的 ``time.sleep(120)`` 被 ``KeyboardInterrupt``
+中断；但并非所有程序都响应（``cmd`` 可能只是取消当前输入行，
+``GenerateConsoleCtrlEvent`` 对伪控制台进程组发送 ``CTRL_C_EVENT`` 也不可靠）。
+因此 Ctrl+C 只能「尽力而为」，不能保证中断所有程序；任务无响应时请用
+``bash_opt op=kill``（杀进程树，带杀后校验），不要依赖 Ctrl+C。
+
+另外，PTY **没有真正的 EOF 语义**：``bash_opt op=close_stdin`` 在 PTY 上只是
+写入 EOT（ConPTY 为 ``\\x1a`` / POSIX 为 ``\\x04``）模拟按键，程序不一定会退出
+（实测 ``python -i -q`` 收到 EOT 后仍继续运行）。依赖 stdin EOF 才输出 / 退出
+的命令请用默认 PIPE 模式（``pty=false``）启动任务再 ``close_stdin``；需要结束
+PTY 任务请用 ``op=kill``。
 
 代价（由调用方在工具文档中说明）：PTY 只有一个输出流，stdout/stderr
 **物理合并**（``stderr`` 恒为空）——这是终端的固有语义，无法在 ConPTY 层

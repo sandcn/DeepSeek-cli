@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import locale
 import logging
@@ -174,7 +175,8 @@ def find_text(boxes: Sequence[TextBox], needle: str, *,
 
     先做「单框包含」匹配；没有命中时按行把相邻词拼成短语再匹配（OCR 常把
     一句话拆成多个词，如把 ``保存 文件`` 拆成两框）。仍无命中时按
-    :func:`find_text_ex` 的近似匹配（易混字符归一化）再试一次。
+    :func:`find_text_ex` 的近似匹配再试：先折叠易混字符 / 分隔符，最后对
+    含中文的查询做相似度匹配（中文 OCR 错字兜底）。
     """
     matches, _mode = find_text_ex(boxes, needle, case_sensitive=case_sensitive)
     return matches
@@ -195,18 +197,54 @@ _CONFUSABLE_FOLD = {
 }
 
 
+#: 近似匹配时忽略的「分隔符」：OCR 常把下划线认成破折号 / 连字符 / 点号，
+#: 或把 ``a_b`` 识别成 ``a b``（实测 Windows 系统 OCR 把 ``bash_opt`` 识别成
+#: ``bash—opt``，精确匹配与易混字符折叠都命中不了）。折叠时直接丢弃，
+#: 使 ``bash_opt`` 与 ``bash—opt`` / ``bash opt`` / ``Bash-Opt`` 等价。
+_SEPARATOR_FOLD = frozenset("_-—–·•.．、 　\t")
+
+#: 相似度近似匹配（中文错字兜底）的查询最小长度与阈值。
+#: Windows 系统 OCR 对中文按单字拆框且会认错字（实测把「钮」认成「田」，
+#: 整句「确定取消按钮」因此精确 / 易混字符匹配全部落空）；这类错字无法用
+#: 字符级易混表穷举，改用「同一行拼接文本的相似度」兜底。要求至少 3 个
+#: 字符且相似度 >= 0.8，避免短查询 / 无关文本误命中。
+_SIMILAR_MIN_CHARS = 3
+_SIMILAR_RATIO = 0.8
+
+
+def _similar_length_slack(length: int) -> int:
+    """相似度匹配允许候选比查询多出的字符数（长度 12 以内为 2）。"""
+    return max(2, length // 4)
+
+
 def _fold_confusables(text: str) -> str:
-    """把易混字符折叠为规范字符（同时转小写，仅用于近似匹配）。"""
-    return "".join(_CONFUSABLE_FOLD.get(ch, ch) for ch in text.lower())
+    """把易混字符折叠为规范字符，并忽略分隔符（仅用于近似匹配）。
+
+    折叠内容包括：易混字形（``l`` / ``I`` / ``1`` 等，见
+    :data:`_CONFUSABLE_FOLD`）、大小写与分隔符（下划线 / 破折号 / 点号 /
+    空白，见 :data:`_SEPARATOR_FOLD`）。因此 ``bash_opt`` 能命中 OCR 识别出
+    的 ``bash—opt`` / ``bash opt`` / ``Bash-Opt``。
+    """
+    return "".join(
+        _CONFUSABLE_FOLD.get(ch, ch)
+        for ch in text.lower()
+        if ch not in _SEPARATOR_FOLD
+    )
 
 
 def find_text_ex(boxes: Sequence[TextBox], needle: str, *,
                  case_sensitive: bool = False) -> tuple[list[TextBox], str]:
     """按文本查找文本框，返回 ``(匹配列表, 匹配方式)``。
 
-    匹配方式 ``"exact"`` 表示原样（含跨词短语）命中；``"fuzzy"`` 表示精确
-    匹配失败后**折叠易混字符**才命中——调用方应把它当成「近似定位」，用
-    截图 / 标注复核坐标后再点击。
+    匹配方式：
+
+      - ``"exact"``：原样（含跨词短语）命中，或完全没命中；
+      - ``"fuzzy"``：精确匹配失败后**折叠易混字符 / 分隔符**才命中；
+      - ``"similar"``：前两者都失败后，按同一行文本的**相似度**命中
+        （中文 OCR 错字兜底，见 :func:`_similar_phrase_matches`）。
+
+    ``fuzzy`` / ``similar`` 都属于「近似定位」，调用方应提示用户用截图 /
+    标注复核坐标后再点击。
 
     近似匹配要求查询至少 2 个字符（单字符折叠后几乎无敌，误匹配概率过高），
     且只在 ``case_sensitive=False`` 时启用（折叠会转小写，与大小写敏感冲突）。
@@ -246,6 +284,11 @@ def find_text_ex(boxes: Sequence[TextBox], needle: str, *,
         _phrase_matches(boxes, folded_target, False, fold=True))
     if fuzzy_phrase:
         return fuzzy_phrase, "fuzzy"
+    # 最后一道兜底：中文 OCR 错字（「钮」→「田」）无法靠字符折叠命中，
+    # 用同一行文本的相似度定位（仅在查询含 CJK 且足够长时启用）。
+    similar = _suppress_contained(_similar_phrase_matches(boxes, query))
+    if similar:
+        return similar, "similar"
     return [], "exact"
 
 
@@ -337,6 +380,65 @@ def _union(boxes: Sequence[TextBox]) -> TextBox:
         left=left, top=top, width=right - left, height=bottom - top,
         confidence=confidence,
     )
+
+
+def _contains_cjk(text: str) -> bool:
+    """文本是否含中日韩统一表意文字（CJK 各扩展区）。"""
+    for ch in text:
+        if ("\u3400" <= ch <= "\u4dbf" or "\u4e00" <= ch <= "\u9fff"
+                or "\uf900" <= ch <= "\ufaff"):
+            return True
+    return False
+
+
+def _similar_phrase_matches(boxes: Sequence[TextBox], target: str) -> list[TextBox]:
+    """按行拼接后做「相似度」近似匹配（中文 OCR 错字的兜底）。
+
+    与 :func:`_phrase_matches` 的区别：那里要求查询是候选文本的**子串**
+    （允许易混字符 / 分隔符折叠），只能覆盖「多认 / 少认 / 认成近形字母」；
+    这里用 ``difflib.SequenceMatcher`` 比较整段文本的相似度，能覆盖「认成
+    另一个汉字」——实测 Windows 系统 OCR 把「确定取消按钮」识别成
+    「确」「定」「取」「消」「按」「田」，6 个字错 1 个（相似度 5/6 ≈ 0.83），
+    精确与易混字符匹配都命中不了。
+
+    ★ 只在查询含 CJK 且折叠后长度 >= :data:`_SIMILAR_MIN_CHARS` 时启用，
+    并要求相似度 >= :data:`_SIMILAR_RATIO`：短查询（如两个汉字）或低相似度
+    一律不返回，避免把画面里无关文字当成命中。
+
+    Args:
+        boxes: OCR 文本框列表。
+        target: 查询文本（先做与近似匹配一致的归一化：大小写 / 分隔符 / 易混字符）。
+
+    Returns:
+        命中的合并包围盒（按相似度从高到低排序，已去掉被完全包含的重复框）。
+    """
+    normalized_target = _fold_confusables(target)
+    if len(normalized_target) < _SIMILAR_MIN_CHARS:
+        return []
+    if not _contains_cjk(normalized_target):
+        return []
+    slack = _similar_length_slack(len(normalized_target))
+    hits: list[tuple[float, TextBox]] = []
+    for line in _group_lines(boxes):
+        ordered = sorted(line, key=lambda item: item.left)
+        count = len(ordered)
+        for start in range(count):
+            compact = ""
+            for end in range(start, count):
+                compact += ordered[end].text
+                candidate = _fold_confusables(compact)
+                if len(candidate) < len(normalized_target):
+                    continue
+                if len(candidate) > len(normalized_target) + slack:
+                    break
+                score = difflib.SequenceMatcher(
+                    None, normalized_target, candidate).ratio()
+                if score >= _SIMILAR_RATIO:
+                    hits.append((score, _union(ordered[start:end + 1])))
+    if not hits:
+        return []
+    hits.sort(key=lambda pair: (-pair[0], pair[1].left, pair[1].top))
+    return _suppress_contained([box for _score, box in hits])
 
 
 # ── Tesseract 后端 ──────────────────────────────────────
@@ -474,6 +576,12 @@ class WindowsOcrBackend:
             raise OcrError("PowerShell OCR 执行超时或不可用")
         output = (completed.stdout or "").strip()
         if completed.returncode == 3 or output == "null":
+            if lang:
+                raise OcrError(
+                    f"指定语言 {lang} 的 OCR 引擎不可用（系统未安装该语言的"
+                    f"OCR 语言包）：可去掉 ocr_lang 按用户配置语言识别，或在"
+                    f"「设置 → 时间和语言 → 语言」安装对应语言包"
+                )
             raise OcrError(
                 "系统 OCR 引擎不可用（未安装任何 OCR 语言包）：请在"
                 "「设置 → 时间和语言 → 语言」添加语言包，或改用 tesseract"

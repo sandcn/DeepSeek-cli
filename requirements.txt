@@ -15,6 +15,11 @@
 #
 # 由 tests/test_requirements_lock.py 守卫：pyproject 的必需依赖必须全部出现在
 # 本文件中（反向缺失同样报错）。
+#
+# ★ 平台标记（Cygwin / MSYS2）：部分依赖在该平台没有任何可安装的发行版
+#   （Rust 扩展无 wheel，或上游 setup.py 明确拒绝 cygwin），必须用
+#   `sys_platform` 标记跳过，否则 `pip install -r requirements*.txt` 在这些
+#   平台上会直接失败。代码侧均有对应降级路径（见每条目注释）。
 
 # ── 核心运行时 ────────────────────────────────────────────
 httpx==0.28.1
@@ -26,15 +31,27 @@ qrcode==8.2
 # Pillow 12 起弃用 Python 3.9、13 起弃用 3.10：3.11+ 锁最新 13.0.0，
 # 3.9/3.10 锁 9.5.0（仍保留 8.x 的 Image.LANCZOS 等旧 API；代码按
 # 8.4–13 兼容写法实现，见 src/api/image_upload.py / src/tools/read_image.py）
+#
+# Cygwin / MSYS2：9.5+ 只有源码包，构建在 jpeg 探测阶段失败（Pillow 只找
+# libjpeg.so / libjpeg.a，Cygwin 提供的是 libjpeg.dll.a），本机实测可用的
+# 是 8.4.0——它不支持 Python 3.11+，故仅在该平台的 3.9/3.10 上锁定；
+# Cygwin + 3.11+ 暂无实测可安装版本（13.0.0 仍会走源码构建）。
 Pillow==13.0.0; python_version >= "3.11"
-Pillow==9.5.0; python_version < "3.11"
+Pillow==9.5.0; python_version < "3.11" and sys_platform != "cygwin" and sys_platform != "msys"
+Pillow==8.4.0; python_version < "3.11" and (sys_platform == "cygwin" or sys_platform == "msys")
 typing-extensions==4.15.0; python_version < "3.11"
 
 # ── 可选加速（缺失时自动回退，见 pyproject optional-dependencies）──
-orjson>=3.9
+# orjson 是 Rust 扩展：Cygwin / MSYS2 无 wheel，构建后端 maturin 直接报
+# "Unsupported platform: x86_64-cygwin"，源码构建不可行 → 用标记跳过。
+# 降级路径：src/api/client_async.py 的 ImportError 分支回退标准库 json。
+orjson>=3.9; sys_platform != "cygwin" and sys_platform != "msys"
 h2==4.3.0
 
 # ── 本地环境未安装、无法实测版本：仅保留声明（不写死版本，避免锁到
 #    未经验证的版本）。联网环境首次安装后请补成 `==`。
-psutil>=5.9
+# psutil 上游 setup.py 明确拒绝 Cygwin（"platform cygwin is not supported"）
+# → 用标记跳过。降级路径：状态栏 CPU/内存（src/tui/_system_monitor.py）与
+# shell 探测（src/prompt_builder/shell_info.py）回退平台自带实现。
+psutil>=5.9; sys_platform != "cygwin" and sys_platform != "msys"
 PyYAML>=6.0

@@ -6,8 +6,9 @@
    ``stdin_closed``、清空 ``stdin_writer``）；pty 模式写 EOT（0x04）；
    重复调用 / 未就绪 / 无写端 / 关闭后继续写 stdin 都有可读提示；
    该 op 接管任务生命周期（与 stdin 一致）。
-2. ``op=stdin`` 的 ``encoding``：默认 utf-8 行为不变；gbk 等编码按指定
-   编码写出字节（含换行）；未知编码 / 不可编码字符返回可读错误且不写字节。
+2. ``op=stdin`` 的 ``encoding``：缺省按平台（Windows 取系统 ANSI 代码页，
+   中文系统 → gbk；其它平台 utf-8）；显式编码按指定值写出字节（含换行）；
+   未知编码 / 不可编码字符返回可读错误且不写字节。
 3. ``op=read`` 的 ``max_lines``：默认按 1000 行截断（保留尾部）、显式值
    生效、0 关闭行数限制、非法值回退默认，并回报 total_lines /
    returned_lines / dropped_lines。
@@ -165,6 +166,26 @@ async def test_close_stdin_pty_writes_eot(monkeypatch):
     assert "EOT" in result
 
 
+async def test_close_stdin_pty_reports_no_real_eof(monkeypatch):
+    """PTY 没有真正的 EOF：提示必须说明「程序不一定退出」并给 kill 兜底。
+
+    实测（Windows 11 26220 ConPTY）：python REPL 收到 EOT 后仍在运行，
+    调用方若以为 close_stdin 已结束任务会一直 wait 到超时。
+    """
+
+    async def _fake_write(fd, data, **kwargs):
+        return None
+
+    monkeypatch.setattr(bash_opt_module, "_write_pty_all", _fake_write)
+    agent = _FakeAgent({"bg-1": _record(mode="pty", master_fd=7)})
+
+    result = await _call(agent, op="close_stdin")
+
+    assert "没有真正的 EOF" in result
+    assert "op=kill" in result
+    assert "非 PTY" in result
+
+
 async def test_stdin_pty_uses_carriage_return(monkeypatch):
     """PTY 任务的「回车」必须是 CR（\\r）：终端里 \\n 不提交输入行。"""
     written = {}
@@ -232,14 +253,58 @@ async def test_stdin_gbk_encoding_writes_gbk_bytes():
     assert "gbk" in result
 
 
-async def test_stdin_default_stays_utf8():
+async def test_stdin_default_uses_system_ansi_codepage(monkeypatch):
+    """Windows 默认按系统 ANSI 代码页编码（中文系统 936 → gbk）。
+
+    实测：``cmd /c sort`` 用 UTF-8 写入中文时输出 ``涓�鏂囪�?``（UTF-8
+    字节被按 936 解码），默认改用 GBK 后输出正常。
+    """
+    monkeypatch.setattr(bash_opt_module, "_windows_ansi_codepage", lambda: 936)
     stdin = _FakeStdin()
     rec = _record(stdin_writer=stdin)
     agent = _FakeAgent({"bg-1": rec})
 
-    result = await _call(agent, op="stdin", text="hi")
+    result = await _call(agent, op="stdin", text="中文")
 
-    assert stdin.written == [b"hi\n"]
+    assert stdin.written == ["中文".encode("gbk") + b"\n"]
+    assert "gbk" in result
+
+
+async def test_stdin_default_is_utf8_without_ansi_codepage(monkeypatch):
+    """非 Windows（或取不到 ANSI 代码页）→ 默认仍为 utf-8。"""
+    monkeypatch.setattr(bash_opt_module, "_windows_ansi_codepage", lambda: None)
+    stdin = _FakeStdin()
+    rec = _record(stdin_writer=stdin)
+    agent = _FakeAgent({"bg-1": rec})
+
+    result = await _call(agent, op="stdin", text="中文")
+
+    assert stdin.written == ["中文".encode("utf-8") + b"\n"]
+    assert "utf-8" in result
+
+
+async def test_stdin_default_utf8_when_codepage_is_utf8(monkeypatch):
+    """系统代码页本身就是 65001（UTF-8）时默认 utf-8。"""
+    monkeypatch.setattr(bash_opt_module, "_windows_ansi_codepage", lambda: 65001)
+    stdin = _FakeStdin()
+    rec = _record(stdin_writer=stdin)
+    agent = _FakeAgent({"bg-1": rec})
+
+    await _call(agent, op="stdin", text="中文")
+
+    assert stdin.written == ["中文".encode("utf-8") + b"\n"]
+
+
+async def test_stdin_explicit_encoding_overrides_platform_default(monkeypatch):
+    """显式 encoding 始终优先于平台默认（按 UTF-8 读 stdin 的程序）。"""
+    monkeypatch.setattr(bash_opt_module, "_windows_ansi_codepage", lambda: 936)
+    stdin = _FakeStdin()
+    rec = _record(stdin_writer=stdin)
+    agent = _FakeAgent({"bg-1": rec})
+
+    result = await _call(agent, op="stdin", text="中文", encoding="utf-8")
+
+    assert stdin.written == ["中文".encode("utf-8") + b"\n"]
     assert "utf-8" in result
 
 

@@ -64,6 +64,38 @@ def test_windows_backend_roundtrip_restores_original():
     assert backend.read_text() == original
 
 
+def test_windows_backend_roundtrip_non_bmp_characters():
+    """非 BMP 字符（emoji / 生僻字）必须完整往返。
+
+    回归用例：``_write`` 曾按 ``len(text) * sizeof(c_wchar)`` 计算缓冲区，
+    而非 BMP 字符在 Python 里长度算 1、在 UTF-16 里占 2 个 code unit，
+    导致分配不足：``write_text("😀🎉中文")`` 只能读回 ``"😀🎉"``（尾部被
+    截断），``"dsh 剪贴板测试 😀"`` 的 emoji 变成替换字符。连带影响
+    ``type via='clipboard'`` 粘贴丢字、``restore_clipboard`` 把原剪贴板
+    改坏。
+    """
+    backend = WindowsClipboardBackend()
+    if not backend.supports():
+        pytest.skip("非 Windows 平台")
+    original = backend.read_text()
+    samples = [
+        "😀🎉中文",                     # emoji 在前，尾部是汉字
+        "emoji 😀 混合 text",           # ASCII / emoji / 汉字混排
+        "👨‍👩‍👧‍👦 家庭 ZWJ 序列",        # ZWJ 组合序列（多个 code unit）
+        "👍🏽 肤色修饰符",                # 修饰符（代理对）
+        "生僻字 𠮷𠀀 与 emoji 🧑‍🚀",      # 非 BMP 汉字 + ZWJ
+        "a😀b😀c😀d😀e",                # 多个 emoji 交错
+        "😀",                            # 单个 emoji
+    ]
+    try:
+        for text in samples:
+            backend.write_text(text)
+            assert backend.read_text() == text
+    finally:
+        backend.write_text(original)
+    assert backend.read_text() == original
+
+
 # ── 命令型后端 ──────────────────────────────────────────
 
 def _patch_command_backend(monkeypatch, backend, calls: list, *,

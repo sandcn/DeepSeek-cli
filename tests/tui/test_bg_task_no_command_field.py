@@ -111,7 +111,12 @@ async def test_auto_promote_json_and_record_have_no_command():
 # ── 2. bash_opt.py：read / wait ──────────────────────────
 
 async def test_bash_opt_read_and_wait_have_no_command():
-    """op=read / op=wait 返回 JSON 均无 command 键。"""
+    """op=read / op=wait 返回 JSON 均无 command 键。
+
+    这里只断言「关键字段存在且不含命令原文」；read 另有 total_lines /
+    returned_lines / max_lines 等截断元数据（见 tools 层用例），不在此处
+    绑定具体字段集合（避免脆弱的整体相等断言）。
+    """
     agent = _FakeAgent()
     tid = "bg-readwait"
     agent._background_tasks[tid] = {
@@ -123,8 +128,11 @@ async def test_bash_opt_read_and_wait_have_no_command():
     read_func = BashOptFunc(task_id=tid, op="read")
     read_func.set_agent(agent)
     read_payload = json.loads(await read_func.execute())
-    assert set(read_payload) == {"task_id", "status", "output"}
+    assert {"task_id", "status", "output"} <= set(read_payload)
+    assert "command" not in read_payload
     assert read_payload["output"] == "line1\n"
+    assert read_payload["total_lines"] == 1
+    assert read_payload["returned_lines"] == 1
 
     agent._background_tasks[tid] = {
         "task": None,
@@ -137,9 +145,9 @@ async def test_bash_opt_read_and_wait_have_no_command():
     wait_func = BashOptFunc(task_id=tid, op="wait")
     wait_func.set_agent(agent)
     wait_payload = json.loads(await wait_func.execute())
-    assert set(wait_payload) == {
-        "task_id", "status", "stdout", "stderr", "returncode",
-    }
+    assert {"task_id", "status", "stdout", "stderr", "returncode"} <= set(
+        wait_payload)
+    assert "command" not in wait_payload
     assert tid not in agent._background_tasks
 
 

@@ -196,8 +196,17 @@ class WindowsClipboardBackend:
 
     def _write(self, text: str) -> None:
         payload = to_platform_newlines(text)
+        # ★ 字节数必须按 **UTF-16 code unit** 计算，不能用 Python 字符数：
+        #   非 BMP 字符（emoji、部分生僻字）在 Python ``str`` 里长度为 1，
+        #   在 UTF-16 里占 2 个 code unit（代理对）。按 ``len(payload)``
+        #   分配会少算这些字符的空间，且 ``memmove`` 只复制 size 字节时
+        #   可能连结尾的 NUL 都写不进去——实测 ``write_text("😀🎉中文")``
+        #   后只能读回 ``"😀🎉"``，``type via='clipboard'`` 粘贴时尾部字符
+        #   被截断、``restore_clipboard`` 恢复时把原内容改坏。
+        #   显式编码成 UTF-16-LE 字节并自行补 NUL，长度即所需字节数。
+        encoded = payload.encode("utf-16-le") + b"\x00\x00"
+        size = len(encoded)
         user, kernel = self._libs()
-        size = (len(payload) + 1) * ctypes.sizeof(ctypes.c_wchar)
         handle = kernel.GlobalAlloc(GMEM_MOVEABLE, size)
         if not handle:
             raise ClipboardError("剪贴板写入失败：GlobalAlloc 无法分配内存")
@@ -206,8 +215,7 @@ class WindowsClipboardBackend:
             kernel.GlobalFree(handle)
             raise ClipboardError("剪贴板写入失败：GlobalLock 无法锁定内存")
         try:
-            ctypes.memmove(pointer, ctypes.create_unicode_buffer(payload),
-                           size)
+            ctypes.memmove(pointer, encoded, size)
         finally:
             kernel.GlobalUnlock(handle)
         self._open(user)
