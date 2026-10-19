@@ -22,6 +22,7 @@ from ._bash_support import (
     _kill_process_tree,
     kill_process_tree,  # noqa: F401  # 公开 API：bash_opt 与测试经 bash 模块导入
 )
+from ._process_output import OutputLineDecoder
 
 from ..core.constants import GREEN, RED, DIM, RESET
 from ..api.interrupt_async import is_interrupted
@@ -32,7 +33,20 @@ logger = logging.getLogger(__name__)
 try:
     import importlib.util as _importlib_util
 
-    _HAS_PTY = _importlib_util.find_spec("pty") is not None
+    # ★ Windows 修复（2026-10-20）：Windows 版 CPython 发行包同样附带
+    #   ``pty.py``（模块存在、可导入），但其内部依赖的 ``os.openpty`` /
+    #   ``fcntl`` / ``termios`` 在原生 Windows 上不存在。修复前只按「模块
+    #   是否存在」判定 → Windows 上 ``_HAS_PTY`` 恒为 True：后台任务
+    #   （``_run_interactive_async``）误走 PTY 分支，在 ``_run_pty`` 内
+    #   ``import fcntl`` 处抛 ModuleNotFoundError，后台命令直接失败
+    #   （bash_opt wait 只拿到 returncode=-1）。PTY 可用性须同时满足：
+    #   非原生 Windows + ``os.openpty`` 存在 + ``pty``/``fcntl`` 可导入。
+    _HAS_PTY = (
+        os.name != "nt"
+        and hasattr(os, "openpty")
+        and _importlib_util.find_spec("pty") is not None
+        and _importlib_util.find_spec("fcntl") is not None
+    )
 except Exception:  # pragma: no cover - 极端环境下探测失败按不可用处理
     _HAS_PTY = False
 
@@ -257,12 +271,20 @@ class BashFunc(Func):
     @staticmethod
     async def _read_loop(reader, process, lines, publish_line_fn,
                          show_output=False, is_stderr=False,
-                         kill_fn=None):
+                         kill_fn=None, decoder=None):
         """共享读取循环，消除 _run_pipe 和 _run_pty 中的重复代码（~80行×2）。
 
-        从 reader 读取字节，处理中断检测、超时/PTY EIO/超长行、
-        UTF-8 解码、\\r\\n 规范化、ANSI 剥离 + \\r 覆盖模拟（终端视角统一）
-        和行发布回调。
+        从 reader 读取字节，处理中断检测、超时/PTY EIO/超长行、**编码自适应
+        解码**（``OutputLineDecoder``）、\\r\\n 规范化、ANSI 剥离 + \\r 覆盖
+        模拟（终端视角统一）和行发布回调。
+
+        ★ 编码自适应（Windows 乱码修复，2026-10-20）：修复前此处把子进程
+        字节一律 ``decode('utf-8', errors='replace')``——Windows 原生（命令经
+        ``cmd.exe`` 执行）下 cmd 内建命令与多数控制台程序按控制台代码页
+        （简体中文 cp936/GBK）输出，UTF-8 解码失败被替换成 U+FFFD，工具卡片
+        显示乱码。现由 ``OutputLineDecoder`` 逐行自适应（UTF-8 优先 → 本机
+        代码页回退 → replace 兜底，并支持 UTF-16 宽字符流），详见
+        ``src/tools/_process_output.py``。
 
         实现说明（★ 超长行修复）：
         不使用 ``StreamReader.readline()``。readline 内部基于 readuntil，
@@ -272,8 +294,8 @@ class BashFunc(Func):
         只能读到清空后新到达的数据 → 超长行/大块无换行输出被截断
         （用户侧现象：如 ``print('X'*200000)`` 只返回前几 KB）。
 
-        改为循环 ``reader.read(CHUNK)`` 取块 + 本地 bytearray 累积，手动按
-        ``\\n`` 切行：
+        改为循环 ``reader.read(CHUNK)`` 取块 + 解码器内部缓冲累积，手动按
+        换行切分：
           - 超长行/无换行数据安全累积在本地缓冲，不受 StreamReader limit 限制；
           - ``read()`` 消费 StreamReader 缓冲后自动 ``_maybe_resume_transport``，
             避免缓冲超 limit 后 transport 暂停导致子进程写阻塞（死锁）；
@@ -289,16 +311,18 @@ class BashFunc(Func):
             is_stderr: 是否 stderr 流，控制终端输出的颜色
             kill_fn: 可选的无参回调，替代 process.kill() 用于进程树终止。
                     传入时使用自定义杀死逻辑；为 None 时回退到 process.kill()。
+            decoder: 可选的 ``OutputLineDecoder``（测试/自定义编码候选注入；
+                    省略时按本机编码新建）。每个流（stdout/stderr）独立一个。
 
         Returns:
             bool: True 表示被 ESC 中断信号打断，False 表示正常读到 EOF
         """
-        # 本地累积缓冲：跨块数据/超长行先累积，按 \n 切分后处理
-        buffer = bytearray()
+        # 本地解码器：跨块数据/超长行先在其内部缓冲，按换行切分后处理
+        decoder = decoder or OutputLineDecoder()
         interrupted = False
 
-        async def _handle_line(raw: bytes) -> None:
-            """处理一个完整行（含 \\n）或 EOF 残留（无 \\n）。
+        async def _handle_line(text: str) -> None:
+            """处理一个已解码的完整行（含 \\n）或 EOF 残留（无 \\n）。
 
             ★ 终端视角统一（返回内容与终端显示一致）：在数据源头统一
             剥离 ANSI（_strip_ansi）并兑现 \\r 覆盖语义（_simulate_terminal）
@@ -308,10 +332,9 @@ class BashFunc(Func):
             ``10%\\r20%\\r30%``）折叠为最终状态 ``30%``，不再把字面 \\r
             传给大模型，返回的行数不会多于真实终端显示。
             """
-            decoded = raw.decode('utf-8', errors='replace')
             # ★ 规范化行尾：PTY ONLCR 将 \n → \r\n，归一化为 \n，
             #   保留行内独立 \r（用于进度条）不动
-            clean = decoded.replace('\r\n', '\n')
+            clean = text.replace('\r\n', '\n')
             # ★ 先剥 ANSI 再兑现 \r 覆盖（顺序契约：_simulate_terminal 对
             #   含 ANSI 文本结果不确定，须先 _strip_ansi；与 display() 的
             #   _on_line 同一处理，此处提前到数据源头使
@@ -362,18 +385,13 @@ class BashFunc(Func):
                 raise
             if not chunk:
                 break  # EOF
-            buffer.extend(chunk)
-            # 按 \n 切分完整行（每行保留换行符）
-            while True:
-                nl = buffer.find(b'\n')
-                if nl == -1:
-                    break
-                await _handle_line(bytes(buffer[:nl + 1]))
-                del buffer[:nl + 1]
+            # 解码器按行返回（普通流按 b'\n' 切行后逐行自适应解码；
+            # UTF-16 等宽字符流整块增量解码后在文本层切行）
+            for text in decoder.feed(chunk):
+                await _handle_line(text)
         # EOF：处理残留的不完整行（超长行无尾换行 / 最后一块无 \n）
-        if buffer:
-            await _handle_line(bytes(buffer))
-            buffer.clear()
+        for text in decoder.flush():
+            await _handle_line(text)
         return interrupted
 
     # ── PIPE / PTY 执行 ────────────────────────────────

@@ -19,6 +19,7 @@ import sys
 import time
 
 from .._compat import dataclass
+from ._process_output import decode_output
 
 logger = logging.getLogger(__name__)
 
@@ -286,7 +287,10 @@ def _run_quiet(argv: list[str]) -> str:
         )
     except (OSError, subprocess.SubprocessError):
         return ''
-    return completed.stdout.decode('utf-8', errors='replace')
+    # ★ 编码自适应（Windows 乱码修复）：辅助命令（ps / taskkill 等）在
+    #   Windows 上同样按控制台代码页输出，修复前按 UTF-8 解码会得到
+    #   U+FFFD（进程树解析虽只用数字，但本地化错误文本/进程名会乱码）。
+    return decode_output(completed.stdout)
 
 
 def _read_ppid(pid: int) -> int | None:
