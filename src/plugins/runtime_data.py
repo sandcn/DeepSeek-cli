@@ -141,10 +141,12 @@ class ContextSummarizerService(Service):
         return summarize(messages_to_compress, has_prior_summary, summarize_fn, model)
 
     def build_summary_prompt(self, messages_to_compress, has_prior_summary,
-                             max_output_chars=None):
+                             summary_token_budget=None):
         from ..core.context_summarizer import build_summary_prompt
 
-        return build_summary_prompt(messages_to_compress, has_prior_summary, max_output_chars)
+        return build_summary_prompt(
+            messages_to_compress, has_prior_summary, summary_token_budget,
+        )
 
 
 class StatsService(Service):

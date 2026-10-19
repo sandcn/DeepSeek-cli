@@ -96,7 +96,7 @@ pip install ".[dev]"
     "keep_recent_messages": 0,
     "theme": "dark",
     "max_context_tokens": 1000000,
-    "summary_token_budget": 2000,
+    "summary_token_budget": 100000,
     "auto_force_compress_threshold": 600000,
     "enable_notifications": true,
     "notify_on_chat_completion": true,

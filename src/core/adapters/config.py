@@ -133,7 +133,7 @@ class MockConfigAdapter(ConfigPort):
         ))
 
     def get_summary_token_budget(self) -> int:
-        return int(self._data.get("summary_token_budget", 2000))
+        return int(self._data.get("summary_token_budget", DEFAULTS["summary_token_budget"]))
 
     def get_compaction_config(self) -> dict:
         raw = self._data.get("compaction")

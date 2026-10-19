@@ -169,7 +169,10 @@ DEFAULTS = {
     # 模型上下文窗口（tokens）——TUI 模式行行首上下文使用率百分比的分母。
     # 默认 1M（用户环境 deepseek 1M 上下文；不同模型可配置覆盖）。
     "model_context_tokens": 1000000,
-    "summary_token_budget": 2000,
+    # 摘要生成预算（tokens，默认 100k = 100000）：build_summary_prompt 按该值
+    # 折算单条消息保留字符数（budget_chars = budget * 1.5，每条下限 200
+    # 字符），避免长会话压缩时因预算过小丢失关键信息。
+    "summary_token_budget": 100000,
     "auto_force_compress_threshold": 600000,
     "enable_notifications": True,
     "notify_on_chat_completion": True,
@@ -377,7 +380,7 @@ CONFIG_KEYS = {
     "SUMMARY_TOKEN_BUDGET": {
         "rc_path": ("summary_token_budget",),
         "type": int,
-        "default": 2000,
+        "default": DEFAULTS["summary_token_budget"],
         "cacheable": True,
     },
     # token 口径（2026-10-09 用户需求：单位由字符改为 token，默认 600k）
