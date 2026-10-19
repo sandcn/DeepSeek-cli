@@ -429,6 +429,10 @@ class BashFunc(Func):
                     "禁止替代专用工具：读文件用 read、改文件用 edit、写文件用 write、搜索用 grep、找文件用 glob/ls、建目录用 mkdir。"
                     "仅当专用工具功能不足（如正则多行匹配、二进制）时才用 bash，并加注释 `# 例外原因：<原因>`。"
                     f"前台执行超过 {cls._AUTO_BG_TIMEOUT} 秒自动转后台，返回 task_id JSON，用 bash_opt 继续管理。"
+                    "后台运行强制用 bash_opt 清理：background=true（含前台超时自动转后台）返回的 task_id "
+                    "只能由 bash_opt 接管——任务结束时必须用 bash_opt wait 取走结果，不再需要时必须用 "
+                    "bash_opt kill 终止整棵进程树；禁止放任后台任务遗留运行，禁止另起命令（其他 bash 调用 / "
+                    "系统 kill / 任务管理器）清理后台任务。"
                     "禁止交互式命令（vim/top/less）；禁止 git push -f / reset --hard；"
                     "禁止 rm -rf / mkfs / dd / chmod 777 / sudo / chown。对 git 状态断言前先 git log/diff/status 验证。"
                 ),
@@ -449,6 +453,8 @@ class BashFunc(Func):
                             "description": (
                                 "是否后台执行（默认 false）。true 立即返回 task_id JSON，后台完成自动注入对话；"
                                 "false 前台执行，超 1 分钟自动转后台。"
+                                "★ 后台运行强制由 bash_opt 清理：返回的 task_id 必须用 bash_opt wait 取走结果、"
+                                "不再需要时必须用 bash_opt kill 终止进程树，不得放任后台任务遗留运行。"
                             )
                         }
                     },
