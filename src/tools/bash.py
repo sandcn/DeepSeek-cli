@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 
@@ -155,11 +156,29 @@ def _powershell_script(command: str) -> str:
     - 关闭进度流（``$ProgressPreference``）：stderr 被重定向时 PowerShell
       会把进度记录序列化成 CLIXML（``#< CLIXML <Objs ... progress ...``）
       写进 stderr，工具卡片里是一大段噪声；
-    - 错误流改 ``Stop`` + ``catch``：stderr 重定向时 PowerShell 默认把
-      错误记录也序列化成 CLIXML（``<S S="Error">...``），模型看到的
-      不是可读错误；显式捕获后按纯文本写回 stderr；
-    - 输出编码固定 UTF-8（无控制台 / 中文代码页下 PowerShell 默认按系统
-      OEM 代码页输出，工具卡片会乱码；``OutputLineDecoder`` 仍做回退兜底）；
+    - 错误流保持 PowerShell **原生 ``Continue`` 语义**（★ 关键修复，2026-10-20）：
+      修复前这里是 ``$ErrorActionPreference = 'Stop'`` + 外层 ``try/catch``
+      （动机是「stderr 重定向时错误记录会被序列化成 CLIXML」）。但 ``Stop``
+      会把**原生命令的 stderr** 也变成终止错误——``cmd /c ... 2>&1`` /
+      ``python ... 2> err.txt`` 这类重定向（模型写命令时极常见）在 Windows
+      PowerShell 5.1 里会产生 ``NativeCommandError`` 终止错误：``try/catch``
+      立刻吞掉它并 ``exit 1`` → 用户命令**中途被打断**，后续语句不执行、
+      stdout 只剩出错前那几行；换成 ``trap { continue }`` 虽能让脚本继续，
+      但管道（``cmd ... 2>&1 | Select-Object ...``）仍会整体中止、上游
+      native 命令的 stdout 全部丢失。用户侧现象就是「bash 执行命令 stdout
+      有一定机率不完整，只有几行」。
+      改回默认 ``Continue`` 后：原生命令 stderr 只是普通的**非终止**错误记录，
+      脚本与管道都按 PowerShell 自身语义继续执行，输出完整；
+    - CLIXML 噪声改由**执行方式**消除：脚本用 ``-File`` 执行（见
+      :func:`_powershell_launch_argv`）——``-File`` 模式下 PowerShell 以主机
+      文本格式把错误写 stderr（与真实控制台一致），不再序列化成 CLIXML
+      （``-EncodedCommand`` 只有临时文件不可写时才会回退使用，届时可能出现
+      CLIXML，属已知降级路径）；
+    - 输出编码与**本机代码页对齐**（:func:`_powershell_encoding_line`）：Windows
+      下设为系统 OEM 代码页——PowerShell 用它解码**原生命令**的 stdout/stderr，
+      而原生命令（Python 等）正按系统代码页写出；此前固定 UTF-8 会让
+      ``2>&1`` 合并进来的中文变成 U+FFFD（乱码）。非 Windows（pwsh）保持
+      UTF-8。工具侧 ``OutputLineDecoder`` 仍做本机代码页回退兜底；
     - 命令前重置 ``$LASTEXITCODE``，命令后按原生命令退出码退出——保持
       bash 工具「returncode = 命令退出码」的契约；命令是纯 cmdlet 时
       用 ``$?`` 兜底（PowerShell 的 cmdlet 错误默认不设置 ``$LASTEXITCODE``，
@@ -168,24 +187,120 @@ def _powershell_script(command: str) -> str:
     """
     return (
         "$ProgressPreference = 'SilentlyContinue'\n"
-        "$ErrorActionPreference = 'Stop'\n"
-        "try {\n"
-        "    try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }\n"
-        "    $global:LASTEXITCODE = 0\n"
+        "$ErrorActionPreference = 'Continue'\n"
+        f"{_powershell_encoding_line()}\n"
+        "$global:LASTEXITCODE = 0\n"
         f"{command}\n"
-        "    $ok = $?\n"
-        "    if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
-        "    if (-not $ok) { exit 1 }\n"
-        "} catch {\n"
-        "    [Console]::Error.WriteLine($_.Exception.Message)\n"
-        "    exit 1\n"
-        "}\n"
+        "$ok = $?\n"
+        "if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
+        "if (-not $ok) { exit 1 }\n"
+    )
+
+
+def _powershell_encoding_line() -> str:
+    """返回包装脚本里的「输出编码设置」语句。
+
+    ``[Console]::OutputEncoding`` 在 Windows PowerShell 里同时决定两件事：
+
+      1. PowerShell **自己**写 stdout/stderr 时用的编码；
+      2. 把**原生命令**的 stdout/stderr 转成文本（``2>&1`` / ``2> file`` /
+         管道）时**解码**它们用的编码。
+
+    原生命令按系统代码页写字节（简体中文 Windows 的 Python 输出 cp936），
+    因此这里必须跟随本机代码页，否则 ``2>&1`` 合并进来的中文会被当成 UTF-8
+    解码成 U+FFFD（用户侧「合并 stderr 后中文变乱码」）。
+
+    取 ``CultureInfo.CurrentCulture.TextInfo.OEMCodePage``（即 ``GetOEMCP``）：
+    这是原生控制台程序（cmd 内建、Python 等）实际使用的代码页。设置失败
+    （异常 / 代码页不可用）时保持 PowerShell 默认，不影响命令执行；工具侧
+    ``OutputLineDecoder`` 对本机代码页有自适应回退，两种编码都能正确还原。
+
+    非 Windows（pwsh）默认就是 UTF-8，显式设 UTF-8 保持与旧行为一致。
+    """
+    if os.name != "nt":
+        return "try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }"
+    return (
+        "try { [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding("
+        "[System.Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage) } catch { }"
     )
 
 
 def _encode_powershell_command(script: str) -> str:
     """PowerShell ``-EncodedCommand`` 参数（UTF-16LE + base64）。"""
     return base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+
+
+def _write_powershell_script_file(script: str) -> str | None:
+    """把包装脚本写入临时 ``.ps1`` 文件，返回路径（失败返回 ``None``）。
+
+    编码用 **UTF-8 with BOM**：Windows PowerShell 5.1 只有见到 BOM 才按 UTF-8
+    解析脚本，否则按 ANSI 代码页解码——命令里的中文会乱码甚至语法错误。
+    换行保持 LF（5.1 / 7.x 都接受）。
+    """
+    try:
+        fd, path = tempfile.mkstemp(prefix="dsh-bash-", suffix=".ps1")
+        with os.fdopen(fd, "w", encoding="utf-8-sig", newline="\n") as handle:
+            handle.write(script)
+        return path
+    except OSError:  # pragma: no cover - 临时目录不可写（极端环境）
+        logger.debug("写入 PowerShell 包装脚本失败，回退 -EncodedCommand", exc_info=True)
+        return None
+
+
+def _powershell_launch_argv(executable: str, script: str) -> list:
+    """PowerShell 启动 argv：优先 ``-File`` 执行包装脚本。
+
+    ``-File`` 与 ``-EncodedCommand`` 的差别（本函数选择前者的原因）：
+
+      - ``-File`` 模式下错误记录按**主机文本格式**写 stderr（与真实控制台
+        一致），不会出现 ``#< CLIXML`` 序列化块；
+      - 脚本不受 Windows 命令行 32KB 上限约束（``-EncodedCommand`` 的
+        base64 约为脚本长度的 2.7 倍，长命令会被直接拒绝执行）；
+      - 临时文件写不出来时回退 ``-EncodedCommand``（功能不变，错误可能带
+        CLIXML 序列化块）。
+
+    ``-ExecutionPolicy Bypass`` 仅在 Windows 传入：Windows PowerShell 默认
+    ``Restricted`` 会把刚写入的 ``.ps1`` 判为不可执行；该参数是**进程级**
+    设置，不改动系统执行策略（pwsh 在非 Windows 上不接受该参数）。
+    """
+    path = _write_powershell_script_file(script)
+    if path:
+        argv = [executable, "-NoLogo", "-NoProfile"]
+        if os.name == "nt":
+            argv += ["-ExecutionPolicy", "Bypass"]
+        argv += ["-File", path]
+        return argv
+    return [
+        executable,
+        "-NoLogo",
+        "-NoProfile",
+        "-EncodedCommand",
+        _encode_powershell_command(script),
+    ]
+
+
+def _script_path_from_launch(launch_arg) -> str | None:
+    """从启动 argv 中取出 ``-File`` 包装脚本的临时路径（无则 ``None``）。"""
+    if not isinstance(launch_arg, (list, tuple)):
+        return None
+    args = list(launch_arg)
+    try:
+        index = args.index("-File")
+    except ValueError:
+        return None
+    if index + 1 >= len(args):
+        return None
+    return args[index + 1]
+
+
+def _remove_script_file(path: str | None) -> None:
+    """删除 ``-File`` 模式的临时包装脚本（best-effort，绝不抛异常）。"""
+    if not path:
+        return
+    try:
+        os.remove(path)
+    except OSError:  # pragma: no cover - 已被 PowerShell 删除 / 文件被占用
+        logger.debug("删除 PowerShell 包装脚本失败: %s", path, exc_info=True)
 
 
 def _resolve_shell_launch(command: str) -> tuple:
@@ -197,7 +312,9 @@ def _resolve_shell_launch(command: str) -> tuple:
     Returns:
         ``(command_arg, use_shell, shell_name)``：
           - ``powershell``：``([pwsh/powershell, -NoLogo, -NoProfile,
-            -EncodedCommand, <base64>], False, "powershell")``；
+            (-ExecutionPolicy, Bypass,) -File, <临时脚本路径>], False,
+            "powershell")``（临时文件不可写时回退 ``-EncodedCommand``，
+            见 :func:`_powershell_launch_argv`）；
           - 其他 POSIX 系 shell（bash / zsh / fish / ksh / dash / csh /
             tcsh / nushell / xonsh / elvish / sh）：
             ``([<shell 可执行文件>, "-c", command], False, shell)``；
@@ -211,17 +328,7 @@ def _resolve_shell_launch(command: str) -> tuple:
         executable = _find_powershell_executable()
         if executable:
             script = _powershell_script(command)
-            return (
-                [
-                    executable,
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-EncodedCommand",
-                    _encode_powershell_command(script),
-                ],
-                False,
-                shell,
-            )
+            return _powershell_launch_argv(executable, script), False, shell
         logger.warning(
             "检测到 PowerShell 交互 shell，但未找到 pwsh/powershell 可执行文件，回退平台默认 shell")
     elif shell == "cmd":
@@ -591,14 +698,23 @@ class BashFunc(Func):
             except asyncio.TimeoutError:
                 continue  # 超时→回到循环头检查中断
             except OSError as e:
-                if e.errno == _errno.EIO:  # PTY slave closed → EOF
-                    break
-                raise
-            except ValueError:
-                # 防御分支：StreamReader.read() 正常不抛 ValueError
-                # （readline 的 LimitOverrunError 才抛）；reader._exception
-                # 为非 OSError 异常时避免崩溃，向上传播由上层处理。
-                raise
+                # ★ 读错误一律按「流结束」处理（2026-10-20 修复）：PTY 下
+                #   子进程退出 → EIO；PIPE 下 Windows 子进程异常退出时可能是
+                #   ERROR_BROKEN_PIPE / 连接重置（映射为 BrokenPipeError /
+                #   ConnectionResetError，errno 并非 EIO）。这些都是「流已不可
+                #   用」，已读到的数据仍然有效、尾部不会再有新数据。修复前只有
+                #   EIO 当 EOF，其余向上抛给 ``_run_pipe`` 的
+                #   ``asyncio.gather(return_exceptions=True)``——它只记一条
+                #   warning 就返回**部分** stdout/stderr（模型无法区分「命令只
+                #   输出这么多」与「读流出错丢了尾部」）。
+                logger.debug("读取输出流结束（OSError）: %s", e)
+                break
+            except Exception:
+                # 防御分支：StreamReader 上被 transport 设置了非 OSError 异常
+                # （``reader.set_exception``）时 read() 会抛出它。同样按「流结束」
+                # 处理，保证已读到的输出完整返回，而不是整段丢弃。
+                logger.debug("读取输出流异常，按结束处理", exc_info=True)
+                break
             if not chunk:
                 break  # EOF
             # 解码器按行返回（普通流按 b'\n' 切行后逐行自适应解码；
@@ -660,16 +776,21 @@ class BashFunc(Func):
         if shell_name:
             logger.debug("按交互 shell 执行命令: %s", shell_name)
 
-        process = await spawn_process(
-            launch_arg,
-            shell=use_shell,
-            stdin=asyncio.subprocess.PIPE if interactive else asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            close_fds=True,
-            env=self._get_subprocess_env(),
-            **popen_kwargs,
-        )
+        try:
+            process = await spawn_process(
+                launch_arg,
+                shell=use_shell,
+                stdin=asyncio.subprocess.PIPE if interactive else asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                close_fds=True,
+                env=self._get_subprocess_env(),
+                **popen_kwargs,
+            )
+        except BaseException:
+            # ★ PowerShell ``-File`` 模式的临时脚本：进程没能创建也要清掉
+            _remove_script_file(_script_path_from_launch(launch_arg))
+            raise
 
         # ★ Windows：创建后立即把进程加入 Job。父进程退出后 Job 成员关系
         #   仍保留，kill 时 TerminateJobObject 能杀掉 Toolhelp32 PPID 链已
@@ -724,6 +845,8 @@ class BashFunc(Func):
             raise
         finally:
             await process.wait()
+            # ★ PowerShell ``-File`` 模式的临时包装脚本：进程结束后删除
+            _remove_script_file(_script_path_from_launch(launch_arg))
 
         if _interrupted:
             return {"stdout": "", "stderr": "(命令已被中断)",
@@ -839,9 +962,10 @@ class BashFunc(Func):
                 pass_fds=(slave_fd,),
                 preexec_fn=_setup_controlling_terminal,
             )
-        except Exception:
+        except BaseException:
             os.close(master_fd)
             os.close(slave_fd)
+            _remove_script_file(_script_path_from_launch(launch_argv))
             raise
 
         # 关闭父进程中的 slave 端，确保子进程退出后
@@ -896,6 +1020,7 @@ class BashFunc(Func):
             except OSError:
                 pass
             await process.wait()
+            _remove_script_file(_script_path_from_launch(launch_argv))
 
         if _interrupted:
             return {"stdout": "", "stderr": "(命令已被中断)",
