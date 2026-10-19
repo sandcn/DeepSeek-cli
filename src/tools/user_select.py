@@ -56,6 +56,46 @@ from ..core.display_target import get_display_target
 
 _logger = logging.getLogger(__name__)
 
+
+def _interactive_stdin() -> bool:
+    """当前进程的 stdin 能否接收交互式按键（决定弹窗是否可显示）。
+
+    POSIX/Cygwin（``HAS_TERMIOS=True``）：TUI 的输入层经 select/os.read
+    读取 stdin，要求 stdin 是真实 TTY。
+
+    原生 Windows（``HAS_TERMIOS=False``）：TUI 输入改由
+    ``src.tui._win_console``（``ReadConsoleInputW`` + ``SetConsoleMode``）
+    承载，**不依赖 termios**——stdin 是控制台句柄即可交互
+    （``_win_console.supported()``）。
+
+    ★ 修复（2026-10-20，用户需求：Windows 下 user_select 弹窗必须显示）：
+    修复前 ``_execute_terminal_async`` 只要 ``HAS_TERMIOS`` 为 False 就
+    直接回退 ``non_interactive``——原生 Windows 上 termios 永远不可用，
+    即使 TUI 正在运行、可以正常读取按键（Windows 控制台后端），弹窗也
+    永远不显示（工具静默返回默认选项）。
+
+    Returns:
+        True — stdin 可交互（可以弹出选择界面）；False — 非交互环境。
+    """
+    try:
+        fd = sys.stdin.fileno()
+    except (AttributeError, ValueError, OSError, TypeError):
+        return False
+    try:
+        if os.isatty(fd):
+            return True
+    except (OSError, ValueError):
+        pass
+    if not HAS_TERMIOS:
+        # 原生 Windows：isatty 之外的兜底探测（控制台句柄可读按键）
+        try:
+            from src.tui import _win_console
+            return bool(_win_console.supported())
+        except Exception:
+            _logger.debug("user_select: Windows 控制台输入探测失败", exc_info=True)
+    return False
+
+
 class UserSelectFunc(Func):
     name = "user_select"
 
@@ -159,25 +199,12 @@ class UserSelectFunc(Func):
           3. 轮询 ``us.done``（带 deadline 超时回退）；
           4. 读取结果并清理弹窗状态。
         """
-        # Windows 回退：termios 不可用时降级为 non-interactive
-        if not HAS_TERMIOS:
+        # 非交互环境检测（POSIX：stdin 是 TTY；原生 Windows：控制台句柄
+        # 可经 ``src.tui._win_console`` 读取按键——termios 不可用不代表
+        # 无法交互，TUI 在 Windows 上由 Win32 控制台后端承载输入）。
+        if not _interactive_stdin():
             _logger.warning(
-                "user_select Windows 回退 non-interactive: title=%s",
-                self.title,
-            )
-            return json.dumps({
-                "selected": list(self.default_options or []),
-                "action": "non_interactive",
-            }, ensure_ascii=False)
-
-        # 非交互环境检测
-        try:
-            tty_ok = os.isatty(sys.stdin.fileno())
-        except (ValueError, OSError):
-            tty_ok = False
-        if not tty_ok:
-            _logger.warning(
-                "user_select 非交互回退: fd.isatty()=False, title=%s",
+                "user_select 非交互回退: stdin 不可交互, title=%s",
                 self.title,
             )
             return json.dumps({
