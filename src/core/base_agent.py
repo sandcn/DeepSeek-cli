@@ -501,12 +501,14 @@ class BaseAgent:
 
         任务被 bash_opt 工具主动消费（wait 拿到输出 / kill 终止）时，
         从 bash 任务表移除，避免 _process_background_tasks 再次把结果
-        作为用户消息重复插入对话。
+        作为用户消息重复插入对话。记录持有的 Windows Job 句柄同时关闭
+        （仅关句柄、不杀成员；kill 已在移除前完成 TerminateJobObject）。
         """
         if not hasattr(self, "_background_tasks"):
             return None
         rec = self._background_tasks.pop(task_id, None)
         if rec is not None:
+            _close_background_job(rec)
             self._publish_background_task_event()
         return rec
 
@@ -1069,10 +1071,16 @@ class BaseAgent:
                 # 非 Task 防御（异常记录）：仅当 task 具备 done() 才调用
                 if task is not None and getattr(task, "done", None) is not None and not task.done():
                     tasks_to_cancel.append(task)
-                # 收集待杀进程树 pid（pid 复用安全红线见 _should_kill_process）
+                # 收集待杀进程树 pid（pid 复用安全红线见 _should_kill_process）。
+                # 同时带上根进程创建时间（Windows；pid 被系统复用时拒绝杀）
+                # 与 Job 句柄（TerminateJobObject 覆盖 PPID 链断裂的孤儿后代）
                 pid = rec.get("pid")
                 if pid is not None and _should_kill_process(rec.get("process")):
-                    pids_to_kill.append(pid)
+                    pids_to_kill.append((
+                        pid, rec.get("pid_create_time"), rec.get("job_handle"),
+                        rec.get("descendant_pids"),
+                        rec.get("descendant_create_times"),
+                    ))
 
         # ── subagent 后台任务表（仅主 Agent 持有，SubAgent 无此表） ──
         sa = getattr(self, "_subagent_tasks", None)
@@ -1110,6 +1118,9 @@ class BaseAgent:
         # ── 清空任务表并发布计数更新（TUI 行首统计） ──
         cleared = False
         if isinstance(bg, dict) and bg:
+            # 关闭记录持有的 Job 句柄（进程已杀 / 已取消，句柄不再需要）
+            for rec in bg.values():
+                _close_background_job(rec)
             bg.clear()
             cleared = True
         if isinstance(sa, dict) and sa:
@@ -1121,6 +1132,26 @@ class BaseAgent:
 
 
 # ── 后台任务杀公共助手（ESC kill 与 SubAgent 清理共用） ──
+
+def _close_background_job(rec) -> None:
+    """关闭后台任务记录持有的 Windows Job 句柄（幂等，关闭后置空）。
+
+    只关句柄、不终止成员：kill 语义由 ``kill_process_tree`` 内的
+    ``TerminateJobObject`` 完成，这里负责记录移除时释放内核句柄，避免
+    进程内生句柄泄漏。重复调用安全（先置空再关闭）。
+    """
+    if not isinstance(rec, dict):
+        return
+    handle = rec.get("job_handle")
+    if not handle:
+        return
+    rec["job_handle"] = None
+    try:
+        from ..tools._bash_support import close_process_job
+        close_process_job(handle)
+    except Exception:  # pragma: no cover - 依赖导入链
+        _logger.debug("关闭后台任务 Job 句柄失败: %s", handle, exc_info=True)
+
 
 def _should_kill_process(process) -> bool:
     """pid 复用安全红线：仅当持有 process 对象且进程仍可能存活时才杀进程树。
@@ -1147,10 +1178,13 @@ async def _cancel_tasks_and_kill_pids(tasks_to_cancel: list, pids_to_kill: list)
     共用，统一 pid 存活判定（``_should_kill_process``）与取消等待语义，防止
     两处逻辑漂移（尤其 pid 复用安全红线判定）。
 
-    - kill_process_tree 内部同步遍历进程表（/proc 或 ps）、并在杀后做
-      校验与未死补杀（最多 3 轮尝试，每轮校验轮询上限 50ms），可能阻塞
-      数百 ms——移出事件循环线程执行（asyncio.to_thread），避免中断瞬间
-      阻塞事件循环；
+    - kill_process_tree 内部同步遍历进程表（/proc、ps 或 Windows
+      Toolhelp32）、并在杀后做校验与未死补杀（最多 3 轮尝试，每轮校验轮询
+      上限 50ms），可能阻塞数百 ms——移出事件循环线程执行
+      （asyncio.to_thread），避免中断瞬间阻塞事件循环；
+    - ``pids_to_kill`` 每项为 ``pid`` 或 ``(pid, create_time)``：后者带上
+      根进程创建时间（Windows FILETIME），供 kill_process_tree 做 pid 复用
+      防护（PID 已被系统复用时拒绝杀，避免误杀无关进程树）；
     - 取消等待带超时（5s）：被取消的后台 bash 任务可能卡在 process.wait()
       （子进程不可杀），无界等待会阻塞中断路径；进程树已杀，超时后放弃，
       残余 task 由取消流程最终完成（wait_for 超时不撤销 cancel 请求）。
@@ -1173,9 +1207,21 @@ async def _cancel_tasks_and_kill_pids(tasks_to_cancel: list, pids_to_kill: list)
             # kill_process_tree 内部会「杀后校验、未死补杀」，返回 KillResult；
             # 收集校验时仍存活的残留 PID 统一 warning，便于排查（如权限不足）。
             residual: list[int] = []
-            for pid in pids_to_kill:
+            for item in pids_to_kill:
+                if isinstance(item, tuple):
+                    pid = item[0]
+                    create_time = item[1] if len(item) > 1 else None
+                    job_handle = item[2] if len(item) > 2 else None
+                    extra_pids = item[3] if len(item) > 3 else None
+                    extra_times = item[4] if len(item) > 4 else None
+                else:
+                    pid, create_time, job_handle = item, None, None
+                    extra_pids, extra_times = None, None
                 try:
-                    result = kill_process_tree(pid)
+                    result = kill_process_tree(
+                        pid, create_time=create_time, job_handle=job_handle,
+                        extra_pids=extra_pids, extra_create_times=extra_times,
+                    )
                 except Exception:
                     _logger.debug(
                         "杀后台任务进程树失败: %s", pid, exc_info=True,

@@ -221,6 +221,11 @@ class KillResult:
         killed_pids: 各轮收集到的进程树 PID（根 + 递归后代，去重排序）。
         remaining_pids: 最后一轮校验时仍存活的 PID（空 = 已全部退出）。
         verified: 是否执行了杀后校验（``verify=False`` 时为 False）。
+        pid_reused: 记录的 PID 已被系统复用（创建时间不匹配）→ 为避免误杀
+            无关进程，**未执行**进程树杀（仅 Windows 可判定）。
+        job_remaining: 校验时 Windows Job 内仍存活的进程数（0 = Job 已清空；
+            Job 成员可能不在 ``remaining_pids`` 里——中间父进程退出后
+            Toolhelp32 链断裂，只能通过 Job 计数确认）。
     """
 
     pid: int
@@ -228,11 +233,14 @@ class KillResult:
     killed_pids: tuple[int, ...] = ()
     remaining_pids: tuple[int, ...] = ()
     verified: bool = False
+    pid_reused: bool = False
+    job_remaining: int = 0
 
     @property
     def success(self) -> bool:
-        """进程树是否已被确认全部退出（未校验时恒为 False）。"""
-        return self.verified and not self.remaining_pids
+        """进程树是否已被确认全部退出（未校验 / pid 被复用时恒为 False）。"""
+        return (self.verified and not self.remaining_pids
+                and not self.pid_reused and not self.job_remaining)
 
 
 #: 杀进程树的默认最大尝试轮数（首杀 + 校验未通过时的补杀）
@@ -362,6 +370,41 @@ def _children_map_from_ps() -> dict[int, list[int]]:
     return {}
 
 
+def _children_map_from_windows() -> dict[int, list[int]]:
+    """Windows 原生进程表（Toolhelp32）→ ``PPid → [child_pid]``。
+
+    修复根因：Windows 没有 ``/proc``，也没有原生 ``ps``——修复前
+    ``_children_map`` 在原生 Windows 上只能退回 ``ps``（通常不存在，返回
+    空表），``_collect_tree_pids`` 因此**永远只返回根 PID**，op=kill 完全
+    依赖 ``taskkill /F /T`` 的隐式树遍历。一旦根进程先退出（后台 shell
+    结束、其启动的常驻子进程成为孤儿），``taskkill /PID 根`` 找不到进程，
+    后代全部残留——用户侧现象即「bash_opt kill 不能杀死整个进程树」。
+
+    Toolhelp32 的 ``th32ParentProcessID`` 是**创建时**的父 PID，父进程退出后
+    保持不变，因此用本函数仍能定位根进程已退出后残留的孤儿后代。
+
+    收集失败（快照不可用）返回空表；调用方据此退化（杀树时由
+    ``_kill_tree_once`` 退回 ``taskkill /T`` 隐式遍历）。
+    """
+    try:
+        from . import _win_proc
+    except Exception:  # pragma: no cover - 依赖链异常（按不可用处理）
+        logger.debug("导入 _win_proc 失败", exc_info=True)
+        return {}
+    try:
+        processes = _win_proc.list_processes()
+    except Exception:  # pragma: no cover - 依赖系统调用
+        logger.debug("Windows 进程表读取失败", exc_info=True)
+        return {}
+    mapping: dict[int, list[int]] = {}
+    for pid, ppid, _name in processes:
+        if pid == ppid:
+            # 防御：异常记录（PPID 指向自身）会在 DFS 中形成自环
+            continue
+        mapping.setdefault(ppid, []).append(pid)
+    return mapping
+
+
 def _children_map() -> dict[int, list[int]]:
     """构建 ``PPid → [child_pid]`` 映射（跨平台多策略）。
 
@@ -370,10 +413,16 @@ def _children_map() -> dict[int, list[int]]:
     关系时回退 ``ps``（macOS / BSD）。``/proc`` 为慢速模拟层的平台
     （Cygwin / MSYS2，见 ``_prefer_ps_process_tree``）**直接走 ps**——
     避免进程树收集（ESC 中断热路径）被逐进程 0.17s、整表 6~8s 的
-    ``/proc/<pid>/status`` 读取阻塞。
+    ``/proc/<pid>/status`` 读取阻塞。原生 Windows 走 Toolhelp32 进程表
+    （没有 /proc；**不回退 ps**——Windows PATH 里的 ``ps`` 多为 Cygwin/Git
+    Bash 的 POSIX 实现，PID 空间与 Windows PID 不同，误用会收集到错误
+    后代甚至误杀。快照失败时返回空表，由 ``_kill_tree_once`` 退回
+    ``taskkill /T`` 兜底）。
     """
     if _prefer_ps_process_tree():
         return _children_map_from_ps()
+    if _is_windows():
+        return _children_map_from_windows()
     mapping: dict[int, list[int]] = {}
     if os.path.isdir('/proc'):
         try:
@@ -460,25 +509,18 @@ def _pid_state(pid: int) -> str | None:
 
 
 def _win_pid_alive(pid: int) -> bool:
-    """Windows 原生存活判定：``OpenProcess`` + ``GetExitCodeProcess``。"""
+    """Windows 原生存活判定：``OpenProcess`` + ``GetExitCodeProcess``。
+
+    权限不足（``ERROR_ACCESS_DENIED``）说明进程**仍然存在** → 判存活
+    （见 ``_win_proc.is_process_alive``）：修复前一律判死，杀后校验会把
+    「杀不掉的高权限进程」谎报成「无残留」。
+    """
     try:
-        import ctypes
-        from ctypes import wintypes
-    except ImportError:
-        return False
-    kernel32 = ctypes.windll.kernel32
-    process_query_limited_information = 0x1000
-    still_active = 259
-    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
-    if not handle:
-        return False
-    try:
-        code = wintypes.DWORD()
-        if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-            return code.value == still_active
-        return True
-    finally:
-        kernel32.CloseHandle(handle)
+        from . import _win_proc
+        return _win_proc.is_process_alive(pid)
+    except Exception:  # pragma: no cover - 依赖系统调用
+        logger.debug("Windows 进程存活判定失败: pid=%s", pid, exc_info=True)
+        return True  # 无法判定时保守视为存活，不谎报「已全部退出」
 
 
 def _pid_alive(pid: int) -> bool:
@@ -509,7 +551,13 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _kill_pid(pid: int) -> None:
-    """杀死单个进程（POSIX 用 SIGKILL；Windows 原生用 ``taskkill /F /T``）。"""
+    """杀死单个进程（POSIX 用 SIGKILL；Windows 原生用 ``TerminateProcess``）。
+
+    Windows 上先 ``TerminateProcess``（快、不受进程名 / 命令行转义影响），
+    失败（权限不足 / 受保护进程）才回退 ``taskkill /F /T``。已退出的 PID
+    直接跳过——否则每个已死 PID 都会额外拉起一次 ``taskkill`` 进程，杀
+    大进程树时白白多花数百毫秒（进程树杀位于 ESC 中断 / op=kill 热路径）。
+    """
     try:
         pid = int(pid)
     except (TypeError, ValueError):
@@ -517,6 +565,14 @@ def _kill_pid(pid: int) -> None:
     if pid <= 0:
         return
     if _is_windows():
+        if not _pid_alive(pid):
+            return
+        try:
+            from . import _win_proc
+            if _win_proc.terminate_process(pid):
+                return
+        except Exception:  # pragma: no cover - 依赖系统调用
+            logger.debug("TerminateProcess 失败: pid=%s", pid, exc_info=True)
         _run_quiet(['taskkill', '/F', '/T', '/PID', str(pid)])
         return
     try:
@@ -537,7 +593,11 @@ def _kill_process_group(pid: int) -> None:
 
 
 def _collect_tree_pids(root_pid: int) -> list[int]:
-    """返回整棵进程树的 PID 列表（根 + 全部后代，已去重）。"""
+    """返回整棵进程树的 PID 列表（根 + 全部后代，已去重）。
+
+    跨平台：Linux 读 ``/proc``、Cygwin 走 ``ps``、Windows 原生走 Toolhelp32
+    进程表（父 PID 是创建时的值，根进程退出后仍能定位孤儿后代）。
+    """
     descendants: list[int] = []
     _collect_descendants(root_pid, descendants)
     pids = [root_pid]
@@ -549,20 +609,115 @@ def _collect_tree_pids(root_pid: int) -> list[int]:
     return pids
 
 
-def _kill_tree_once(root_pid: int, collected: set[int] | None = None) -> list[int]:
+class ProcessTreeTracker:
+    """后台任务进程树跟踪器（跨采样累积父子关系，跨越中间层退出的断链）。
+
+    为什么需要（Windows 实测）：PPID 是「创建时的父 PID」，中间层退出后
+    链条断裂——``root shell → 已退出的子进程 → 存活的孙进程`` 时，单次
+    Toolhelp32 快照从根 PID 收集不到孙进程；Windows Job 对 Store 应用
+    （App Execution Alias，如 Store 版 python）也不保证继承。跟踪器保存
+    **历史** PPID 关系：只要在中间层存活期间采样到它一次，之后孙进程
+    （其 PPID 指向该中间层 PID）仍能被判定为后代。
+
+    采样结果分两份：
+      - ``descendants``：历史后代集合（含已退出的中间层，供链条关联）；
+      - ``observed``：**实际观察到存活**的后代 → 创建时间。kill 只杀
+        ``observed`` 中的 PID（并用创建时间防 pid 复用），已退出 / 只出现
+        在历史里的 PID 不作为杀目标，避免误杀复用了旧 PID 的新进程。
+    """
+
+    def __init__(self, root_pid: int = 0):
+        self.root_pid = int(root_pid or 0)
+        self.parents: dict[int, int] = {}
+        self.descendants: set[int] = set()
+        self.observed: dict[int, int | None] = {}
+
+    def observe(self) -> set[int]:
+        """采集一次进程表，更新历史关系并返回当前已知后代集合。"""
+        if not self.root_pid:
+            return set()
+        try:
+            from . import _win_proc
+            processes = _win_proc.list_processes()
+        except Exception:  # pragma: no cover - 依赖系统调用
+            logger.debug("进程树跟踪采样失败", exc_info=True)
+            processes = []
+        current: dict[int, int] = {}
+        for pid, ppid, _name in processes:
+            current[pid] = ppid
+            # 保留首次看到的父关系：中间层退出后，其历史 PPID 仍用于关联
+            # 后代；pid 复用由 observed 的创建时间校验兜底
+            self.parents.setdefault(pid, ppid)
+        self.descendants.add(self.root_pid)
+        changed = True
+        while changed:
+            changed = False
+            for pid, ppid in self.parents.items():
+                if pid not in self.descendants and ppid in self.descendants:
+                    self.descendants.add(pid)
+                    changed = True
+        # 只记录「当前确实存活」的后代及其创建时间（kill 目标集合）
+        for pid in current:
+            if pid in self.descendants and pid not in self.observed:
+                try:
+                    self.observed[pid] = _win_proc.process_create_time(pid)
+                except Exception:  # pragma: no cover - 依赖系统调用
+                    self.observed[pid] = None
+        return set(self.descendants)
+
+
+def _filter_reused_pids(pids, create_times) -> list[int]:
+    """过滤掉「PID 已被系统复用」的候选（无法判定时保留，交给存活判定）。"""
+    if not pids:
+        return []
+    times = create_times or {}
+    safe: list[int] = []
+    for pid in pids:
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            continue
+        create_time = times.get(pid)
+        if create_time and _pid_reused(pid, create_time):
+            logger.debug("候选进程 %s 的 PID 已被复用，跳过", pid)
+            continue
+        safe.append(pid)
+    return safe
+
+
+def _kill_tree_once(root_pid: int, collected: set[int] | None = None,
+                    extra_pids=None) -> list[int]:
     """对进程树执行一轮杀死（进程组 + 递归后代），返回本轮涉及的 PID。
 
-    先杀后代（倒序，叶方向优先）再杀根：SIGKILL 下父进程来不及再 fork
-    新子进程，且根进程最后消失便于存活校验。
+    先杀后代（倒序，叶方向优先）再杀根：SIGKILL / TerminateProcess 下父
+    进程来不及再 fork 新子进程，且根进程最后消失便于存活校验。
+
+    ``extra_pids``：任务运行期采样累积的后代（可能已脱离当前 PPID 链，
+    Toolhelp32 收集不到）——一并纳入本轮杀与校验。
+
+    Windows 特例：进程表不可用（Toolhelp32 快照失败、收集不到任何后代）时
+    退回 ``taskkill /F /T`` 的隐式树遍历——只杀根会让后代全部残留。
     """
     tree = _collect_tree_pids(root_pid)
+    if extra_pids:
+        known = set(tree)
+        for pid in extra_pids:
+            if pid not in known:
+                known.add(pid)
+                tree.append(pid)
     if collected is not None:
         collected.update(tree)
     _kill_process_group(root_pid)
     for pid in reversed(tree):
         if pid != root_pid:
             _kill_pid(pid)
-    _kill_pid(root_pid)
+    if _is_windows() and len(tree) <= 1 and not _children_map():
+        # 进程表不可用才是「收集不到后代」——用 taskkill /T 隐式遍历兜底；
+        # 快照正常但根确实无子进程时走快速的 TerminateProcess，不白拉
+        # 一个 taskkill 进程（ESC 中断热路径）。
+        _run_quiet(['taskkill', '/F', '/T', '/PID', str(root_pid)])
+    else:
+        _kill_pid(root_pid)
     return tree
 
 
@@ -577,14 +732,15 @@ def _wait_until_exit(pids: list[int],
         time.sleep(_KILL_VERIFY_POLL)
 
 
-def _kill_process_tree(pid: int) -> None:
+def _kill_process_tree(pid: int, job_handle: int | None = None) -> None:
     """杀死进程及其所有后代（**单次快速杀**，不校验、不重试）。
 
     供中断 / 读取循环等同步快路径调用（首要目标是不阻塞事件循环）；
     需要「杀后校验、未死补杀」时用公开 API :func:`kill_process_tree`。
 
-    策略：killpg 杀死进程组（shell + 前台子进程）后，递归收集全部后代
-    （后台作业、管道独立 PGID 进程）逐个补杀。跨平台（见模块内说明）。
+    策略：Windows 有 Job 句柄时先 TerminateJobObject（覆盖中间父进程已
+    退出的孤儿后代）；随后 killpg（POSIX）或 Toolhelp32 递归收集全部后代
+    （后台作业、管道独立 PGID 进程、Windows 子进程）逐个补杀。
     """
     try:
         root_pid = int(pid)
@@ -592,31 +748,169 @@ def _kill_process_tree(pid: int) -> None:
         return
     if root_pid <= 0:
         return
+    terminate_process_job(job_handle)
     _kill_tree_once(root_pid)
 
 
+def process_create_time(pid: int) -> int | None:
+    """返回进程创建时间（Windows ``FILETIME`` 100ns 计数）。
+
+    仅用于 **pid 复用防护**：后台任务启动时记录根进程创建时间（``bash.py``
+    的 ``_on_ready``），``kill_process_tree`` 杀树前比对——任务早已结束、
+    PID 被系统分配给新进程时（Windows PID 复用很快），据此拒绝杀，避免
+    「杀一个已结束的后台任务」误杀无关进程树。
+
+    非 Windows（没有统一的进程创建时间读取路径）或读不到时返回 ``None``
+    （调用方按「无法判定」处理，不启用防护，保持原行为）。
+    """
+    if not _is_windows():
+        return None
+    try:
+        from . import _win_proc
+        return _win_proc.process_create_time(pid)
+    except Exception:  # pragma: no cover - 依赖系统调用
+        logger.debug("读取进程创建时间失败: pid=%s", pid, exc_info=True)
+        return None
+
+
+def _pid_reused(pid: int, create_time: int | None) -> bool:
+    """记录过创建时间的 PID 是否已被系统复用（无法判定时返回 False）。"""
+    if not create_time or not _is_windows():
+        return False
+    try:
+        from . import _win_proc
+        return bool(_win_proc.is_pid_reused(pid, create_time))
+    except Exception:  # pragma: no cover - 依赖系统调用
+        logger.debug("pid 复用判定失败: pid=%s", pid, exc_info=True)
+        return False
+
+
+# ── Windows Job 对象（可靠的整树终止） ──────────────────
+#
+# 为什么在 Toolhelp32 之外还要 Job：PPID 链在**中间父进程退出后断裂**——
+# `根 shell → 子进程（已退出）→ 孙进程（存活）` 时，从根 PID 沿 Toolhelp32
+# 收集不到孙进程（实测：bash 后台任务由 PowerShell 启动 Python、Python 再
+# 启动常驻子进程，PowerShell/Python 退出后孙进程残留且普通收集看不到）。
+# Job 的成员关系由内核维护、父进程退出不影响，TerminateJobObject 一次杀光。
+#
+# 生命周期：进程创建后立即 create_process_job + 记录句柄；kill / 中断时
+# terminate_process_job；任务记录移除时 close_process_job（仅关句柄，不杀）。
+
+def create_process_job(pid: int) -> int | None:
+    """为刚创建的子进程 ``pid`` 创建 Job 并加入（失败 / 非 Windows → None）。
+
+    越早调用覆盖越全（进程创建后立刻加入，其后代自动成为成员）。
+    Assign 失败（父进程受 Job 限制等）时关闭句柄返回 None，调用方回退
+    Toolhelp32 + ``taskkill /T``。
+    """
+    if not _is_windows():
+        return None
+    try:
+        from . import _win_proc
+        job = _win_proc.create_job()
+        if not job:
+            return None
+        if _win_proc.assign_process_to_job(job, pid):
+            return job
+        _win_proc.close_handle(job)
+        logger.debug("AssignProcessToJobObject 失败: pid=%s", pid)
+    except Exception:  # pragma: no cover - 依赖系统调用
+        logger.debug("创建进程 Job 失败: pid=%s", pid, exc_info=True)
+    return None
+
+
+def terminate_process_job(job_handle: int | None) -> bool:
+    """终止 Job 内全部进程（无句柄 / 非 Windows 返回 False）。"""
+    if not job_handle or not _is_windows():
+        return False
+    try:
+        from . import _win_proc
+        return _win_proc.terminate_job(job_handle)
+    except Exception:  # pragma: no cover - 依赖系统调用
+        logger.debug("终止 Job 失败: %s", job_handle, exc_info=True)
+        return False
+
+
+def job_active_processes(job_handle: int | None) -> int | None:
+    """Job 内当前活动进程数（无句柄 / 非 Windows / 查询失败返回 None）。"""
+    if not job_handle or not _is_windows():
+        return None
+    try:
+        from . import _win_proc
+        return _win_proc.job_active_processes(job_handle)
+    except Exception:  # pragma: no cover - 依赖系统调用
+        logger.debug("查询 Job 活动进程数失败: %s", job_handle, exc_info=True)
+        return None
+
+
+def close_process_job(job_handle: int | None) -> None:
+    """关闭 Job 句柄（不终止成员；幂等）。"""
+    if not job_handle or not _is_windows():
+        return
+    try:
+        from . import _win_proc
+        _win_proc.close_handle(job_handle)
+    except Exception:  # pragma: no cover - 依赖系统调用
+        logger.debug("关闭 Job 句柄失败: %s", job_handle, exc_info=True)
+
+
+def _wait_job_empty(job_handle: int | None,
+                    timeout: float = _KILL_VERIFY_TIMEOUT) -> int:
+    """轮询等待 Job 内活动进程数归零；返回超时后的剩余数量（无法查询按 0）。"""
+    if not job_handle:
+        return 0
+    deadline = time.monotonic() + max(timeout, 0.0)
+    while True:
+        active = job_active_processes(job_handle)
+        if not active or time.monotonic() >= deadline:
+            return int(active or 0)
+        time.sleep(_KILL_VERIFY_POLL)
+
+
 def kill_process_tree(pid: int, *, attempts: int = KILL_MAX_ATTEMPTS,
-                      verify: bool = True) -> KillResult:
+                      verify: bool = True,
+                      create_time: int | None = None,
+                      job_handle: int | None = None,
+                      extra_pids=None,
+                      extra_create_times=None) -> KillResult:
     """杀死进程及其所有后代，**杀后校验、未死补杀**（公开 API）。
 
     供 bash_opt（op=kill）与 ESC 中断兜底调用。流程：
 
-      1. 每轮重新收集整棵进程树（进程组 + 递归后代，可捕获本轮新 fork
-         出来的后代）；
-      2. 先杀进程组（killpg），再逐个 SIGKILL 后代与根进程；
-      3. **校验**：轮询确认上述进程全部退出（僵尸视为已终止）；
-      4. 仍有存活 → **再杀一次**（最多 ``attempts`` 轮）；
-      5. 返回 :class:`KillResult`，含校验时仍存活的残留 PID。
+      1. Windows 有 Job 句柄时先 ``TerminateJobObject``（覆盖中间父进程已
+         退出、Toolhelp32 PPID 链断裂的孤儿后代）；
+      2. 每轮重新收集整棵进程树（进程组 + 递归后代，可捕获本轮新 fork
+         出来的后代），并并入运行期采样累积的 ``extra_pids``；
+      3. 先杀进程组（killpg），再逐个 SIGKILL / TerminateProcess 后代与
+         根进程；
+      4. **校验**：轮询确认上述进程全部退出（僵尸视为已终止），并确认
+         Job 内活动进程数归零；
+      5. 仍有存活 → **再杀一次**（最多 ``attempts`` 轮）；
+      6. 返回 :class:`KillResult`，含校验时仍存活的残留 PID / Job 计数。
+
+    Windows 专用的 pid 复用防护：``create_time`` 为任务启动时记录的根进程
+    创建时间，每轮杀之前比对；PID 已被系统复用时（创建时间不同）**不杀**，
+    结果标记 ``pid_reused=True``——否则会误杀恰好复用了该 PID 的新进程树。
 
     Args:
         pid: 进程树根 PID。
         attempts: 最大「收集 + 杀死 + 校验」轮数（>=1，默认 3）。
         verify: 是否执行杀后校验（``False`` 时仅杀一轮、不等待不重试，
             兼容旧的「快速杀」语义）。
+        create_time: 根进程创建时间（Windows FILETIME；``None`` 表示未记录，
+            不启用复用防护）。
+        job_handle: 创建进程时为它建立的 Windows Job 句柄（``None`` 表示
+            未启用；非 Windows 忽略）。
+        extra_pids: 任务运行期采样累积的后代 PID（可覆盖已脱离 PPID 链的
+            孤儿）；非空时一并杀与校验。
+        extra_create_times: ``extra_pids`` 对应的创建时间（pid 复用防护；
+            不匹配的候选会被跳过）。
 
     Returns:
         KillResult；``remaining_pids`` 非空表示仍有进程未杀死
-        （可能权限不足或进程处于不可中断状态）。
+        （可能权限不足或进程处于不可中断状态）；``pid_reused`` 为真表示
+        因 PID 被复用而未执行杀；``job_remaining`` 非零表示 Job 内仍有
+        活动进程。
     """
     try:
         root_pid = int(pid)
@@ -629,23 +923,46 @@ def kill_process_tree(pid: int, *, attempts: int = KILL_MAX_ATTEMPTS,
     except (TypeError, ValueError):
         rounds = KILL_MAX_ATTEMPTS
 
+    if job_handle:
+        # Job 终止是一次性、全体生效：先做一次，覆盖 Toolhelp32 收集不到的
+        # 孤儿后代（中间层已退出、PPID 链断裂）
+        terminate_process_job(job_handle)
+    safe_extra = _filter_reused_pids(extra_pids, extra_create_times)
+
     seen: set[int] = set()
     remaining: list[int] = []
+    job_remaining = 0
     used = 0
     for index in range(1, rounds + 1):
+        if _pid_reused(root_pid, create_time):
+            logger.warning(
+                "进程 %s 的 PID 已被系统复用（创建时间不匹配），跳过杀进程树",
+                root_pid,
+            )
+            return KillResult(
+                pid=root_pid,
+                attempts=used,
+                killed_pids=tuple(sorted(seen)),
+                verified=verify,
+                pid_reused=True,
+            )
         used = index
-        _kill_tree_once(root_pid, seen)
+        _kill_tree_once(root_pid, seen, safe_extra)
         if not verify:
             break
         remaining = _wait_until_exit(sorted(seen))
-        if not remaining:
+        job_remaining = _wait_job_empty(job_handle)
+        if not remaining and not job_remaining:
             break
-        logger.debug("进程树 %s 第 %d 轮杀死后仍有存活进程: %s",
-                     root_pid, index, remaining)
+        logger.debug(
+            "进程树 %s 第 %d 轮杀死后仍有存活进程（pids=%s, job=%s）",
+            root_pid, index, remaining, job_remaining,
+        )
     return KillResult(
         pid=root_pid,
         attempts=used,
         killed_pids=tuple(sorted(seen)),
         remaining_pids=tuple(remaining),
         verified=verify,
+        job_remaining=job_remaining,
     )

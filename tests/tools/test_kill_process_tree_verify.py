@@ -5,7 +5,9 @@
 
 实现要点（src/tools/_bash_support.py）：
   - 后代收集：``/proc/<pid>/status`` 的 ``PPid`` 字段（Linux / Cygwin），
-    无 ``/proc`` 平台（macOS / BSD）用 ``ps -eo pid=,ppid=`` 兜底；
+    无 ``/proc`` 平台（macOS / BSD）用 ``ps -eo pid=,ppid=`` 兜底；原生
+    Windows 用 Toolhelp32 进程表（``src/tools/_win_proc.py``，父 PID 是
+    创建时的值，根进程退出后仍能定位孤儿后代）；
   - 存活校验：``os.kill(pid, 0)`` + 状态字符判僵尸（僵尸视为已终止），
     Windows 原生用 ``OpenProcess`` / ``GetExitCodeProcess``；
   - 公开 API ``kill_process_tree(pid)`` 每轮「收集 → 杀死 → 校验」，
@@ -70,7 +72,7 @@ def test_kill_process_tree_retries_until_all_dead(monkeypatch):
     """第一轮杀完仍存活 → 自动再杀一次；第二轮全死后停止。"""
     rounds: list[int] = []
 
-    def fake_kill_once(root_pid, collected=None):
+    def fake_kill_once(root_pid, collected=None, extra_pids=None):
         rounds.append(root_pid)
         if collected is not None:
             collected.update({root_pid, root_pid + 1})
@@ -96,7 +98,7 @@ def test_kill_process_tree_reports_remaining_after_max_attempts(monkeypatch):
     """始终杀不死（如权限不足）：尝试到上限后报告残留 PID。"""
     calls: list[int] = []
 
-    def fake_kill_once(root_pid, collected=None):
+    def fake_kill_once(root_pid, collected=None, extra_pids=None):
         calls.append(root_pid)
         if collected is not None:
             collected.add(root_pid)
@@ -117,7 +119,7 @@ def test_kill_process_tree_attempts_param_limits_rounds(monkeypatch):
     """attempts=1 时只杀一轮（不补杀），仍报告残留。"""
     calls: list[int] = []
 
-    def fake_kill_once(root_pid, collected=None):
+    def fake_kill_once(root_pid, collected=None, extra_pids=None):
         calls.append(root_pid)
         if collected is not None:
             collected.add(root_pid)
@@ -137,7 +139,7 @@ def test_kill_process_tree_verify_false_single_round(monkeypatch):
     """verify=False：仅杀一轮、不校验不等待（兼容快速杀语义）。"""
     calls: list[int] = []
 
-    def fake_kill_once(root_pid, collected=None):
+    def fake_kill_once(root_pid, collected=None, extra_pids=None):
         calls.append(root_pid)
         if collected is not None:
             collected.add(root_pid)
@@ -158,7 +160,7 @@ def test_kill_process_tree_recollects_new_descendants(monkeypatch):
     """每轮重新收集后代：第二轮发现的「新 fork 后代」也被杀死并记录。"""
     rounds: list[int] = []
 
-    def fake_kill_once(root_pid, collected=None):
+    def fake_kill_once(root_pid, collected=None, extra_pids=None):
         rounds.append(root_pid)
         tree = [root_pid]
         if len(rounds) >= 2:
@@ -301,14 +303,8 @@ def test_is_windows_flag_matches_os_name():
     assert support._is_windows() is (os.name == "nt")
 
 
-def test_kill_pid_windows_invokes_taskkill(monkeypatch):
-    """Windows 原生：用 taskkill /F /T 杀整棵进程树。"""
-    calls: list[list[str]] = []
-    monkeypatch.setattr(support, "_is_windows", lambda: True)
-    monkeypatch.setattr(support, "_run_quiet",
-                        lambda argv: calls.append(argv) or "")
-    support._kill_pid(1234)
-    assert calls == [["taskkill", "/F", "/T", "/PID", "1234"]]
+# Windows 原生分支（TerminateProcess 优先 / 回退 taskkill / Toolhelp32 收集 /
+# pid 复用防护）的用例见 tests/tools/test_kill_process_tree_windows.py。
 
 
 @_POSIX_ONLY  # 用例走 os.kill + signal.SIGKILL（Windows 无 SIGKILL）

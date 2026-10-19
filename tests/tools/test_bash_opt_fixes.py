@@ -323,7 +323,8 @@ async def test_kill_then_read_reports_finished(monkeypatch):
     from src.tools._bash_support import KillResult
 
     monkeypatch.setattr("src.tools.bash_opt.kill_process_tree",
-                        lambda pid: KillResult(pid=pid, attempts=1, verified=True))
+                        lambda pid, **kwargs: KillResult(pid=pid, attempts=1,
+                                                          verified=True))
     agent = _FakeAgent({"bg-1": _record(process=None)})
     killed = await _call(agent, op="kill")
     assert "已杀死" in killed

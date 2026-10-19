@@ -55,6 +55,8 @@ def test_children_map_uses_ps_on_cygwin_and_never_reads_proc(monkeypatch):
     性能红线：逐进程读 ``/proc/<pid>/status`` 是本 bug 的根因（6~8s）。
     """
     monkeypatch.setattr(bs.sys, "platform", "cygwin")
+    # 模拟 Cygwin 的 POSIX 层（os.name == "posix"）：Windows 原生分支不参与
+    monkeypatch.setattr(bs, "_is_windows", lambda: False)
     sentinel = {1: [2, 3]}
     monkeypatch.setattr(bs, "_children_map_from_ps", lambda: sentinel)
     monkeypatch.setattr(bs.os.path, "isdir", lambda _p: True)
@@ -67,6 +69,8 @@ def test_children_map_uses_ps_on_cygwin_and_never_reads_proc(monkeypatch):
 def test_children_map_uses_proc_on_linux(monkeypatch):
     """Linux 上保持 /proc 优先（单次遍历 O(N)），且不调用 ps。"""
     monkeypatch.setattr(bs.sys, "platform", "linux")
+    # 模拟 Linux 的 os.name（Windows 原生分支不参与）
+    monkeypatch.setattr(bs, "_is_windows", lambda: False)
     monkeypatch.setattr(bs.os.path, "isdir", lambda p: p == "/proc")
     monkeypatch.setattr(bs.os, "listdir", lambda _p: ["1", "2", "3", "self", "uptime"])
     ppid_map = {1: 0, 2: 1, 3: 2}
@@ -81,6 +85,7 @@ def test_children_map_uses_proc_on_linux(monkeypatch):
 def test_children_map_falls_back_to_ps_when_proc_absent(monkeypatch):
     """``/proc`` 不可用（macOS / BSD）→ 回退 ps。"""
     monkeypatch.setattr(bs.sys, "platform", "darwin")
+    monkeypatch.setattr(bs, "_is_windows", lambda: False)
     monkeypatch.setattr(bs.os.path, "isdir", lambda _p: False)
     sentinel = {7: [8]}
     monkeypatch.setattr(bs, "_children_map_from_ps", lambda: sentinel)
@@ -109,6 +114,7 @@ def test_kill_fast_path_avoids_per_process_proc_on_cygwin(monkeypatch):
     （6~8s 阻塞事件循环），按一次 ESC 数秒无响应。
     """
     monkeypatch.setattr(bs.sys, "platform", "cygwin")
+    monkeypatch.setattr(bs, "_is_windows", lambda: False)
     monkeypatch.setattr(bs, "_children_map_from_ps", lambda: {})
     read_calls: list = []
     monkeypatch.setattr(bs, "_read_ppid", lambda pid: read_calls.append(pid))

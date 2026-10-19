@@ -1170,8 +1170,18 @@ class BashOptFunc(Func):
             target_pid = getattr(process, "pid", None)
         if target_pid is not None:
             try:
-                # 同步重试 / 校验会短暂阻塞，移出事件循环线程执行
-                result = await asyncio.to_thread(kill_process_tree, target_pid)
+                # 同步重试 / 校验会短暂阻塞，移出事件循环线程执行。
+                # create_time（Windows FILETIME）用于 pid 复用防护：任务早已
+                # 结束、PID 被系统复用时拒绝杀，避免误杀无关进程树；
+                # job_handle 用于 TerminateJobObject，覆盖 PPID 链断裂后
+                # Toolhelp32 收集不到的孤儿后代。
+                result = await asyncio.to_thread(
+                    kill_process_tree, target_pid,
+                    create_time=rec.get("pid_create_time"),
+                    job_handle=rec.get("job_handle"),
+                    extra_pids=rec.get("descendant_pids"),
+                    extra_create_times=rec.get("descendant_create_times"),
+                )
             except Exception as e:
                 logger.debug("kill 进程树异常: %s", e)
         if result is None and process is not None:
@@ -1209,15 +1219,24 @@ class BashOptFunc(Func):
             return f"(已杀死后台任务 {self.task_id} 及其所有进程树)"
         remaining = tuple(getattr(result, "remaining_pids", ()) or ())
         attempts = int(getattr(result, "attempts", 0) or 0)
+        if getattr(result, "pid_reused", False):
+            return (f"(未杀死后台任务 {self.task_id}：记录的 PID "
+                    f"{getattr(result, 'pid', 0)} 已被系统复用"
+                    f"（创建时间不匹配），为避免误杀无关进程已跳过进程树杀)")
         if not getattr(result, "verified", False):
             return (f"(已杀死后台任务 {self.task_id} 及其所有进程树"
                     f"（{attempts} 轮尝试，未做杀后校验）)")
-        if not remaining:
+        job_remaining = int(getattr(result, "job_remaining", 0) or 0)
+        if not remaining and not job_remaining:
             return (f"(已杀死后台任务 {self.task_id} 及其所有进程树"
                     f"（{attempts} 轮尝试后校验：无残留进程）)")
-        residual = ", ".join(str(p) for p in remaining)
+        parts: list[str] = []
+        if remaining:
+            parts.append(f"以下进程仍存活: {', '.join(str(p) for p in remaining)}")
+        if job_remaining:
+            parts.append(f"Job 内仍有 {job_remaining} 个进程未退出")
         return (f"(已尝试杀死后台任务 {self.task_id} 的进程树（{attempts} 轮），"
-                f"但校验时以下进程仍存活: {residual} —— 可能权限不足或处于"
+                f"但校验时{'；'.join(parts)} —— 可能权限不足或处于"
                 f"不可中断状态，可稍后重试 op=kill 补杀)")
 
     # ── op=stdin ─────────────────────────────────────────

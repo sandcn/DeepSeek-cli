@@ -237,7 +237,13 @@ class SubAgent(BaseAgent):
             # 分支兜底清理，属有意权衡）。
             pid = rec.get("pid")
             if pid is not None and _should_kill_process(rec.get("process")):
-                pids_to_kill.append(pid)
+                # 带上根进程创建时间（Windows）、Job 句柄（孤儿后代兜底）：
+                # PID 被系统复用时拒绝杀；Job 覆盖 PPID 链断裂的孙进程
+                pids_to_kill.append((
+                    pid, rec.get("pid_create_time"), rec.get("job_handle"),
+                    rec.get("descendant_pids"),
+                    rec.get("descendant_create_times"),
+                ))
             # ★ P2-2：不再单独 process.kill()——kill_process_tree 已覆盖
             #   进程组 + /proc 后代补杀；此处若再用同一 pid 调用 process.kill()，
             #   killpg 之后 returncode 更新有延迟，pid 可能已被 OS 复用，
@@ -252,6 +258,11 @@ class SubAgent(BaseAgent):
         #   的结果静默丢失。
         await asyncio.sleep(0)
         if getattr(self, "_background_tasks", None):
+            from .base_agent import _close_background_job
+
+            # 关闭记录持有的 Job 句柄（进程已杀 / 已取消；重复关闭安全）
+            for rec in self._background_tasks.values():
+                _close_background_job(rec)
             self._background_tasks.clear()
             self._publish_background_task_event()
 

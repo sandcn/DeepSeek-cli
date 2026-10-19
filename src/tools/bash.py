@@ -23,6 +23,11 @@ from ._bash_support import (
     _wrap_colored_line,
     _kill_process_tree,
     kill_process_tree,  # noqa: F401  # 公开 API：bash_opt 与测试经 bash 模块导入
+    process_create_time,
+    create_process_job,
+    close_process_job,
+    terminate_process_job,
+    ProcessTreeTracker,
 )
 from ._process_output import OutputLineDecoder
 
@@ -666,10 +671,21 @@ class BashFunc(Func):
             **popen_kwargs,
         )
 
+        # ★ Windows：创建后立即把进程加入 Job。父进程退出后 Job 成员关系
+        #   仍保留，kill 时 TerminateJobObject 能杀掉 Toolhelp32 PPID 链已
+        #   断裂的孤儿后代（后台 shell → 已退出的中间层 → 常驻孙进程）。
+        #   句柄归属：后台任务 / 自动转后台 → 随任务记录保存（记录移除时
+        #   关闭，见 _promote_to_background）；普通前台命令 → _run_exec 的
+        #   finally 关闭。
+        win_job = create_process_job(process.pid) if os.name == "nt" else None
+
         # ★ interactive_ready_fn 回调：提供 stdin 写端供 bash_opt 工具写入。
         if interactive_ready_fn is not None:
             try:
-                interactive_ready_fn(process, "pipe", stdin_writer=process.stdin)
+                interactive_ready_fn(
+                    process, "pipe",
+                    stdin_writer=process.stdin, job_handle=win_job,
+                )
             except Exception:
                 logger.debug("interactive_ready_fn 回调异常")
 
@@ -683,6 +699,7 @@ class BashFunc(Func):
             nonlocal _kill_once
             if not _kill_once:
                 _kill_once = True
+                terminate_process_job(win_job)  # 覆盖 PPID 链断裂的孤儿后代
                 _kill_process_tree(process.pid)
 
         async def _read_pipe_stream(stream, lines_list, is_stderr):
@@ -923,11 +940,13 @@ class BashFunc(Func):
         #   （wait 等待 / kill 杀进程树 / stdin、keys 交互）。
         holder: dict = {}
 
-        def _on_ready(process, mode, master_fd=None, stdin_writer=None):
+        def _on_ready(process, mode, master_fd=None, stdin_writer=None,
+                      job_handle=None):
             holder["process"] = process
             holder["mode"] = mode
             holder["master_fd"] = master_fd
             holder["stdin_writer"] = stdin_writer
+            holder["job_handle"] = job_handle
 
         # ★ 行回调代理（可变引用）：自动转后台后把 fn 置 None，断开实时输出，
         #   避免转后台后命令输出继续污染已闭合的工具卡片（工具已返回
@@ -950,14 +969,22 @@ class BashFunc(Func):
         async def _run_exec():
             # ★ 前台统一 PIPE 分离模式（见 _run_async docstring）：
             #   stdout/stderr 独立收集 → 三元 JSON 真实分离。
-            result = await self._run_pipe(
-                show_command=False,
-                show_output=show_output,
-                publish_line_fn=_line_proxy,
-                interactive=True,
-                interactive_ready_fn=_on_ready,
-            )
-            return self._format_result(result)
+            try:
+                result = await self._run_pipe(
+                    show_command=False,
+                    show_output=show_output,
+                    publish_line_fn=_line_proxy,
+                    interactive=True,
+                    interactive_ready_fn=_on_ready,
+                )
+                return self._format_result(result)
+            finally:
+                # 未转后台（命令在本函数内正常结束 / 被取消）：关闭 Job 句柄；
+                # 已转后台时句柄归任务记录（op=kill 杀孤儿后代用，记录移除
+                # 时关闭），不能在此关闭——否则后续 kill 会用到已释放句柄。
+                if not holder.get("promoted"):
+                    close_process_job(holder.get("job_handle"))
+                    holder["job_handle"] = None
 
         exec_task = asyncio.ensure_future(_run_exec())
         try:
@@ -972,6 +999,8 @@ class BashFunc(Func):
             process = holder.get("process")
             if process is not None:
                 try:
+                    # Windows Job 先终止（覆盖 PPID 链断裂的孤儿后代）
+                    terminate_process_job(holder.get("job_handle"))
                     _kill_process_tree(process.pid)
                 except Exception:
                     logger.debug("取消时清理子进程异常（非关键）", exc_info=True)
@@ -1022,6 +1051,7 @@ class BashFunc(Func):
 
         task_id = f"bg-{uuid.uuid4().hex[:12]}"
         process = holder.get("process")
+        pid = process.pid if process is not None else None
 
         rec = {
             "task": exec_task,
@@ -1031,7 +1061,15 @@ class BashFunc(Func):
             "status": "running",
             # ── 交互控制字段（bash_opt 工具按 task_id 操作） ──
             "process": process,
-            "pid": process.pid if process is not None else None,
+            "pid": pid,
+            # 根进程创建时间（Windows；pid 复用防护）
+            "pid_create_time": process_create_time(pid) if pid else None,
+            # Windows Job 句柄（杀整棵进程树；记录移除时关闭）
+            "job_handle": holder.get("job_handle"),
+            # 运行期采样累积的后代（见 BashFunc._sample_process_tree）
+            "descendant_pids": set(),
+            "descendant_create_times": {},
+            "job_assigned": set(),
             "mode": holder.get("mode"),
             "master_fd": holder.get("master_fd"),
             "stdin_writer": holder.get("stdin_writer"),
@@ -1041,6 +1079,14 @@ class BashFunc(Func):
             "read_buffer_dropped": 0,  # 因缓冲上限被丢弃的字符数（read 回报）
         }
         agent._register_background_task(task_id, rec)
+        # Job 句柄归属转给任务记录：_run_exec 的 finally 不再关闭它
+        holder["promoted"] = True
+
+        # ★ Windows：转后台后启动进程树采样（与 background=True 路径一致），
+        #   供 op=kill 覆盖 PPID 链断裂的孤儿后代。任务完成（done）后采样
+        #   协程自行退出，记录移除时 Job 句柄关闭。
+        if os.name == "nt":
+            asyncio.ensure_future(self._sample_process_tree(agent, task_id))
 
         # ★ 转后台后输出改走 read_buffer：把任务记录引用写入 line_cb，
         #   后续 _read_loop 的每行输出经 _line_proxy 追加到 read_buffer。
@@ -1164,6 +1210,16 @@ class BashFunc(Func):
             # ── 交互控制字段 ──
             "process": None,        # asyncio.subprocess.Process（创建后填充）
             "pid": None,            # 子进程 PID（kill 进程树用）
+            # 根进程创建时间（Windows FILETIME；pid 复用防护用，见
+            # _bash_support.kill_process_tree 的 create_time 参数）
+            "pid_create_time": None,
+            # Windows Job 句柄（杀整棵进程树用；任务记录移除时关闭）
+            "job_handle": None,
+            # 运行期采样累积的后代（Python 断链 / Store 应用不继承 Job 时
+            # 仍能定位孤儿；见 BashFunc._sample_process_tree）
+            "descendant_pids": set(),
+            "descendant_create_times": {},
+            "job_assigned": set(),
             "mode": None,           # "pty" / "pipe"（写入方式）
             "master_fd": None,      # PTY master fd（mode="pty" 时，os.write 写入）
             "stdin_writer": None,   # PIPE stdin StreamWriter（mode="pipe" 时）
@@ -1199,7 +1255,8 @@ class BashFunc(Func):
         """
         agent = getattr(self, 'agent', None)
 
-        def _on_ready(process, mode, master_fd=None, stdin_writer=None):
+        def _on_ready(process, mode, master_fd=None, stdin_writer=None,
+                      job_handle=None):
             """子进程创建回调：把进程句柄写入任务记录（bash_opt 工具使用）。"""
             if agent is None or not hasattr(agent, '_background_tasks'):
                 return
@@ -1208,6 +1265,12 @@ class BashFunc(Func):
                 return
             rec["process"] = process
             rec["pid"] = process.pid
+            # pid 复用防护：记录根进程创建时间（仅 Windows 可读，其它平台为
+            # None）。kill 时比对，PID 被系统复用时拒绝杀，避免误杀新进程树。
+            rec["pid_create_time"] = process_create_time(process.pid)
+            # Windows Job 句柄：kill 时 TerminateJobObject，覆盖 Toolhelp32
+            # PPID 链断裂后收集不到的孤儿后代（记录移除时关闭）
+            rec["job_handle"] = job_handle
             rec["mode"] = mode
             rec["master_fd"] = master_fd
             rec["stdin_writer"] = stdin_writer
@@ -1221,6 +1284,15 @@ class BashFunc(Func):
                 return
             await _append_read_buffer(rec, text)
 
+        # ★ Windows 进程树采样：后台任务运行期间持续记录后代关系（30ms 一次）。
+        #   Python 中间层退出后 PPID 链断裂、Store 应用不继承 Job，单次快照
+        #   都会漏掉孤儿后代；采样把历史关系 / 观察到的存活 PID 存入任务记录，
+        #   op=kill 时据此补杀（见 _bash_support.ProcessTreeTracker）。
+        sample_task = None
+        if os.name == "nt":
+            sample_task = asyncio.ensure_future(
+                self._sample_process_tree(agent, task_id))
+
         try:
             result = await bg._run_interactive_async(_on_ready, publish_line_fn=_publish_line)
         except asyncio.CancelledError:
@@ -1228,6 +1300,15 @@ class BashFunc(Func):
         except Exception as e:
             logger.exception("后台命令执行异常: %s", self.command[:200])
             result = self._error_result(f"(后台命令执行出错: {e})")
+        finally:
+            if sample_task is not None:
+                sample_task.cancel()
+                try:
+                    await sample_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:  # pragma: no cover - 采样协程内部异常
+                    logger.debug("后台任务进程树采样协程异常", exc_info=True)
 
         if agent is not None and hasattr(agent, '_complete_background_task'):
             try:
@@ -1250,6 +1331,86 @@ class BashFunc(Func):
                 publisher(f"[后台任务 {task_id} 已完成]", level="info", source="agent")
         except Exception:
             logger.debug("后台任务完成提示发布失败", exc_info=True)
+
+    #: 后台任务进程树采样间隔（秒）：30ms 兼顾覆盖率与 CPU 开销
+    #: （Toolhelp32 全表快照约 2ms）。间隔太长会错过存活时间很短的中间层
+    #: 进程——它退出后孙进程的 PPID 链断裂，就再也收集不到。
+    _PROCESS_TREE_SAMPLE_INTERVAL = 0.03
+    #: 启动 5 秒后的空闲采样间隔（秒）：后代关系已建立，长时任务降频采样
+    _PROCESS_TREE_SAMPLE_IDLE_INTERVAL = 0.2
+
+    async def _sample_process_tree(self, agent, task_id: str) -> None:
+        """后台任务运行期持续采样进程树（Windows），把后代写入任务记录。
+
+        为什么需要：Windows 的 PPID 是创建时的父 PID，中间层退出后链断
+        （``shell → 已退出的 python → 存活的孙进程``）；Store 应用
+        （App Execution Alias）也不保证继承 Job。采样器保留历史父子关系：
+        只要在中间层存活期间看到过它，之后孙进程（PPID 指向它）仍可判定为
+        后代。
+
+        写入：
+          - ``rec["descendant_pids"]``：采样中**观察到存活**的后代（kill
+            目标；只出现在历史关系里的已退出 PID 不作为目标，避免误杀）；
+          - ``rec["descendant_create_times"]``：对应创建时间（pid 复用防护）；
+          - 同时把新后代加入任务 Job（Job 继承失败时的兜底）。
+        """
+        from . import _win_proc
+
+        tracker = ProcessTreeTracker()
+        # 动态采样间隔：任务启动后的前几秒是后代关系建立的高峰期（shell 解析
+        # 命令、启动子进程、中间层可能很快退出），用 30ms 高频采样保证跨断链
+        # 关联；之后降为 200ms（长时任务的后代 fork 稀疏），避免持续全表扫描
+        # 占用 CPU。
+        fast_interval = self._PROCESS_TREE_SAMPLE_INTERVAL
+        idle_interval = self._PROCESS_TREE_SAMPLE_IDLE_INTERVAL
+        started = time.monotonic()
+        try:
+            while True:
+                rec = None
+                if agent is not None and hasattr(agent, "_background_tasks"):
+                    rec = agent._background_tasks.get(task_id)
+                if rec is None:
+                    return
+                if rec.get("done"):
+                    # 任务已结束：停止采样（finally 保留最后一次结果）
+                    return
+                pid = rec.get("pid")
+                if pid:
+                    tracker.root_pid = int(pid)
+                    try:
+                        tracker.observe()
+                    except Exception:  # pragma: no cover - 依赖系统调用
+                        logger.debug("后台任务进程树采样失败", exc_info=True)
+                    if tracker.observed:
+                        rec["descendant_pids"] = set(tracker.observed)
+                        rec["descendant_create_times"] = dict(tracker.observed)
+                    job = rec.get("job_handle")
+                    if job:
+                        assigned = rec.get("job_assigned")
+                        if not isinstance(assigned, set):
+                            assigned = set()
+                            rec["job_assigned"] = assigned
+                        for child in tracker.observed:
+                            if child in assigned:
+                                continue
+                            assigned.add(child)
+                            try:
+                                _win_proc.assign_process_to_job(job, child)
+                            except Exception:  # pragma: no cover
+                                logger.debug(
+                                    "将后代加入 Job 失败: %s", child, exc_info=True)
+                interval = (fast_interval
+                            if time.monotonic() - started < 5.0
+                            else idle_interval)
+                await asyncio.sleep(interval)
+        finally:
+            # 任务结束 / 取消：保留最后一次采样结果，供 op=kill 补杀孤儿
+            rec = None
+            if agent is not None and hasattr(agent, "_background_tasks"):
+                rec = agent._background_tasks.get(task_id)
+            if rec is not None and tracker.observed:
+                rec["descendant_pids"] = set(tracker.observed)
+                rec["descendant_create_times"] = dict(tracker.observed)
 
     # ── 父类契约实现 ──
     # execute() → 无 UI 副作用，只返回结果

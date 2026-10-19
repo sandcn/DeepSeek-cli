@@ -197,7 +197,7 @@ async def test_kill_background_bash_kills_process_tree(monkeypatch):
     """对已记录 pid 且进程仍存活的 bash 记录兜底杀进程树（pid 复用安全红线）。"""
     killed: list[int] = []
 
-    def _fake_kill(pid):
+    def _fake_kill(pid, **kwargs):
         killed.append(pid)
 
     monkeypatch.setattr("src.tools.bash.kill_process_tree", _fake_kill)
@@ -236,7 +236,7 @@ async def test_kill_background_bash_kills_process_tree(monkeypatch):
 
 async def test_kill_background_bash_process_tree_failure_ignored(monkeypatch):
     """杀进程树异常仅记日志，不阻断其余任务取消与清表。"""
-    def _boom(pid):
+    def _boom(pid, **kwargs):
         raise RuntimeError("killpg 失败")
 
     monkeypatch.setattr("src.tools.bash.kill_process_tree", _boom)
