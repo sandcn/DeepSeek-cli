@@ -638,6 +638,8 @@ def test_title_generating_updates_status_model():
     assert ui.redraws == 1
     callbacks["on_title_generating"](generating=False)
     assert ui._model.status.title_generating is False
+    # 生成结束记录时间戳 → 状态栏 tokens/speed 段在宽限期内可见
+    assert ui._model.status.title_last_end_ts > 0
 
 
 def test_restore_from_data_legacy_title_is_not_pinned():

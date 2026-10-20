@@ -217,3 +217,57 @@ def test_title_segment_removed_from_status_bar():
     assert "title" not in builtin_segment_ids()
     assert "title" not in active_segment_ids()
     assert not hasattr(status_bar, "_title_segment")
+
+
+# ── 标题请求的 token / tok/s 在 status 行可见（用户需求 2026-10-20） ──
+
+
+def test_tokens_visible_while_title_generating():
+    import time
+
+    from src.tui.app.status_bar import _tokens_visible
+
+    m = AppModel()
+    m.status.title_generating = True
+    assert _tokens_visible(False, m.status, time.monotonic()) is True
+
+
+def test_tokens_visible_title_grace_window():
+    import time
+
+    from src.tui.app.status_bar import _TITLE_TOKEN_GRACE_SEC, _tokens_visible
+
+    m = AppModel()
+    now = time.monotonic()
+    m.status.title_last_end_ts = now - 1.0
+    assert _tokens_visible(False, m.status, now) is True
+    assert _tokens_visible(
+        False, m.status, now + _TITLE_TOKEN_GRACE_SEC + 1,
+    ) is False
+
+
+def test_tokens_visible_idle_without_title():
+    import time
+
+    from src.tui.app.status_bar import _tokens_visible
+
+    m = AppModel()
+    assert _tokens_visible(False, m.status, time.monotonic()) is False
+
+
+def test_status_runs_show_title_token_and_speed(monkeypatch):
+    """标题生成中：状态行显示 ◆ 总tok / » tok/s（流式请求的真实用量）。"""
+    import src.tui.app.status_bar as sb
+
+    monkeypatch.setattr(
+        sb, "_snapshot",
+        lambda model, ttl=sb._SNAPSHOT_TTL: {
+            "total_tokens": 1234, "per_second_speed": 42.0,
+        },
+    )
+    m = AppModel()
+    m.status.model_name = "test-model"
+    m.status.title_generating = True
+    text = _text(_build_status_runs(m, 0.0, "\u00b7", ""))
+    assert "\u25c6 1.2kt" in text
+    assert "42" in text

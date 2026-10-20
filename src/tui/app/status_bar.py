@@ -161,6 +161,13 @@ _snapshot_cache: "WeakKeyDictionary" = WeakKeyDictionary()
 #: 长度，之后回到活跃期门控（不长期占用状态栏）。
 _COMPACTION_TOKEN_GRACE_SEC = 5.0
 
+#: 标题生成结束后「总tok / tok/s」在状态栏继续展示的宽限期（秒）。
+#:
+#: 用户需求 2026-10-20：标题请求走**流式 API**，其 token 与 tok/s 也要在
+#: status 行可见。标题在空闲期（消费用户消息后、主回答并发）生成，本身不进入
+#: 活跃期门控——生成期间 + 结束后宽限期内展示，之后自动收起。
+_TITLE_TOKEN_GRACE_SEC = 8.0
+
 
 def _tokens_visible(status_active: bool, status, now: float) -> bool:
     """「总tok / tok/s」段是否可见。
@@ -170,12 +177,16 @@ def _tokens_visible(status_active: bool, status, now: float) -> bool:
       - 正在压缩（``compaction_active > 0``）——空闲期手动 ``/compact`` 也可见；
       - 压缩结束后的 ``_COMPACTION_TOKEN_GRACE_SEC`` 宽限期内——压缩摘要为
         静默后台流式调用（不进入活跃期门控），宽限期让用户看得到「总tok」
-        增量与该次压缩的「tok/s」。
+        增量与该次压缩的「tok/s」；
+      - 正在生成会话标题，或标题生成结束后的 ``_TITLE_TOKEN_GRACE_SEC``
+        宽限期内（用户需求 2026-10-20：标题请求的 token / tok/s 也要在
+        status 行可见；标题同样是静默后台流式调用）。
 
     Args:
         status_active: 状态栏是否处于活跃期（轮次进行中）。
-        status: AppModel.status 状态对象（缺字段按未压缩处理）。
-        now: 当前单调时钟时间戳（与 ``compaction_last_end_ts`` 同源）。
+        status: AppModel.status 状态对象（缺字段按未压缩/未生成标题处理）。
+        now: 当前单调时钟时间戳（与 ``compaction_last_end_ts`` /
+            ``title_last_end_ts`` 同源）。
 
     Returns:
         True 表示 tokens / speed 段应渲染。
@@ -185,9 +196,12 @@ def _tokens_visible(status_active: bool, status, now: float) -> bool:
     if int(getattr(status, "compaction_active", 0) or 0) > 0:
         return True
     end_ts = float(getattr(status, "compaction_last_end_ts", 0.0) or 0.0)
-    if end_ts <= 0:
-        return False
-    return (now - end_ts) < _COMPACTION_TOKEN_GRACE_SEC
+    if end_ts > 0 and (now - end_ts) < _COMPACTION_TOKEN_GRACE_SEC:
+        return True
+    if bool(getattr(status, "title_generating", False)):
+        return True
+    title_end_ts = float(getattr(status, "title_last_end_ts", 0.0) or 0.0)
+    return title_end_ts > 0 and (now - title_end_ts) < _TITLE_TOKEN_GRACE_SEC
 
 
 def _snapshot(model, ttl: float = _SNAPSHOT_TTL) -> dict:
@@ -624,6 +638,11 @@ def StatusBar(props) -> object:
             #   （仅 compaction_active 需入 deps；宽限期的到期由 time_dep
             #   的 1 秒桶驱动，最迟 1 秒内收起）。
             getattr(st, "compaction_active", 0),
+            # ★ 2026-10-20（用户需求：标题消耗的 tok / tok/s 要记录到 status 行）：
+            #   标题生成中 / 结束后宽限期内 tokens+speed 段可见——两项都要进
+            #   deps（否则 memo 命中旧结果，段的出现与收起都不会刷新）。
+            getattr(st, "title_generating", False),
+            getattr(st, "title_last_end_ts", 0.0),
         ),
     )
     # 分割线（上面）

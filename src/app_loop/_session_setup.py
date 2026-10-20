@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from src._compat import dataclass
@@ -221,6 +222,11 @@ def _make_round_callbacks(
             return
         try:
             model.status.title_generating = bool(generating)
+            if not generating:
+                # ★ 2026-10-20（用户需求：标题消耗的 tok / tok/s 要记录到 status
+                #   行）：标题是静默后台流式调用，空闲期生成结束后状态栏在宽限期
+                #   内继续展示「总tok / tok/s」，让这次标题的消耗可见。
+                model.status.title_last_end_ts = time.monotonic()
             request = getattr(chat_ui, "request_bottom_redraw", None)
             if callable(request):
                 request()
