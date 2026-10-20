@@ -206,10 +206,32 @@ def _make_round_callbacks(
         except Exception:
             _logger.debug("更新终端窗口标题失败（非关键）", exc_info=True)
 
+    def _on_title_generating(generating=False, **kw):
+        """标题生成开始/结束 → 状态栏「✎ 标题生成中」显示或消失。
+
+        用户需求 2026-10-20：取标题是异步辅助任务（不阻塞对话、无流式输出），
+        运行中必须对用户可见。状态栏段读 ``model.status.title_generating``，
+        这里由 ``title_generating`` 事件驱动（生成结束 / 失败 / 取消都会复位）。
+        """
+        try:
+            model = chat_ui.get_model() if hasattr(chat_ui, "get_model") else None
+        except Exception:
+            model = None
+        if model is None:
+            return
+        try:
+            model.status.title_generating = bool(generating)
+            request = getattr(chat_ui, "request_bottom_redraw", None)
+            if callable(request):
+                request()
+        except Exception:
+            _logger.debug("更新标题生成状态失败（非关键）", exc_info=True)
+
     return {
         "on_start": _on_round_start,
         "on_end": _on_round_end,
         "on_title": _on_title_updated,
+        "on_title_generating": _on_title_generating,
     }
 
 
@@ -325,7 +347,9 @@ def _register_session_handlers(
         session.off("round_start", old_callbacks["on_start"])
         session.off("round_end", old_callbacks["on_end"])
         session.off("title_updated", old_callbacks["on_title"])
+        session.off("title_generating", old_callbacks["on_title_generating"])
     loop_state["_registered_callbacks"] = callbacks
     session.on("round_start", callbacks["on_start"])
     session.on("round_end", callbacks["on_end"])
     session.on("title_updated", callbacks["on_title"])
+    session.on("title_generating", callbacks["on_title_generating"])

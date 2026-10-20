@@ -31,6 +31,11 @@ def _text(runs) -> str:
     return "".join(r.text for r in runs)
 
 
+def _line_text(line) -> str:
+    """``Line`` 对象 → 纯文本（``Line.runs`` 拼接）。"""
+    return "".join(run.text for run in line.runs)
+
+
 # ── 模型名旁的多模态读图徽标（「图」） ────────────────────
 
 
@@ -172,3 +177,43 @@ def test_build_status_runs_excludes_removed_segments(monkeypatch):
     assert "\u2b21" not in text   # ⬡ provider
     assert "\u25d0" not in text   # ◐ theme
     assert "\u25a3" not in text   # ▣ context
+
+
+# ── 会话标题生成中：显示在「上下文百分比」旁（2026-10-20 用户需求） ──
+
+
+def test_title_generating_shown_after_context_percent():
+    """生成中：紧跟 main 百分比显示「✎ 标题」（用户最常看的位置）。"""
+    from src.tui.app.input_area import _build_bg_task_prefix
+
+    line = _build_bg_task_prefix(45.3, 0, 0, 0, title_generating=True)
+    text = _line_text(line)
+    assert "45.3%" in text
+    assert "\u270e \u6807\u9898" in text
+    assert text.index("45.3%") < text.index("\u270e")
+
+
+def test_title_generating_hidden_when_idle():
+    from src.tui.app.input_area import _build_bg_task_prefix
+
+    line = _build_bg_task_prefix(45.3, 0, 0, 0, title_generating=False)
+    assert "\u270e" not in _line_text(line)
+
+
+def test_mode_line_carries_title_generating():
+    from src.tui.app.input_area import _build_mode_line
+
+    assert "\u270e \u6807\u9898" in _line_text(
+        _build_mode_line(80, "standard", 12.0, title_generating=True),
+    )
+    assert "\u270e" not in _line_text(_build_mode_line(80, "standard", 12.0))
+
+
+def test_title_segment_removed_from_status_bar():
+    """标题状态已从状态栏段迁到上下文百分比旁（用户要求），段不再存在。"""
+    from src.tui.app import status_bar
+    from src.tui.app._status_segments import active_segment_ids, builtin_segment_ids
+
+    assert "title" not in builtin_segment_ids()
+    assert "title" not in active_segment_ids()
+    assert not hasattr(status_bar, "_title_segment")

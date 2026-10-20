@@ -161,6 +161,10 @@ def _normal_bottom_area(model, width: int) -> list:
             #   显示 compact · N；由 CompactionChangedEvent → CompactionCmd
             #   更新 model.status，props 变化驱动 InputArea 重渲染。
             "compaction_active": model.status.compaction_active,
+            # ★ 标题生成中（2026-10-20 用户需求：显示在上下文百分比旁）——
+            #   由 title_generating 事件更新 model.status，props 变化 → 模式行
+            #   行首「✎ 标题」即时出现/消失。
+            "title_generating": model.status.title_generating,
             # 方向D 步骤14：Ctrl+R 反向历史搜索状态（input-area 渲染覆盖行）
             "history_search": model.history_search,
             # ★ 标准 React Ink 组件化（2026-08-05）：InputArea 标准组件接收

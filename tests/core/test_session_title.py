@@ -566,6 +566,80 @@ def test_same_title_same_messages_is_deduplicated():
     assert again is first
 
 
+@pytest.mark.asyncio
+async def test_generating_status_events_around_revision():
+    """生成期间广播 title_generating=True，结束（成功/失败）后复位 False。"""
+    events: list[tuple[str, dict]] = []
+
+    async def _not_interrupted():
+        return False
+
+    service = SessionTitleService(
+        messages_getter=lambda: [{"role": "user", "content": "hi"}],
+        session_id_getter=lambda: "sid1",
+        model_getter=lambda: "m",
+        emit=lambda name, **kw: events.append((name, kw)),
+        call_model=lambda messages: ("标题", ""),
+    )
+    service.ensure_fallback()
+    service._interrupted = _not_interrupted
+    await service.refresh_async()
+    flags = [kw["generating"] for name, kw in events if name == "title_generating"]
+    assert flags == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_generating_status_resets_on_failure():
+    """生成失败也要复位（否则状态栏会一直卡在「标题生成中」）。"""
+    events: list[tuple[str, dict]] = []
+
+    async def _not_interrupted():
+        return False
+
+    def _boom(messages):
+        raise RuntimeError("模型不可用")
+
+    service = SessionTitleService(
+        messages_getter=lambda: [{"role": "user", "content": "hi"}],
+        session_id_getter=lambda: "sid1",
+        model_getter=lambda: "m",
+        emit=lambda name, **kw: events.append((name, kw)),
+        call_model=_boom,
+    )
+    service.ensure_fallback()
+    service._interrupted = _not_interrupted
+    await service.refresh_async()
+    flags = [kw["generating"] for name, kw in events if name == "title_generating"]
+    assert flags == [True, False]
+
+
+def test_title_generating_updates_status_model():
+    """UI 接线：title_generating 事件驱动状态栏段的数据源。"""
+    from src.app_loop import _session_setup as setup
+    from src.tui.app.model import AppModel
+
+    class _Ui:
+        def __init__(self):
+            self._model = AppModel()
+            self.redraws = 0
+
+        def get_model(self):
+            return self._model
+
+        def request_bottom_redraw(self):
+            self.redraws += 1
+
+    ui = _Ui()
+    callbacks = setup._make_round_callbacks(
+        _FakeSession(), monitor=None, loop_state={}, chat_ui=ui,
+    )
+    callbacks["on_title_generating"](generating=True)
+    assert ui._model.status.title_generating is True
+    assert ui.redraws == 1
+    callbacks["on_title_generating"](generating=False)
+    assert ui._model.status.title_generating is False
+
+
 def test_restore_from_data_legacy_title_is_not_pinned():
     """历史标题（无 title_source）按 fallback 处理：默认自动起标题，不钉住。"""
     service = _make_service([{"role": "user", "content": "hi"}])

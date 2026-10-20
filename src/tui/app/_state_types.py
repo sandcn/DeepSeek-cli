@@ -648,6 +648,9 @@ class StatusState:
     #: 结束后，状态栏在宽限期内短暂展示「总tok / tok/s」，让压缩消耗的 token
     #: 可见（压缩摘要是静默后台流式调用，不进入活跃期门控）。
     compaction_last_end_ts: float = 0.0
+    #: 会话标题生成中（异步辅助任务；状态栏「✎ 标题生成中」段的门控）。
+    #: 由 ``title_generating`` 事件驱动，生成结束 / 失败 / 取消后复位。
+    title_generating: bool = False
 
 
 @dataclass

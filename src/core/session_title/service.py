@@ -460,41 +460,48 @@ class SessionTitleService:
         )
         timeout_ms = self._as_int(cfg, "timeout_ms", 10000)
         timeout = max(1.0, timeout_ms / 1000.0) if timeout_ms > 0 else None
+        # ★ 2026-10-20（用户需求：取标题运行中要有状态显示）：生成期间广播
+        #   ``title_generating=True``（状态栏显示「✎ 标题生成中」），结束 /
+        #   失败 / 超时 / 取消都在 finally 复位——辅助任务此前对用户完全不可见。
+        self._notify_generating(True)
         try:
-            if timeout is not None:
-                content, reasoning = await asyncio.wait_for(
-                    self._call_title_model(messages), timeout=timeout,
-                )
-            else:
-                content, reasoning = await self._call_title_model(messages)
-        except asyncio.CancelledError:
-            raise
-        except asyncio.TimeoutError:
-            self._record_error(f"标题生成超时（{int(timeout or 0)} 秒），保留当前标题")
-            return
-        except Exception as exc:  # noqa: BLE001 - 辅助请求失败不阻断对话
-            _logger.warning("标题生成失败，保留当前标题: %s", exc, exc_info=True)
-            self._record_error(f"标题生成失败：{exc}")
-            return
+            try:
+                if timeout is not None:
+                    content, reasoning = await asyncio.wait_for(
+                        self._call_title_model(messages), timeout=timeout,
+                    )
+                else:
+                    content, reasoning = await self._call_title_model(messages)
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                self._record_error(f"标题生成超时（{int(timeout or 0)} 秒），保留当前标题")
+                return
+            except Exception as exc:  # noqa: BLE001 - 辅助请求失败不阻断对话
+                _logger.warning("标题生成失败，保留当前标题: %s", exc, exc_info=True)
+                self._record_error(f"标题生成失败：{exc}")
+                return
 
-        title = _provider.parse_title_response(content) or _provider.parse_title_response(reasoning)
-        if not title:
-            self._record_error("标题模型未返回可用标题，保留当前标题")
-            return
-        if revision != self._current_revision():
-            return
-        if session_id != self._get_session_id():
-            # 会话已切换：丢弃这次结果（标题属于旧会话），避免写错文件 / 改错窗口标题。
-            _logger.debug("会话已切换，丢弃陈旧的标题结果: %r", title)
-            return
-        self._accept(
-            title,
-            SOURCE_PROVIDER,
-            model=self._get_model(),
-            seqs=tuple(seq for seq, _text in eligible),
-            persist=True,
-            target_sid=session_id,
-        )
+            title = _provider.parse_title_response(content) or _provider.parse_title_response(reasoning)
+            if not title:
+                self._record_error("标题模型未返回可用标题，保留当前标题")
+                return
+            if revision != self._current_revision():
+                return
+            if session_id != self._get_session_id():
+                # 会话已切换：丢弃这次结果（标题属于旧会话），避免写错文件 / 改错窗口标题。
+                _logger.debug("会话已切换，丢弃陈旧的标题结果: %r", title)
+                return
+            self._accept(
+                title,
+                SOURCE_PROVIDER,
+                model=self._get_model(),
+                seqs=tuple(seq for seq, _text in eligible),
+                persist=True,
+                target_sid=session_id,
+            )
+        finally:
+            self._notify_generating(False)
 
     def _current_revision(self) -> int:
         with self._lock:
@@ -581,6 +588,20 @@ class SessionTitleService:
             )
         except Exception:
             _logger.debug("广播标题变更失败", exc_info=True)
+
+    def _notify_generating(self, generating: bool) -> None:
+        """广播「正在生成标题」状态（状态栏运行中提示；无 UI 时无副作用）。
+
+        用户需求 2026-10-20：取标题是**异步辅助任务**（不阻塞对话、没有流式
+        输出），此前运行中对用户完全不可见——生成期间据此在状态栏显示
+        「✎ 标题生成中」，结束（成功 / 失败 / 超时 / 取消）后自动消失。
+        """
+        if self._emit is None:
+            return
+        try:
+            self._emit("title_generating", generating=bool(generating))
+        except Exception:
+            _logger.debug("广播标题生成状态失败", exc_info=True)
 
     def _persist(self, snapshot: TitleSnapshot, target_sid: str | None) -> None:
         """把标题写入会话文件（后台线程；端口不支持时仅内存生效）。"""
