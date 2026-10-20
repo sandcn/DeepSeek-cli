@@ -56,3 +56,27 @@ def test_summary_red_line_forbids_early_conclusion():
     text = _prompt_text()
     assert "基本完成" in text
     assert "先汇总一下" in text
+
+
+def test_summary_red_line_uses_max_severity_wording():
+    """总结红线必须使用最严重等级措辞（最高优先级 + 零容忍 + 不可协商 + 无豁免权）。"""
+    text = _prompt_text()
+    line = next(
+        (ln for ln in text.splitlines() if "强制所有用户指定的东西全部完成才允许总结" in ln),
+        "",
+    )
+    for fragment in ("最高优先级", "零容忍", "不可协商", "无豁免权", "没有任何从轻空间"):
+        assert fragment in line, f"红线措辞缺少最严重等级片段: {fragment}"
+
+
+def test_summary_requires_no_remaining_problem():
+    """只有全部完成且确认没有问题了才允许总结，禁止在未验证时收尾。"""
+    text = _prompt_text()
+    line = next(
+        (ln for ln in text.splitlines() if "强制所有用户指定的东西全部完成才允许总结" in ln),
+        "",
+    )
+    assert "确认彻底没有问题之后" in line
+    assert "实际验证通过" in line
+    assert "一律判定该轮任务彻底失败" in line
+    assert "作废该总结" in line
