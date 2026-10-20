@@ -21,13 +21,12 @@ from typing import Any
 # ★ 2026-08-22（review P2）：提升为模块级常量——原为函数体内局部 dict，
 #   每次调用 extract_key_params 都重建整个字面量（trace 每帧
 #   _records_from_messages 经 _tool_detail 高频调用），上移后可复用。
-#   read_image 与 read 同款：显示纯路径值（file_path 首选、path 兼容）。
+#   read / read_image / write / edit 的路径字段统一为 file_path。
 _KEY_PARAMS: dict[str, list[str]] = {
-    "read": ["path"],
-    # DSH 对齐：file_path 为首选字段；path 为兼容别名（旧会话/旧调用）。
-    "read_image": ["file_path", "path"],
-    "write": ["path"],
-    "edit": ["path"],
+    "read": ["file_path"],
+    "read_image": ["file_path"],
+    "write": ["file_path"],
+    "edit": ["file_path"],
     "str_replace_editor": ["path"],
     "file_editor": ["path"],
     "grep": ["query", "path"],

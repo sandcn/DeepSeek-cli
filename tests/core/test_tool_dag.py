@@ -431,6 +431,16 @@ def test_extract_tool_paths_classifies_read_write_delete():
     assert not wp and not rp and not dp
 
 
+def test_extract_tool_paths_file_path_argument():
+    """read/read_image/write/edit 使用 file_path 参数（读归读、写归写）。"""
+    for name, path in (("read", "a.txt"), ("read_image", "a.png")):
+        wp, rp, dp = ToolDAG._extract_tool_paths(name, {"file_path": path})
+        assert rp and not wp and not dp
+    for name in ("write", "edit"):
+        wp, rp, dp = ToolDAG._extract_tool_paths(name, {"file_path": "a.txt"})
+        assert wp and not rp and not dp
+
+
 def test_tool_call_node_defaults():
     node = ToolCallNode("id", "name", {}, True, False)
     assert node.tool_category == "general"

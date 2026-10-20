@@ -7,7 +7,7 @@ from src.core.param_formatter import extract_key_params
 
 
 def test_extract_read_path():
-    assert extract_key_params("read", {"path": "pyproject.toml"}) == "pyproject.toml"
+    assert extract_key_params("read", {"file_path": "pyproject.toml"}) == "pyproject.toml"
 
 
 def test_extract_bash_command():
@@ -25,7 +25,7 @@ def test_extract_mv_source_destination():
 
 
 def test_extract_args_as_json_string():
-    assert extract_key_params("read", '{"path": "x.py"}') == "x.py"
+    assert extract_key_params("read", '{"file_path": "x.py"}') == "x.py"
 
 
 def test_extract_args_invalid_json_string():
@@ -42,8 +42,8 @@ def test_extract_unknown_tool_kv():
 
 
 def test_extract_show_all_known_tool():
-    result = extract_key_params("read", {"path": "x", "extra": "y"}, show_all=True)
-    assert "path=x" in result
+    result = extract_key_params("read", {"file_path": "x", "extra": "y"}, show_all=True)
+    assert "file_path=x" in result
     assert "extra=y" in result
 
 
@@ -52,7 +52,7 @@ def test_extract_keeps_long_value_whole():
 
     显示截断由渲染层按终端宽度执行（工具卡标题行 ``truncate_runs``）。
     """
-    result = extract_key_params("read", {"path": "a" * 100})
+    result = extract_key_params("read", {"file_path": "a" * 100})
     assert result == "a" * 100
 
 
@@ -61,13 +61,11 @@ def test_extract_missing_key_returns_empty():
 
 
 def test_extract_read_image_path():
-    """read_image 归入已知工具 → 显示纯路径值（file_path 首选、path 兼容）。"""
-    assert extract_key_params("read_image", {"path": "a.png"}) == "a.png"
-    assert extract_key_params("read_image", '{"path": "x.png"}') == "x.png"
-    assert extract_key_params("read_image", {"file_path": "b.png"}) == "b.png"
-    # 两个别名同时存在时只显示一次值
-    assert extract_key_params(
-        "read_image", {"file_path": "c.png", "path": "c.png"}) == "c.png"
+    """read_image 归入已知工具 → 显示纯路径值（唯一路径字段 file_path）。"""
+    assert extract_key_params("read_image", {"file_path": "a.png"}) == "a.png"
+    assert extract_key_params("read_image", '{"file_path": "x.png"}') == "x.png"
+    # 旧参数名 path 不再被识别
+    assert extract_key_params("read_image", {"path": "a.png"}) == ""
 
 
 def test_extract_non_dict_json_falls_back():

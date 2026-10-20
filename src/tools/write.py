@@ -19,7 +19,7 @@ class WriteFunc(FileToolBase):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": {
+                        "file_path": {
                             "type": "string",
                             "description": "目标文件路径，相对或绝对路径。父目录不存在时自动创建。"
                         },
@@ -28,14 +28,14 @@ class WriteFunc(FileToolBase):
                             "description": "要写入的完整文件内容（UTF-8）。超过 100MB 会被拒绝。"
                         }
                     },
-                    "required": ["path", "content"]
+                    "required": ["file_path", "content"]
                 }
             }
         }
 
     @classmethod
     def display_params(cls, arguments: dict, max_len: int = 80) -> str:
-        path = arguments.get("path", "")
+        path = arguments.get("file_path", "")
         return f"'{path}'"
 
     def __init__(self, path: str, content: str):

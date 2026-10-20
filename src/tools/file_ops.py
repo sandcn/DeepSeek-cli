@@ -30,15 +30,19 @@ def validate_path_security(path):
         raise ValueError(f"不允许写入原始设备路径: {path}")
     normalized = os.path.normpath(path)
     resolved = os.path.realpath(normalized)
+
+    # ★ 先检测具体危险路径（设备文件、系统关键路径等），给出精确错误信息。
+    # 同时校验「原始归一化路径」与 realpath：符号链接可能把列表中的关键路径
+    # 解析到别处（Android/Termux 上 /etc → /system/etc，/etc/passwd 的
+    # realpath 不再是 /etc/passwd），只查 realpath 会让保护失效。
+    for check_path in dict.fromkeys((normalized, resolved)):
+        if check_path in dangerous_device_files():
+            raise ValueError(f"不允许写入特殊设备文件: {check_path}")
+
+        if any(check_path == c or check_path.startswith(c + "/") for c in system_critical_paths()):
+            raise ValueError(f"不允许写入系统关键文件: {check_path}")
+
     check_path = resolved
-
-    # ★ 先检测具体危险路径（设备文件、系统关键路径等），给出精确错误信息
-    if check_path in dangerous_device_files():
-        raise ValueError(f"不允许写入特殊设备文件: {check_path}")
-
-    if any(check_path == c or check_path.startswith(c + "/") for c in system_critical_paths()):
-        raise ValueError(f"不允许写入系统关键文件: {check_path}")
-
     basename = os.path.basename(check_path)
     # DOS 设备名（CON/PRN/NUL/COM1…）只对 Windows 具有特殊语义；POSIX 上
     # 它们是合法普通文件名，不能误伤（修复前无条件拒绝）。

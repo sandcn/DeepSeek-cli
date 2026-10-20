@@ -85,20 +85,20 @@ async def test_show_line_numbers_with_start_only(tmp_path):
 def test_from_args_coerce_bool_true_forms():
     """字符串/数字/布尔若干真值归一化为 True。"""
     for val in (True, "true", "True", "1", 1, "yes", "on"):
-        inst = ReadFunc.from_args({"path": "x.py", "show_line_numbers": val})
+        inst = ReadFunc.from_args({"file_path": "x.py", "show_line_numbers": val})
         assert inst.show_line_numbers is True
 
 
 def test_from_args_coerce_bool_false_forms():
     """假值/缺省归一化为 False。"""
     for val in (False, None, "false", "0", 0, "", "no", "off"):
-        inst = ReadFunc.from_args({"path": "x.py", "show_line_numbers": val})
+        inst = ReadFunc.from_args({"file_path": "x.py", "show_line_numbers": val})
         assert inst.show_line_numbers is False
 
 
 def test_from_args_default_false_when_missing():
     """未传 show_line_numbers 时默认为 False。"""
-    inst = ReadFunc.from_args({"path": "x.py"})
+    inst = ReadFunc.from_args({"file_path": "x.py"})
     assert inst.show_line_numbers is False
 
 
@@ -139,6 +139,15 @@ def test_schema_contains_show_line_numbers():
     assert params["show_line_numbers"]["type"] == "boolean"
     assert params["show_line_numbers"]["default"] is False
 
+
+def test_schema_uses_file_path_argument():
+    """路径参数名为 file_path（不再声明 path）。"""
+    params = ReadFunc.to_tool_schema()["function"]["parameters"]
+    assert "file_path" in params["properties"]
+    assert "path" not in params["properties"]
+    assert params["required"] == ["file_path"]
+
+
 # ── 8. 边界防护（review 清零后补充覆盖） ──────────────
 
 async def test_start_line_out_of_range_returns_error(tmp_path):
@@ -157,13 +166,16 @@ async def test_end_line_non_positive_clamped(tmp_path):
 
 
 def test_from_args_empty_path_raises():
-    """from_args 空 path / 空 list / 缺 path 抛出 ValueError。"""
+    """from_args 空 file_path / 空 list / 缺 file_path 抛出 ValueError。"""
     with pytest.raises(ValueError):
-        ReadFunc.from_args({"path": ""})
+        ReadFunc.from_args({"file_path": ""})
     with pytest.raises(ValueError):
-        ReadFunc.from_args({"path": []})
+        ReadFunc.from_args({"file_path": []})
     with pytest.raises(ValueError):
         ReadFunc.from_args({})
+    # 旧参数名 path 不再被接受
+    with pytest.raises(ValueError):
+        ReadFunc.from_args({"path": "x.py"})
 
 
 def test_direct_construct_empty_path_raises():
@@ -175,10 +187,10 @@ def test_direct_construct_empty_path_raises():
 def test_display_params_range_labels():
     """display_params 对范围参数显示 L 标签。"""
     assert "L2-4" in ReadFunc.display_params(
-        {"path": "x.py", "start_line": 2, "end_line": 4}
+        {"file_path": "x.py", "start_line": 2, "end_line": 4}
     )
-    assert "L2+" in ReadFunc.display_params({"path": "x.py", "start_line": 2})
-    assert "L1-4" in ReadFunc.display_params({"path": "x.py", "end_line": 4})
+    assert "L2+" in ReadFunc.display_params({"file_path": "x.py", "start_line": 2})
+    assert "L1-4" in ReadFunc.display_params({"file_path": "x.py", "end_line": 4})
 
 
 # ── 9. 边界与行尾一致性（review 二轮清零补充） ─────────
@@ -263,4 +275,3 @@ async def test_display_empty_file_no_output_crash(tmp_path, monkeypatch):
     out = await ReadFunc(path=p).display()
     assert out == f"(文件为空: {p})"
     assert calls == []
-

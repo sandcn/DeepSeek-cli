@@ -103,7 +103,7 @@ async def test_policy_denies_plan_path_outside_whitelist(cli_kernel):
     tc = {
         "id": "t5",
         "name": "write",
-        "arguments": {"path": "src/evil.py", "content": "x"},
+        "arguments": {"file_path": "src/evil.py", "content": "x"},
     }
     _id, output, success = await scheduler._execute_one_async(
         tc, agent_ref=_AgentStub(agent_type="plan"),

@@ -1,7 +1,7 @@
 """read_image — 读取图像文件工具（对齐 DSH read_image 契约 + 本项目扩展）
 
 DSH（DeepSeek Harness）read_image 的加工语义（2026-10 对齐）：
-- 参数名 ``file_path``（``path`` 保留为兼容别名）；
+- 参数名 ``file_path``（唯一路径参数，不提供 ``path``）；
 - 全量图片类型：接受所有 Pillow 可解码的图像格式（PNG/JPEG/WebP/GIF/BMP/
   TIFF/ICO/PNM(PPM/PGM/PBM)/TGA/SGI/…）；有扩展名时扩展名必须声明图像格式，
   无扩展名时按文件内容（magic-byte / Pillow 解码）识别；
@@ -512,11 +512,7 @@ class ReadImageFunc(Func):
                     "properties": {
                         "file_path": {
                             "type": "string",
-                            "description": "Path to the image file (DSH-compatible field name)."
-                        },
-                        "path": {
-                            "type": "string",
-                            "description": "Deprecated alias of file_path (kept for compatibility)."
+                            "description": "Path to the image file."
                         },
                         "start_x": {
                             "type": "integer",
@@ -568,7 +564,7 @@ class ReadImageFunc(Func):
 
     @classmethod
     def from_args(cls, args: dict) -> "ReadImageFunc":
-        path = args.get("file_path") or args.get("path") or args.get("paths")
+        path = args.get("file_path") or args.get("paths")
         if isinstance(path, list):
             path = path[0] if path else ""
         if not path:
@@ -593,11 +589,7 @@ class ReadImageFunc(Func):
     @classmethod
     def display_params(cls, arguments: dict, max_len: int = 80) -> str:
         """DSH 风格展示：``Read image <path>``（保留区域/操作扩展信息）。"""
-        path = (
-            arguments.get("file_path")
-            or arguments.get("path")
-            or arguments.get("paths", "")
-        )
+        path = arguments.get("file_path") or arguments.get("paths", "")
         if isinstance(path, list):
             path = path[0] if path else ""
         if not path:
@@ -631,7 +623,8 @@ class ReadImageFunc(Func):
         file_path: str | None = None,
     ):
         super().__init__()
-        # DSH 对齐：file_path 是模型侧首选字段；path 保留为构造器兼容参数。
+        # 模型侧路径字段为 file_path（工具参数唯一的路径字段）；
+        # path 仅是本构造器的内部参数名（保持既有 Python 调用签名）。
         if file_path:
             path = file_path
         if not isinstance(path, str):

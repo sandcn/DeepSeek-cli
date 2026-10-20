@@ -229,7 +229,7 @@ def test_read_swap_warning_publishes_notice(capture_emit, monkeypatch):
 
     monkeypatch.setattr(Func, "_publish_tool_text", lambda *a, **k: pytest.fail("不应走工具卡输出"))
     inst = Read.from_args({
-        "path": "src/tools/read.py",
+        "file_path": "src/tools/read.py",
         "start_line": 400, "end_line": 380,
     })
     assert inst.start_line == 380 and inst.end_line == 400
@@ -245,7 +245,7 @@ def test_read_validate_warning_uses_notice(capture_emit):
     """行号 <1 自动调整为 1 的警告同样走通知块。"""
     from src.tools import Read
 
-    inst = Read.from_args({"path": "x.py", "start_line": 0, "end_line": 5})
+    inst = Read.from_args({"file_path": "x.py", "start_line": 0, "end_line": 5})
     assert inst.start_line == 1
     assert len(capture_emit.events) == 1
     assert "start_line 必须 >= 1" in capture_emit.events[0].text
@@ -255,7 +255,7 @@ def test_read_validate_non_int_ignored_uses_notice(capture_emit):
     """非整数行号忽略参数的警告同样走通知块。"""
     from src.tools import Read
 
-    inst = Read.from_args({"path": "x.py", "start_line": "abc"})
+    inst = Read.from_args({"file_path": "x.py", "start_line": "abc"})
     assert inst.start_line is None
     assert len(capture_emit.events) == 1
     assert "应为整数" in capture_emit.events[0].text
@@ -265,7 +265,7 @@ def test_read_normal_args_no_notice(capture_emit):
     """正常参数（含合法行号范围）不产生任何通知。"""
     from src.tools import Read
 
-    inst = Read.from_args({"path": "x.py", "start_line": 10, "end_line": 20})
+    inst = Read.from_args({"file_path": "x.py", "start_line": 10, "end_line": 20})
     assert inst.start_line == 10 and inst.end_line == 20
     assert capture_emit.events == []
 

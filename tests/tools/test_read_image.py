@@ -1,7 +1,7 @@
 """read_image 工具测试（对齐 DSH read_image 契约，2026-10）。
 
 覆盖：
-- ``file_path`` 首选参数 + ``path`` 兼容别名
+- ``file_path`` 唯一路径参数（``path`` 已删除）
 - 扩展名门禁 / 无扩展名按内容识别
 - magic-byte / 声明类型一致校验
 - 精确路由模型 image 输入门禁
@@ -85,14 +85,10 @@ async def test_file_path_argument(tmp_path, monkeypatch):
     assert f.result_blocks is not None
 
 
-async def test_path_alias_argument(tmp_path, monkeypatch):
-    """旧参数 path 保留兼容。"""
-    _multimodal(monkeypatch, True)
-    p = _write_test_image(tmp_path / "t.png", 2, 2)
-    f = ReadImageFunc.from_args({"path": p})
-    out = await f.execute()
-    assert out.startswith(p)
-    assert f.result_blocks is not None
+def test_path_parameter_removed():
+    """旧参数 path 已删除：from_args 不再接受（报缺 file_path）。"""
+    with pytest.raises(ValueError):
+        ReadImageFunc.from_args({"path": "/tmp/a.png"})
 
 
 async def test_format_gate_rejects_txt(tmp_path):
@@ -508,7 +504,8 @@ def test_tool_schema_mentions_dsh_contract():
     schema = ReadImageFunc.to_tool_schema()["function"]
     desc = schema["description"]
     assert "file_path" in schema["parameters"]["properties"]
-    assert "path" in schema["parameters"]["properties"]
+    assert "path" not in schema["parameters"]["properties"]
+    assert schema["parameters"]["required"] == ["file_path"]
     assert "downscaled" in desc or "downscale" in desc
     assert "2048x2048" in desc
     assert "grayscale" in desc
@@ -541,8 +538,8 @@ def test_display_params():
     })
     assert "Read image /tmp/a.png" in d
     assert "grayscale" in d and "(1,0)-(2,1)" in d
-    assert ReadImageFunc.display_params(
-        {"path": "/tmp/a.png"}) == "Read image /tmp/a.png"
+    # 旧参数名 path 不再展示
+    assert ReadImageFunc.display_params({"path": "/tmp/a.png"}) == ""
 
 
 def test_display_params_partial_coords():

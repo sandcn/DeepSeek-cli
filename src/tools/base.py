@@ -20,6 +20,40 @@ def _get_init_sig(cls: type) -> inspect.Signature:
     return inspect.signature(cls.__init__)
 
 
+def from_args_by_signature(cls: type, args: dict):
+    """按 ``cls.__init__`` 签名从参数字典构造实例。
+
+    供 ``Func.from_args`` 与需要做参数名映射的子类（如 ``FileToolBase``
+    把模型侧 ``file_path`` 映射到内部构造参数 ``path``）共同复用，避免
+    重复实现缺参校验与多余参数日志。
+    """
+    sig = _get_init_sig(cls)
+    _params = list(sig.parameters.values())
+    # 跳过 self
+    _init_params = [p for p in _params if p.name != 'self']
+    # 检查必需参数是否缺失（无默认值且不在 args 中）
+    _missing = [
+        p.name for p in _init_params
+        if p.default is inspect.Parameter.empty and p.name not in args
+    ]
+    if _missing:
+        names = ', '.join(_missing)
+        raise ValueError(
+            f"工具 '{cls.name}' 缺少必需参数: {names}。"
+            f"调用时必须提供所有必需参数。"
+        )
+    # 多余参数（非 __init__ 参数名）：记录 debug 日志，不阻塞执行——
+    # 模型传错参数名时下游 execute 会给出错误，debug 日志便于排查
+    _extra = set(args) - {p.name for p in _init_params}
+    if _extra:
+        logging.getLogger(__name__).debug(
+            "工具 '%s' 收到多余参数: %s（已忽略）",
+            cls.name, sorted(_extra),
+        )
+    kwargs = {p.name: args[p.name] for p in _init_params if p.name in args}
+    return cls(**kwargs)
+
+
 async def print_to_terminal(text: str, tool_id: str = "") -> None:
     """所有工具输出的唯一终端写入路径。
 
@@ -121,31 +155,7 @@ class Func(abc.ABC):
     @classmethod
     def from_args(cls, args: dict):
         """从 JSON 参数创建实例。默认按 __init__ 参数名从 args 取值，子类可覆盖以做特殊处理。"""
-        sig = _get_init_sig(cls)
-        _params = list(sig.parameters.values())
-        # 跳过 self
-        _init_params = [p for p in _params if p.name != 'self']
-        # 检查必需参数是否缺失（无默认值且不在 args 中）
-        _missing = [
-            p.name for p in _init_params
-            if p.default is inspect.Parameter.empty and p.name not in args
-        ]
-        if _missing:
-            names = ', '.join(_missing)
-            raise ValueError(
-                f"工具 '{cls.name}' 缺少必需参数: {names}。"
-                f"调用时必须提供所有必需参数。"
-            )
-        # 多余参数（非 __init__ 参数名）：记录 debug 日志，不阻塞执行——
-        # 模型传错参数名时下游 execute 会给出错误，debug 日志便于排查
-        _extra = set(args) - {p.name for p in _init_params}
-        if _extra:
-            logging.getLogger(__name__).debug(
-                "工具 '%s' 收到多余参数: %s（已忽略）",
-                cls.name, sorted(_extra),
-            )
-        kwargs = {p.name: args[p.name] for p in _init_params if p.name in args}
-        return cls(**kwargs)
+        return from_args_by_signature(cls, args)
 
     @classmethod
     def display_params(cls, arguments: dict, max_len: int = 80) -> str:

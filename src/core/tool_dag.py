@@ -316,9 +316,8 @@ class ToolDAG:
             except (OSError, ValueError):
                 return os.path.abspath(p.strip())
 
-        # ── path 参数 ──
-        # write/edit → 写入；rm → 删除；mk → 创建
-        # read/grep/glob/ls → 读取
+        # ── path 参数（grep/glob/ls/mkdir/rm/cp/mv 使用 path） ──
+        # rm → 删除；mk → 创建；read/grep/glob/ls → 读取
         path_val = arguments.get("path")
         np = _normalize(path_val) if path_val else None
         if np:
@@ -329,12 +328,11 @@ class ToolDAG:
             else:
                 write_paths.add(np)
 
-        # ── file_path 参数别名（防御性：当前无工具使用此参数名） ──
+        # ── file_path 参数（read/read_image → 读取；write/edit → 写入） ──
         fp_val = arguments.get("file_path")
         nfp = _normalize(fp_val) if fp_val else None
         if nfp:
-            _logger.debug("_extract_tool_paths: 工具 '%s' 使用了 file_path 参数: '%s'", name, nfp)
-            if name in ("read", "grep", "glob", "ls"):
+            if name in ("read", "read_image", "grep", "glob", "ls"):
                 read_paths.add(nfp)
             elif name == "rm":
                 delete_paths.add(nfp)

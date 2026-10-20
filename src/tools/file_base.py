@@ -8,7 +8,7 @@ import logging
 import asyncio
 
 _logger = logging.getLogger(__name__)
-from .base import Func, tool_metadata
+from .base import Func, tool_metadata, from_args_by_signature
 from .file_ops import (
     validate_path_security,
     check_file_size,
@@ -115,6 +115,26 @@ class FileSizeError(FileToolError):
 )
 class FileToolBase(Func):
     """write 和 edit 的公共基类。"""
+
+    @classmethod
+    def from_args(cls, args: dict):
+        """从工具参数创建实例（模型侧路径字段为 ``file_path``）。
+
+        工具 schema 对外声明 ``file_path``；内部构造参数沿用 ``path``。
+        本方法只做一次参数名映射，然后复用 ``from_args_by_signature`` 的
+        缺参校验 / 多余参数日志逻辑。旧参数名 ``path`` 不再被接受。
+        """
+        if not isinstance(args, dict):
+            raise ValueError(f"工具 '{cls.name}' 的参数必须是 JSON 对象")
+        file_path = args.get("file_path")
+        if not isinstance(file_path, str) or not file_path:
+            raise ValueError(
+                f"工具 '{cls.name}' 缺少必需参数: file_path。"
+                f"调用时必须提供 file_path。"
+            )
+        normalized = {k: v for k, v in args.items() if k != "file_path"}
+        normalized["path"] = file_path
+        return from_args_by_signature(cls, normalized)
 
     def __init__(self, path: str, content_for_size_check: str = ""):
         # 内容大小校验（纯字符串计算，无 I/O）保留在构造时

@@ -136,6 +136,28 @@ def test_dos_device_name_blocked_on_windows(monkeypatch):
         fo.validate_path_security("NUL.txt")
 
 
+def test_etc_passwd_blocked_on_posix():
+    """系统关键路径按原始路径拒绝（Termux 上 /etc/passwd 的 realpath 为 /system/etc/passwd）。"""
+    from src.tools.file_ops import validate_path_security
+
+    if os.name == "nt":
+        pytest.skip("POSIX 系统关键路径用例")
+    with pytest.raises(ValueError):
+        validate_path_security("/etc/passwd")
+
+
+def test_system_critical_path_checked_before_realpath(monkeypatch):
+    """realpath 解析到别处时仍按原始归一化路径命中系统关键路径。"""
+    import src.tools.file_ops as fo
+
+    if os.name == "nt":
+        pytest.skip("POSIX 路径语义用例")
+    monkeypatch.setattr(fo, "system_critical_paths", lambda: frozenset({"/critical/secret"}))
+    monkeypatch.setattr(fo.os.path, "realpath", lambda p: "/resolved/elsewhere")
+    with pytest.raises(ValueError):
+        fo.validate_path_security("/critical/secret")
+
+
 # ── 4. 静态配置对齐 ──────────────────────────────────────────
 
 

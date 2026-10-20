@@ -156,7 +156,7 @@ async def test_regex_flags_invalid_character_surfaces_as_compile_error(tmp_path)
 
 
 def test_display_params_annotations(tmp_path):
-    args = {"path": "a/b.py", "use_regex": True, "replace_all": True}
+    args = {"file_path": "a/b.py", "use_regex": True, "replace_all": True}
     text = EditFunc.display_params(args)
     assert "a/b.py" in text
     assert "[正则]" in text

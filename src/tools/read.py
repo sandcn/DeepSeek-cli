@@ -55,7 +55,7 @@ class ReadFunc(Func):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": {
+                        "file_path": {
                             "type": "string",
                             "description": "文件路径，支持相对路径（如 src/main.py）或绝对路径。"
                         },
@@ -75,7 +75,7 @@ class ReadFunc(Func):
                             "description": "是否在返回内容中为每行附加行号（行号从 1 开始；配合行号范围读取时从 start_line 起连续编号）。默认关闭。"
                         }
                     },
-                    "required": ["path"]
+                    "required": ["file_path"]
                 }
             }
         }
@@ -122,9 +122,9 @@ class ReadFunc(Func):
 
     @classmethod
     def from_args(cls, args):
-        path = args.get("path") or args.get("paths")
+        path = args.get("file_path") or args.get("paths")
         if path is None:
-            raise ValueError("缺少必需参数: path")
+            raise ValueError("缺少必需参数: file_path")
         start_line = args.get("start_line")
         end_line = args.get("end_line")
 
@@ -132,7 +132,7 @@ class ReadFunc(Func):
         if isinstance(path, list):
             path = path[0] if path else ""
         if not path:
-            raise ValueError("缺少有效路径: path")
+            raise ValueError("缺少有效路径: file_path")
 
         # 验证行号参数
         start_line = cls._validate_line_number(start_line, "start_line")
@@ -152,7 +152,7 @@ class ReadFunc(Func):
 
     @classmethod
     def display_params(cls, arguments: dict, max_len: int = 80) -> str:
-        path = arguments.get("path") or arguments.get("paths", "")
+        path = arguments.get("file_path") or arguments.get("paths", "")
         if isinstance(path, list):
             path = path[0] if path else ""
         if not path:

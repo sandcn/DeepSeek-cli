@@ -62,7 +62,7 @@ class EditFunc(FileToolBase):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": {
+                        "file_path": {
                             "type": "string",
                             "description": "要修改的文件路径（相对或绝对路径）。文件不存在且 old_string 非空时报错「文件不存在或为空」，请改用 write 创建或设 old_string 为空实现追加。"
                         },
@@ -87,14 +87,14 @@ class EditFunc(FileToolBase):
                             "description": "正则标志（仅 use_regex=true 时生效）。字符组合：i=忽略大小写，m=多行（^$ 匹配每行行首尾），s=点匹配换行，a=ASCII，x=详细模式。例如 'im' 表示忽略大小写+多行。"
                         }
                     },
-                    "required": ["path", "old_string", "new_string"]
+                    "required": ["file_path", "old_string", "new_string"]
                 }
             }
         }
 
     @classmethod
     def display_params(cls, arguments: dict, max_len: int = 80) -> str:
-        path = arguments.get("path", "")
+        path = arguments.get("file_path", "")
         parts = [f"'{cls._sanitize_display(path)}'"]
         if arguments.get("use_regex"):
             parts.append("[正则]")

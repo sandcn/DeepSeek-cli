@@ -159,7 +159,10 @@ class PolicyService(Service):
         #   被误拒（修复前 bug）。None 交给 check() 按「主 Agent」放行。
         agent_type = call.get("agent_type")
         arguments = call.get("arguments") or {}
-        path = arguments.get("path") if isinstance(arguments, dict) else None
+        # 文件工具（write/edit）的路径字段为 file_path；mkdir 等仍用 path。
+        path = None
+        if isinstance(arguments, dict):
+            path = arguments.get("file_path") or arguments.get("path")
         allowed, reason = self.check(call.get("name", ""), agent_type, path)
         if not allowed:
             return {"allow": False, "reason": reason}
