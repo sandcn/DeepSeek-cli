@@ -395,6 +395,72 @@ class InputIO:
         self._pending = data + remaining
         self._pending_pos = 0
 
+    def append_pending(self, data: bytes) -> None:
+        """追加字节到 pending 缓冲尾部（InputPump 线程投递原始字节用）。
+
+        与 ``prepend_pending`` 对称：保留未消费前缀，新字节追加在后。
+        """
+        if not data:
+            return
+        if self._pending_pos >= len(self._pending):
+            self._pending = data
+            self._pending_pos = 0
+            return
+        remaining = self._pending[self._pending_pos:]
+        self._pending = remaining + data
+        self._pending_pos = 0
+
+    def poll_raw(self, timeout: float = 0.05) -> bytes:
+        """读取原始字节（InputPump 独立线程用；不解析、不分发）。
+
+        - 已有 pending 时返回空（渲染线程尚未消费，pump 不继续读，避免
+          缓冲无界增长；渲染线程每帧消费 pending 后 pump 继续）；
+        - 原生 Windows 控制台走 ``_win_console.read_bytes``（非阻塞）；
+        - 其他平台 select + os.read 批量读取。
+
+        Returns:
+            读取到的原始字节；无数据/超时/异常返回 b""。
+        """
+        if self.has_pending():
+            # 渲染线程尚未消费完 pending：短暂让出 CPU（避免 pump 忙循环），
+            # 渲染线程每帧最多消费 4096 字节。
+            time.sleep(min(0.01, max(0.0, timeout)))
+            return b""
+        if not self.can_read():
+            time.sleep(min(0.05, max(0.0, timeout)))
+            return b""
+        fd = self._fd
+        try:
+            from . import _win_console
+
+            win_console = fd == 0 and _win_console.supported()
+        except Exception:
+            win_console = False
+        if win_console:
+            try:
+                return _win_console.read_bytes() or b""
+            except Exception:
+                return b""
+        try:
+            ready, _, _ = select.select([fd], [], [], timeout)
+        except (ValueError, OSError, TypeError, AttributeError):
+            self.record_select_error()
+            return b""
+        if not ready:
+            return b""
+        self.reset_select_error()
+        try:
+            raw = os.read(fd, 4096)
+        except (ValueError, OSError, TypeError) as exc:
+            self.mark_fd_error(exc)
+            return b""
+        if not raw:
+            self.record_eof()
+            time.sleep(min(0.01, max(0.0, timeout)))
+            return b""
+        self.reset_eof()
+        return raw
+
     def read_byte(self) -> bytes:
         """从 fd 读取单个原始字节（优先消费 pending，零 syscall）。
 

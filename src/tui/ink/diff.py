@@ -8,7 +8,7 @@ from __future__ import annotations
 from .output import Frame
 
 
-def first_diff_line(prev: Frame, new: Frame) -> int:
+def first_diff_line(prev: Frame, new: Frame, start: int = 0) -> int:
     """计算首差异行索引（0-based）。
 
     规则：
@@ -36,7 +36,12 @@ def first_diff_line(prev: Frame, new: Frame) -> int:
     n_lines = new.lines
     sp = prev._stable_prefix
     skip_lo = skip_hi = 0
-    if (
+    # ★ P1-3：历史段（committed 区）引用/长度/偏移一致 → 整段跳过；
+    #   否则回退 stable_prefix（行对象身份）跳过。
+    if prev.history_unchanged(new) and prev._history_len > 0:
+        skip_lo = prev._history_offset
+        skip_hi = skip_lo + prev._history_len
+    elif (
         sp is not None
         and sp is new._stable_prefix
         and prev._stable_prefix_offset == new._stable_prefix_offset
@@ -50,9 +55,9 @@ def first_diff_line(prev: Frame, new: Frame) -> int:
     #   等每帧新建行）永不参与比较：仅顶部行变化时返回 -1（判定帧完全一致、
     #   不写任何字节），标题栏呼吸色/版本号在空闲帧冻结。现逐行扫描并在
     #   命中跳过区间时跳到其末尾（区间外行仍逐行比较）。
-    i = 0
-    if skip_lo <= 0:
-        i = max(0, skip_hi)
+    i = max(0, int(start))
+    if skip_lo <= i < skip_hi:
+        i = skip_hi
     while i < n:
         if skip_lo <= i < skip_hi:
             i = skip_hi

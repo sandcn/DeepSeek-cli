@@ -64,7 +64,7 @@ from src.tui._screen import (
     cursor_hide, cursor_show, cursor_goto,
 )
 from .output import Frame
-from .diff import first_diff_line
+from .frame_targets import FrameTargets
 # ★ 巨型文件拆分（2026-10-07 架构优化）：内容行发射职责（committed 内容行 →
 #   输出历史回调）独立为 Mixin 模块；InkRenderer 经继承组合（行为零变化）。
 from ._renderer_content import _RendererContentMixin
@@ -105,6 +105,8 @@ class InkRenderer(_RendererContentMixin):
         self._stream = stream if stream is not None else sys.__stdout__
         self._line_callback = line_callback
         self._prev: Frame | None = None
+        # ★ P1-3：历史段/live 段渲染目标（脏判定与扫描范围分离）。
+        self._targets = FrameTargets()
         # 当前光标行（1-based；height=0 时=文档坐标，height>0 时=屏幕坐标已钳制）
         self._cursor_row: int = 0
         # 终端屏幕高度（行）；0 = 未知/无限（测试用，文档坐标即屏幕坐标）
@@ -511,7 +513,12 @@ class InkRenderer(_RendererContentMixin):
 
         prev_h = self._prev.height
         new_h = frame.height
-        i = first_diff_line(self._prev, frame)
+        # ★ P1-3：历史段/live 段分别判定——历史未变时从历史末尾开始扫描，
+        #   不再逐行比较 committed 区。
+        plan = self._targets.plan(self._prev, frame)
+        if not plan.changed:
+            return
+        i = plan.first_diff
         if i < 0:
             # 帧完全一致：仅刷新光标位置（调用方自行 place_cursor）
             return

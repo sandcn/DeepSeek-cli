@@ -1,18 +1,15 @@
-"""渲染线程与输入处理恒定 60Hz 回归测试（2026-10-20 用户需求）。
+"""渲染调度回归测试（P0-1 按需渲染 + 60Hz 上限）。
 
-需求：「render 线程跟 input 处理改成 60hz，不能降减少和降级」。
+历史（2026-10-20）曾要求「渲染线程恒定 60Hz 全量渲染」；该契约导致空闲
+CPU 常驻、大文档每帧 O(文档) 全量重建，已被 P0-1 架构修复取代：
 
-覆盖：
-  1. 帧率真源常量（``RENDER_HZ`` / ``RENDER_INTERVAL_SEC``）与配置默认值；
-  2. ``TuiConfig`` 帧率不可降低（构造 / ``with_overrides`` 均被强制回 1/60，
-     帧率派生节流参数一并强制回 60Hz 真源）；
-  3. ``InkSession._should_render``：恒定渲染（每拍都渲染，不跳过、不提前，
-     节拍由渲染循环保证）；密集重绘请求不会导致超频；
-  4. ``InkSession._needs_animation``（按需渲染探测）已移除；
-  5. ``render(maxFps=...)`` 不再降低帧率；
-  6. 端到端：空闲会话持续运行产生的帧数 ≈ 60Hz；
-  7. 输入处理：``_phase_process_input`` 在每个渲染帧执行（输入轮询与渲染
-     同频 60Hz，不降采样、不减少单帧处理）。
+  - 帧率真源仍为 60Hz（``RENDER_HZ`` / ``RENDER_INTERVAL_SEC``），但它是
+    **最大帧率**，不是空闲节拍；
+  - 空闲时渲染线程阻塞在调度器 Event 上，不重建组件树、不做全量渲染；
+  - 命令/输入/重绘/动画请求到达时按需唤醒，连续请求不超过 60Hz；
+  - 输入读取由 ``InputPump`` 独立线程驱动（不依赖渲染节拍）。
+
+本文件保留原有用例名/覆盖点，断言改为新契约。
 """
 
 from __future__ import annotations
@@ -30,10 +27,12 @@ from src.tui.ink._render_api import _SimpleModel
 from src.tui.ink.session import InkSession
 
 
-def _make_session() -> InkSession:
+def _make_session(build_calls: list | None = None) -> InkSession:
     model = _SimpleModel()
+    calls = build_calls if build_calls is not None else []
 
     def _build_tree(m, w):
+        calls.append(1)
         return h(TEXT, {"children": "idle"})
 
     return InkSession(
@@ -46,7 +45,7 @@ def _make_session() -> InkSession:
 
 
 class TestFixedFrameRateSource:
-    """帧率真源与配置默认值。"""
+    """帧率真源与配置默认值（60Hz = 最大帧率）。"""
 
     def test_constants(self):
         assert RENDER_HZ == 60.0
@@ -60,7 +59,7 @@ class TestFixedFrameRateSource:
         assert cfg.bottom_redraw_interval == pytest.approx(RENDER_INTERVAL_SEC)
 
     def test_frame_rate_cannot_be_changed(self):
-        """构造 / 覆盖路径均无法降低帧率（强制回真源值）。"""
+        """构造 / 覆盖路径均无法改变 60Hz 上限。"""
         assert TuiConfig(render_interval=0.5).render_interval == pytest.approx(
             RENDER_INTERVAL_SEC
         )
@@ -75,110 +74,92 @@ class TestFixedFrameRateSource:
         assert cfg.bottom_redraw_interval == pytest.approx(RENDER_INTERVAL_SEC)
         assert cfg.spinner_tick_hz == pytest.approx(RENDER_HZ)
 
-    def test_idle_render_switch_removed(self):
-        assert not hasattr(TuiConfig.defaults(), "idle_render")
 
-
-class TestShouldRenderAlways:
-    """``_should_render`` 恒定渲染语义（不再依赖脏/动画，不跳过、不提前）。"""
+class TestShouldRenderOnDemand:
+    """``_should_render`` 按需语义：脏/重绘/动画/首帧才渲染。"""
 
     def _stub(self) -> InkSession:
         stub = object.__new__(InkSession)
         stub._config = TuiConfig.defaults()
         stub._bottom_redraw_requested = threading.Event()
         stub._dirty = False
+        stub._animating = False
+        stub._force_render = False
         return stub
 
-    def test_always_true(self):
+    def test_idle_does_not_render(self):
         stub = self._stub()
-        assert stub._should_render() is True
-        assert stub._should_render() is True
+        assert stub._should_render() is False
+        assert stub._should_render() is False
 
-    def test_redraw_request_consumed_without_skipping(self):
+    def test_dirty_renders(self):
+        stub = self._stub()
+        stub._dirty = True
+        assert stub._should_render() is True
+        # 消费后回到空闲。
+        assert stub._should_render() is False
+
+    def test_redraw_request_consumed(self):
         stub = self._stub()
         stub._bottom_redraw_requested.set()
         assert stub._should_render() is True
         assert not stub._bottom_redraw_requested.is_set()
 
-    def test_animation_probe_removed(self):
-        assert not hasattr(InkSession, "_needs_animation")
+    def test_first_frame_forced(self):
+        stub = self._stub()
+        stub._force_render = True
+        assert stub._should_render() is True
+        assert stub._force_render is False
+
+    def test_animation_renders(self):
+        stub = self._stub()
+        stub._animating = True
+        assert stub._should_render() is True
 
 
-class TestIdleRenderLoopAt60Hz:
-    """端到端：空闲会话仍按 60Hz 持续渲染。"""
+class TestIdleRenderLoop:
+    """端到端：空闲只渲染首帧；请求后按需再渲染。"""
 
-    def test_idle_session_renders_continuously(self):
-        session = _make_session()
+    def test_idle_session_renders_first_frame_only(self):
+        calls: list = []
+        session = _make_session(calls)
         session.start()
         try:
-            time.sleep(0.5)
+            time.sleep(0.35)
         finally:
             session.stop()
         frames = session._frame_seq
-        # 恒定 60Hz：0.5s ≈ 30 帧（按需渲染时仅首帧 ~1 帧）
-        assert frames >= 12, f"空闲渲染帧数过少（疑似按需渲染/降频）：{frames}"
-        assert frames <= 60, f"空闲渲染超频（疑似忙循环）：{frames}"
+        # 空闲不再 60Hz 全量渲染：首帧 + 可能的启动脏帧，远少于 60Hz 拍数。
+        assert frames <= 3, f"空闲仍在持续全量渲染：{frames} 帧"
+        assert frames >= 1
+        assert len(calls) <= 4
 
-    def test_frequent_redraw_requests_do_not_exceed_60hz(self):
-        """密集重绘请求（模拟高频 force）不导致超频——帧率恒 ≤60Hz。"""
-        session = _make_session()
+    def test_request_wakes_render(self):
+        calls: list = []
+        session = _make_session(calls)
         session.start()
-        stop = time.monotonic() + 0.5
         try:
-            while time.monotonic() < stop:
+            time.sleep(0.1)
+            before = session._frame_seq
+            session._request_render()
+            time.sleep(0.15)
+        finally:
+            session.stop()
+        assert session._frame_seq > before, "请求后未渲染"
+        assert len(calls) > 1
+
+    def test_frame_rate_is_capped_at_60hz(self):
+        calls: list = []
+        session = _make_session(calls)
+        session.start()
+        try:
+            start = time.monotonic()
+            for _ in range(20):
                 session._request_render()
                 time.sleep(0.002)
+            time.sleep(0.05)
+            elapsed = max(0.05, time.monotonic() - start)
         finally:
             session.stop()
-        frames = session._frame_seq
-        # 0.5s @60Hz ≈ 30 帧；若重绘请求能提前渲染则会远超（>100）
-        assert frames <= 50, f"密集重绘请求导致超频：{frames}"
-
-
-def test_input_phase_runs_every_render_frame_at_60hz():
-    """INPUT 阶段每个渲染帧都调用 ``process_events``——输入处理 60Hz。"""
-    session = _make_session()
-    calls: list[int] = []
-
-    class _Input:
-        def process_events(self) -> None:
-            calls.append(1)
-
-    session._input = _Input()
-    session.start()
-    try:
-        time.sleep(0.35)
-    finally:
-        session.stop()
-    frames = session._frame_seq
-    # 0.35s @60Hz ≈ 21 帧（至少覆盖持续渲染，而非按需首帧）
-    assert frames >= 8, f"渲染帧数过少（疑似降频）：{frames}"
-    # 输入处理与渲染同频：每个渲染帧执行一次（允许前后各一帧的边界误差）
-    assert len(calls) >= frames - 2, (
-        f"输入处理被降采样：calls={len(calls)} frames={frames}"
-    )
-    assert len(calls) <= frames + 5, (
-        f"输入处理超出渲染节拍：calls={len(calls)} frames={frames}"
-    )
-
-
-def test_render_max_fps_ignored(monkeypatch):
-    """``render(maxFps=...)`` 保留参数但不再降低帧率。"""
-    from src.tui.ink import render
-
-    captured: list = []
-    real_init = InkSession.__init__
-
-    def _spy(self, *args, **kwargs):
-        real_init(self, *args, **kwargs)
-        captured.append(self)
-
-    monkeypatch.setattr(InkSession, "__init__", _spy)
-    buf = io.StringIO()
-    ctrl = render(h(TEXT, {"children": "x"}), stdout=buf, width=20, maxFps=1)
-    try:
-        time.sleep(0.1)
-    finally:
-        ctrl["unmount"]()
-    assert captured
-    assert captured[-1]._config.render_interval == pytest.approx(RENDER_INTERVAL_SEC)
+        # 连续请求不得超频：帧数 <= 60Hz * 时长 + 首帧余量。
+        assert session._frame_seq <= int(elapsed * RENDER_HZ) + 3

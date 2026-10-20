@@ -52,6 +52,7 @@ def create_shared():
         mouse=_rc_mouse(),
     )
     model = AppModel()
+    model.set_history_window(tui_config.history_window_lines)
     return tui_config, model
 
 
@@ -183,6 +184,7 @@ def create_framework(model, tui_config, line_tracker, input_instance):
     from src.tui.ink.session import InkSession
     from src.tui.app.apply import apply_cmd
     from src.tui.app.app import build_app_element
+    from src.tui.app.host import TuiHostAdapter
     from src.tui._ink_bridge import InkBridge
     from src.tui._screen import register_sigwinch_callback
 
@@ -191,6 +193,7 @@ def create_framework(model, tui_config, line_tracker, input_instance):
         apply_cmd=apply_cmd,
         build_tree=build_app_element,
         config=tui_config,
+        host_adapter=TuiHostAdapter(),
     )
     # ★ 2026-08-05 装配层重构：输出历史接线收敛为公开方法 set_line_tracker
     #   （取代对 ``session._ink_renderer.set_line_callback`` + 私有字段
@@ -402,7 +405,13 @@ def _make_fullscreen_toggle_cb(model, session, view_id: str):
         _logger.debug("fullscreen toggle 注册表校验异常", exc_info=True)
 
     def _cb():
-        if getattr(model, "fullscreen", "") == view_id:
+        views = getattr(model, "views", None)
+        if views is not None:
+            if views.navigation.fullscreen == view_id:
+                views.close_fullscreen()
+            else:
+                views.open_fullscreen(view_id)
+        elif getattr(model, "fullscreen", "") == view_id:
             model.fullscreen = ""
         else:
             model.fullscreen = view_id

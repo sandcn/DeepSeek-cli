@@ -351,6 +351,22 @@ def _find_committed_chat(root: Fiber):
     return found
 
 
+def static_region_start(root: Fiber) -> int | None:
+    """静态内容区（committed-chat / static-lines）在文档中的起始行。
+
+    框架层不再硬编码「App 树第 0 行恒为 TopHeader」——由宿主适配器调用本
+    函数，从 static-lines host fiber 的 ``layout_box.y`` 读取真实起始行。
+    无静态区 / 布局未就绪时返回 None（调用方保持默认基线）。
+    """
+    committed = _find_committed_chat(root)
+    if committed is None:
+        return None
+    box = getattr(committed, "layout_box", None)
+    if box is None:
+        return None
+    return max(0, box.y)
+
+
 def _to_line(row, width: int) -> Line:
     """画布行转 Line（行宽不变量 E-OVERFLOW-GUARD：超宽行截断到 width）。
 
@@ -464,6 +480,9 @@ def render_frame(root: Fiber, width: int) -> Frame:
                     stable_prefix=prefix,
                     stable_prefix_offset=0,
                     stable_prefix_len=fit,
+                    history_ref=prefix_src,
+                    history_len=fit,
+                    history_offset=0,
                 )
             # 非顶部 / 前缀含超宽行：前缀行填入画布对应区域（_paint 命中缓存
             # 已跳过画布写入；超宽行已截断，正常行身份保持）。
@@ -489,8 +508,11 @@ def render_frame(root: Fiber, width: int) -> Frame:
                 stable_prefix=prefix,
                 stable_prefix_offset=y0,
                 stable_prefix_len=fit,
+                history_ref=prefix_src,
+                history_len=fit,
+                history_offset=y0,
             )
     return Frame(_to_line(row, width) for row in canvas)
 
 
-__all__ = ["render_frame"]
+__all__ = ["render_frame", "static_region_start"]

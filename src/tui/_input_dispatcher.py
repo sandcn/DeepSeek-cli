@@ -76,6 +76,10 @@ class InputDispatcher:
         self._io = io
         self._buffer_editor = buffer_editor
         self._parser = parser
+        # ★ P1-1（InputPump）：pump 独立线程读取原始字节，渲染线程只消费
+        #   pending 解析/分发——pump 激活时 read_stdin_once 不再自行 select/read
+        #   （单一读取者，避免双线程抢 fd）。
+        self._pump_active: bool = False
         # ★ 补全导航策略（模块边界优化，2026-08-05）：Tab/箭头/翻页/Shift+Tab
         #   的补全弹窗交互独立为 _CompletionNavHandler；本类经组合委托。
         self._completion_nav = _CompletionNavHandler(self)
@@ -523,6 +527,20 @@ class InputDispatcher:
     # stdin 直接读取（render 线程调用）
     # ═══════════════════════════════════════════════════════
 
+    # ── P1-1 InputPump 接线 ──────────────────────────
+
+    def set_pump_active(self, active: bool) -> None:
+        """启用/停用 InputPump 模式（启用后本类不再自行 select/read）。"""
+        self._pump_active = bool(active)
+
+    def poll_raw(self, timeout: float = 0.05) -> bytes:
+        """InputPump 线程读取原始字节（委托 InputIO）。"""
+        return self._io.poll_raw(timeout)
+
+    def feed_raw(self, data: bytes) -> None:
+        """InputPump 线程投递原始字节到 pending（render 线程解析）。"""
+        self._io.append_pending(data)
+
     def read_stdin_once(self) -> bool:
         """单次非阻塞 stdin 读取 + 直接分发（不经过事件队列）。
 
@@ -566,6 +584,11 @@ class InputDispatcher:
             except Exception:
                 _logger.warning("pending 字节分发异常", exc_info=True)
                 return True
+
+        # ★ P1-1：InputPump 激活时原始读取由 pump 线程负责——本方法只消费
+        #   pending（上方已处理），无 pending 即返回，不再 select/os.read。
+        if self._pump_active:
+            return False
 
         # ── 原生 Windows 控制台：select 只支持 socket，控制台句柄会抛
         #    OSError（原生 Windows 上 TUI 输入完全失效）。改走
@@ -922,6 +945,19 @@ class InputDispatcher:
             self._enter_residual_pending = True
 
     def _dispatch_key_event(self, event: KeyEvent) -> None:
+        """单一输入入口（P1-5）：InputRouter 优先 → 唯一兜底。
+
+        修复前本方法内联「router 优先 + 旧路径」，模态/焦点仲裁与输入缓冲
+        分散在两个通道；现在统一经 ``InputRouter.dispatch``（hooks handler →
+        模态栈 → legacy 输入缓冲），本方法只做分发入口。
+        """
+        router = self._input_hook_router
+        if router is not None and hasattr(router, "dispatch"):
+            router.dispatch(event, self._dispatch_key_event_legacy)
+            return
+        self._dispatch_key_event_legacy(event)
+
+    def _dispatch_key_event_legacy(self, event: KeyEvent) -> None:
         """根据 KeyEvent.kind 分发到对应的输入处理器。
 
         Ctrl+G/O/N/R 等 ctrl_key 事件已在 read_stdin_once() 中拦截处理，

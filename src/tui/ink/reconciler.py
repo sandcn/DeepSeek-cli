@@ -177,15 +177,33 @@ def _props_identical(a: dict, b: dict) -> bool:
     return True
 
 
+from .effect_scheduler import EffectScheduler
+from .input_router import InputRouter as _InputRouter
+
+_logger = logging.getLogger(__name__)
+
+#: 无 key 自定义组件列表告警去重（父组件类型 → 已告警）
+_NO_KEY_WARNED: set = set()
+
+
 class Reconciler:
     """组件树调和器。
 
     Args:
         schedule_callback: 状态更新触发重渲染的回调（session 注入）。
+        defer_passive_effects: True 时 useEffect 入队、由宿主帧尾 flush
+            （InkSession 生产路径）；False 时提交期同步执行（renderToString/
+            单元测试，保持既有语义）。
     """
 
-    def __init__(self, schedule_callback: Callable[[], None] | None = None) -> None:
+    def __init__(
+        self,
+        schedule_callback: Callable[[], None] | None = None,
+        defer_passive_effects: bool = False,
+    ) -> None:
         self._schedule_callback = schedule_callback
+        self._defer_passive = bool(defer_passive_effects)
+        self._effect_scheduler = EffectScheduler()
         #: 本渲染根的 hooks 会话上下文（多会话隔离——每个 Reconciler 一个
         #: 独立 ``HookContext``；渲染期经 ``_hooks.push_context`` 激活，hooks
         #: 函数读取它，输入事件/router 回调闭包捕获它）。
@@ -405,6 +423,9 @@ class Reconciler:
             return_fiber.child = None
             return
 
+        # ★ P1-4：无 key 自定义组件列表告警（状态按位置复用会错位）。
+        self._warn_missing_keys(return_fiber, elements)
+
         # ★ 性能（方向1）：append-only 稳定列表快路径——前 N 个位置 key/type
         #   与旧链一致时按序复用（免构建 key maps / consumed 集合）。流式
         #   开放块每帧 1000 行 TEXT（key ``chat-{i}-{row}``）场景关键收益：
@@ -500,6 +521,28 @@ class Reconciler:
             if id(old) not in consumed:
                 self._mark_deleted(old)
         return_fiber.child = first
+
+    def _warn_missing_keys(self, parent: Fiber, elements) -> None:
+        """无 key 的自定义组件列表：开发告警（React 同语义，去重）。"""
+        if len(elements) < 2:
+            return
+        custom = [
+            el for el in elements
+            if el.props.get("key") is None and callable(getattr(el, "type", None))
+        ]
+        if len(custom) < 2:
+            return
+        types = [el.type for el in custom]
+        if len(types) == len(set(types)):
+            return
+        parent_type = getattr(parent, "type", None)
+        if parent_type in _NO_KEY_WARNED:
+            return
+        _NO_KEY_WARNED.add(parent_type)
+        _logger.warning(
+            "列表中的自定义组件缺少 key（按位置复用会导致状态错位）: parent=%s",
+            parent_type,
+        )
 
     def _try_reuse_stable(
         self,
@@ -1138,9 +1181,21 @@ class Reconciler:
                 return True
             return False
 
-        setattr(router, "_ink_has_focus_ids", has_focus_ids)
-        self._input_router_cache = (signature, router, hooks_list, paste_hooks, mouse_hooks)
-        return router
+        # ★ P1-5：composite handler 包装为显式 InputRouter（模态栈 + 单一
+        #   兜底入口）；调用方（InputDispatcher）不再自行判断双通道。
+        router_obj = _InputRouter(
+            router,
+            focus_next=getattr(_hooks, "_focus_next", None),
+            focus_previous=getattr(_hooks, "_focus_previous", None),
+        )
+        # ★ P1-5：active 全屏/模态 hook 同步为 Router 的模态栈（吞事件仲裁
+        #   收敛到 InputRouter.route，而不是 composite 闭包末尾）。
+        router_obj.set_modals(fullscreen_hooks)
+        router_obj.set_focus_enabled(bool(has_focus_ids))
+        setattr(router_obj, "_ink_has_focus_ids", has_focus_ids)
+        setattr(router_obj, "_ink_fullscreen", any(h.is_active for h in fullscreen_hooks))
+        self._input_router_cache = (signature, router_obj, hooks_list, paste_hooks, mouse_hooks)
+        return router_obj
 
     def _collect_input_hooks(self, fiber: Fiber | None, out: list[InputHook], paste_out: list[PasteHook] | None = None, mouse_out: list[MouseHook] | None = None) -> None:
         """前序遍历 fiber 树，收集 active 的 InputHook / FullscreenHook（跳过已删除）。
@@ -1314,12 +1369,23 @@ class Reconciler:
         """提交依赖变化的 effect（PERF-25：用 ``_collect_render_metadata`` 合并
         遍历收集的 function fiber 前序列表，reversed 后序提交——子 effect 先于
         父 effect，React 语义）。"""
-        # 第一阶段：layout effects（useLayoutEffect）
+        # 第一阶段：layout effects（useLayoutEffect）——绘制前同步执行。
         for fiber in reversed(function_fibers):
             self._commit_live(fiber, layout=True)
-        # 第二阶段：passive effects（useEffect）
+        # 第二阶段：passive effects（useEffect）——生产会话延迟到帧尾
+        #   （P1-4）；独立 render()/测试保持同步语义。
         for fiber in reversed(function_fibers):
-            self._commit_live(fiber, layout=False)
+            if self._defer_passive:
+                self._effect_scheduler.enqueue(fiber)
+            else:
+                self._commit_live(fiber, layout=False)
+
+    def flush_passive_effects(self, budget_ms: float = 8.0) -> int:
+        """执行帧尾 passive effects（宿主在帧输出完成后调用）。"""
+        return self._effect_scheduler.flush(
+            lambda fiber: self._commit_live(fiber, layout=False),
+            budget_ms=budget_ms,
+        )
 
     def _commit_live(self, fiber: Fiber, layout: bool) -> None:
         """提交依赖变化的 effect（layout=True 仅 layout effects；False 仅 passive）。"""
