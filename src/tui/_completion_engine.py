@@ -6,9 +6,12 @@
 职责互补（交互 vs 计算），非平行重复实现。
 
 支持三种补全：
-  - 命令补全（/ 开头）：从命令注册表获取
+  - 命令补全（/ 开头）：从命令注册表获取（忽略大小写 + 子序列模糊匹配，
+    描述列展示分组 / 描述 / 用法）
   - 路径补全（非 / 开头）：文件系统路径
-  - 参数补全（命令已完整输入后）：/model /theme /load 的参数选项
+  - 参数补全（命令已完整输入后）：/model /theme /load /config（子命令 +
+    键名 + 可枚举值）、/title /skill /sandbox /context /loop 子命令与参数、
+    /export 输出路径
 """
 
 from __future__ import annotations
@@ -59,7 +62,10 @@ def _get_command_help() -> Callable | None:
 #: 逐条解析耗时，改为**按需懒加载**：仅在补全菜单弹出（输入 ``/load`` 或
 #: ``/load ``）时由 ``_complete_param`` 经 ``_cached`` 触发后台加载，
 #: 避免拖慢程序启动（用户需求：启动不加载 /load 补全列表）。
-_RESIDENT_KEYS = ("commands", "models", "themes", "config_keys")
+#: ``skills`` 同样不预热：技能目录扫描涉及多根目录 + frontmatter 解析，
+#: 仅在 ``/skill info|remove`` 需要技能名时按需加载。
+_RESIDENT_KEYS = ("commands", "command_meta", "models", "themes", "config_keys",
+                  "config_values")
 
 # ── 类型 ────────────────────────────────────────────────
 
@@ -95,6 +101,27 @@ def _current_config_value(key: str) -> str:
         return ""
 
 
+def _format_context_tokens(value: str) -> str:
+    """上下文 token 配置值 → 补全候选标签（``1000000`` → ``1m``、``256000`` → ``256k``）。
+
+    ``/context`` 的候选写作 ``128k`` / ``1m``（``_parse_token_arg`` 按 1000 进
+    制换算），配置里却是整数 token 数——统一换算后当前值才能与候选相等并
+    标注「当前」。无法解析或不能整除时原样返回。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        number = int(float(text))
+    except (TypeError, ValueError):
+        return text
+    if number > 0 and number % 1_000_000 == 0:
+        return f"{number // 1_000_000}m"
+    if number > 0 and number % 1_000 == 0:
+        return f"{number // 1_000}k"
+    return text
+
+
 def _ranked(items: list[str], prefix: str) -> list[str]:
     """候选语义排序（方向D 步骤13）：精确匹配 > 前缀匹配（长度升序）> 子串包含（长度升序）。
 
@@ -117,6 +144,64 @@ def _ranked(items: list[str], prefix: str) -> list[str]:
     substring_matches.sort(key=lambda t: (t[1], t[0].lower()))
     exact.sort(key=lambda s: s.lower())
     return exact + [t[0] for t in prefix_matches] + [t[0] for t in substring_matches]
+
+
+def _subsequence_positions(text: str, token: str) -> list[int] | None:
+    """子序列匹配：``token`` 的字符按序出现在 ``text`` 中时返回命中下标。
+
+    用于命令名模糊匹配（``/modl`` → ``/model``）：只要求字符按序出现，
+    不要求连续；无匹配返回 None。
+    """
+    positions: list[int] = []
+    pos = 0
+    for ch in token:
+        idx = text.find(ch, pos)
+        if idx < 0:
+            return None
+        positions.append(idx)
+        pos = idx + 1
+    return positions
+
+
+def _rank_fuzzy(items: list[str], prefix: str) -> list[str]:
+    """忽略大小写的语义排序：精确 > 大小写相等 > 前缀 > 子串 > 子序列。
+
+    命令补全与可枚举参数值（子命令 / 配置值）共用：
+      - 空前缀保持**输入序**（命令注册表序 = ``/help`` 优先 + 字母序；参数
+        候选项保持定义顺序）——修复前 ``_ranked`` 把空前缀命令按名称长度
+        升序排列，``/`` 弹窗顺序为 ``/pin /cost /edit ...`` 而非字母序；
+      - 前缀/子串均忽略大小写（``/CON`` → ``/config``）；
+      - 子序列模糊匹配要求查询长度 ≥ 2（单字符子序列与子串等价，无收益）。
+
+    同等级按名称长度升序、再按小写名、最后按输入序（稳定、可复现）。
+    """
+    query = prefix.lstrip("/")
+    if not prefix or not query:
+        return list(items)
+    low_query = query.lower()
+    fuzzy = len(low_query) >= 2
+    ranked: list[tuple[int, int, str, int, str]] = []
+    for index, raw in enumerate(items):
+        item = str(raw)
+        name = item.lstrip("/")
+        low_name = name.lower()
+        if not low_name:
+            continue
+        if name == query:
+            rank = 0
+        elif low_name == low_query:
+            rank = 1
+        elif low_name.startswith(low_query):
+            rank = 2
+        elif low_query in low_name:
+            rank = 3
+        elif fuzzy and _subsequence_positions(low_name, low_query) is not None:
+            rank = 4
+        else:
+            continue
+        ranked.append((rank, len(name), low_name, index, item))
+    ranked.sort(key=lambda t: (t[0], t[1], t[2], t[3]))
+    return [t[4] for t in ranked]
 
 
 def _session_mtime_ns(session: dict) -> int:
@@ -226,7 +311,13 @@ class CompletionEngine:
     # 支持参数补全的命令
     # ★ 2026-08-20（用户需求：config 命令独立界面）：/config 加入参数补全
     #   ——子命令（show/list/get/set/reset）+ 配置键名（view_model 构建）。
-    _PARAM_COMMANDS: frozenset = frozenset({"/model", "/theme", "/load", "/config"})
+    # ★ 2026-10-20（用户需求：完善 / 命令输入补全）：补全范围从 4 个命令
+    #   扩展到全部有可枚举参数的命令——/title 子命令、/skill 子命令+技能名、
+    #   /sandbox 子命令、/export 路径、/context token 容量、/loop 次数。
+    _PARAM_COMMANDS: frozenset = frozenset({
+        "/model", "/theme", "/load", "/config",
+        "/title", "/skill", "/sandbox", "/export", "/context", "/loop",
+    })
 
     def __init__(
         self, commands_source: Callable[[], list[str]] | None = None,
@@ -236,12 +327,19 @@ class CompletionEngine:
         #: 数据源（键级缓存 + 可选后台加载）；同步模式未命中即在调用线程加载。
         self._source = AsyncSource("completion")
         self._source.register("commands", source, ttl=60.0)
+        #: 命令元数据（分组 / 用法 / 描述）——命令弹窗展示「分组 · 描述 · 用法」。
+        self._source.register("command_meta", self._fetch_command_meta, ttl=60.0)
         # 会话列表：**流式**数据源——逐条 emit（每解析出一个会话即增量可见），
         # /load 补全弹窗随加载进度增长（数据就绪一条即界面增加一条候选）。
         self._source.register_stream("sessions", self._stream_sessions, ttl=60.0)
         self._source.register("models", self._fetch_models, ttl=60.0)
         self._source.register("themes", self._fetch_themes, ttl=60.0)
         self._source.register("config_keys", self._fetch_config_keys, ttl=60.0)
+        #: 配置键 → 可枚举候选值（/config set <键> <值> 补全；懒加载无必要，
+        #: 与 config_keys 同源、代价相同，一并预热）。
+        self._source.register("config_values", self._fetch_config_values, ttl=60.0)
+        #: 技能名 + 描述（/skill info|remove 参数补全；按需懒加载）。
+        self._source.register("skills", self._fetch_skills, ttl=60.0)
         #: 异步模式（TUI 装配启用）：未就绪返回空 + 界面显示「加载中…」占位。
         self._async_mode = bool(async_mode)
         #: 本次 complete 中处于「等待后台加载」的数据源键（pending 判定）。
@@ -266,9 +364,10 @@ class CompletionEngine:
     def warmup(self) -> None:
         """后台预热常驻数据源（启动时调用，首次补全零等待）。
 
-        仅预热轻量数据源（``commands`` / ``models`` / ``themes`` /
-        ``config_keys``）；``sessions``（``/load`` 补全列表）**不在**其中——
-        弹出 ``/load`` 补全菜单时才按需加载（见 ``_RESIDENT_KEYS``）。
+        仅预热轻量数据源（``commands`` / ``command_meta`` / ``models`` /
+        ``themes`` / ``config_keys`` / ``config_values``）；``sessions``
+        （``/load`` 补全列表）与 ``skills``（``/skill info|remove`` 技能名）
+        **不在**其中——补全菜单需要时才按需加载（见 ``_RESIDENT_KEYS``）。
         """
         self._source.prefetch(_RESIDENT_KEYS)
 
@@ -382,6 +481,113 @@ class CompletionEngine:
         except Exception:
             return []
 
+    @staticmethod
+    def _fetch_command_meta() -> dict:
+        """命令元数据（描述 / 用法 / 分组）——命令补全弹窗展示用。
+
+        数据源优先命令插件注册表（``CommandMeta``：group / usage /
+        description）；注册表不可用或缺项时回退旧命令表 ``_commands`` 的
+        help 文本（旧表无分组/用法，归入 ``general``）。异常一律降级为空
+        元数据（补全候选本身来自 ``commands`` 数据源，描述缺失不影响补全）。
+        """
+        try:
+            from ..core.internal.commands._command_core import GROUP_LABELS
+        except Exception:
+            GROUP_LABELS = {}
+        meta: dict[str, dict] = {}
+        try:
+            from ..core.commands.base import get_plugin_registry
+
+            for plugin in get_plugin_registry().list():
+                plugin_meta = getattr(plugin, "meta", None)
+                if plugin_meta is None:
+                    continue
+                name = str(getattr(plugin_meta, "name", "") or "")
+                if not name:
+                    continue
+                group = str(getattr(plugin_meta, "group", "general") or "general")
+                meta[f"/{name}"] = {
+                    "desc": str(getattr(plugin_meta, "description", "") or ""),
+                    "usage": str(getattr(plugin_meta, "usage", "") or ""),
+                    "group": group,
+                    "group_label": str(GROUP_LABELS.get(group, group)),
+                }
+        except Exception:
+            _logger.debug("读取命令元数据失败", exc_info=True)
+        # 回退补齐：旧命令表（含全部注册命令；别名条目的 help 形如 "别名: /model"）
+        try:
+            from ..core.internal.commands._command_core import _commands
+        except Exception:
+            _commands = {}
+        for key, info in _commands.items():
+            name = str(key)
+            if not name.startswith("/"):
+                name = "/" + name
+            if name in meta:
+                continue
+            help_text = info.get("help", "") if isinstance(info, dict) else ""
+            meta[name] = {
+                "desc": str(help_text or ""),
+                "usage": "",
+                "group": "general",
+                "group_label": str(GROUP_LABELS.get("general", "其他")),
+            }
+        return meta
+
+    @staticmethod
+    def _fetch_config_values() -> dict:
+        """配置键 → 可枚举候选值（``/config set <键> <值>`` 补全）。
+
+        数据来源与 ``/config`` 编辑界面一致（``build_config_entries`` 的
+        ``options``：静态枚举 / bool 的 true|false / 模型档案模型名）。同时按
+        显示路径（``theme``）与写回键（``THEME``）索引——``/config set``
+        两种写法都接受。无候选（纯文本/JSON 输入项）的键不入表。
+        """
+        out: dict[str, dict] = {}
+        try:
+            from src.config.view_model import build_config_entries
+
+            entries = build_config_entries()
+        except Exception:
+            _logger.debug("读取配置候选值失败", exc_info=True)
+            return out
+        for entry in entries:
+            options = entry.get("options")
+            if not options:
+                continue
+            value = entry.get("value")
+            if isinstance(value, bool):
+                current = "true" if value else "false"
+            else:
+                current = "" if value is None else str(value)
+            record = {
+                "options": [(str(v), str(d or "")) for v, d in options],
+                "current": current,
+            }
+            for key in (entry.get("path"), entry.get("key")):
+                if key:
+                    out[str(key)] = record
+        return out
+
+    @staticmethod
+    def _fetch_skills() -> list[tuple[str, str]]:
+        """技能列表（名称 + 描述；``/skill info|remove`` 参数补全）。
+
+        按需懒加载（不参与启动预热）：技能目录扫描涉及项目/用户/插件多根
+        目录与 frontmatter 解析。异常降级为空列表（补全无候选，不崩溃）。
+        """
+        try:
+            from ..skills import default_registry
+
+            return [
+                (str(skill.name), str(getattr(skill, "description", "") or ""))
+                for skill in default_registry().list()
+                if getattr(skill, "name", "")
+            ]
+        except Exception:
+            _logger.debug("读取技能列表失败", exc_info=True)
+            return []
+
     # ── 主入口 ─────────────────────────────────────────
 
     def complete(self, text: str, cursor_pos: int | None = None) -> list[CompletionItem]:
@@ -447,7 +653,11 @@ class CompletionEngine:
                 #   候选唯一（修复 /model 与 /models 共存时输入 /model 被当作
                 #   命令前缀列举、参数补全失效）：输入 /model 仍进入模型参数
                 #   补全；输入 /mod 候选无精确项则照常列举命令。
-                if "param" in active and any(it.text == last_word for it in items):
+                # ★ 2026-10-20：精确匹配**忽略大小写**（/MODEL 同样进入参数
+                #   补全，与命令执行 ``parts[0].lower()`` 语义一致）。
+                if "param" in active and any(
+                    it.text.lower() == last_word.lower() for it in items
+                ):
                     param_items = self._call_provider("param", ctx)
                     if param_items:
                         return param_items
@@ -500,46 +710,119 @@ class CompletionEngine:
     def _complete_command(self, prefix: str) -> list[CompletionItem]:
         """补全命令名（/ 开头）。
 
-        方向D 步骤13：候选语义排序——精确匹配 > 前缀匹配（长度升序）>
-        子串包含（长度升序）；同优先级按字母序（稳定排序保持注册表序为次级）。
+        候选匹配与排序见 ``_rank_fuzzy``：忽略大小写 + 子序列模糊匹配
+        （``/modl`` → ``/model``），精确 > 大小写相等 > 前缀 > 子串 > 子序列；
+        仅输入 ``/`` 时保持注册表顺序（``/help`` 优先 + 字母序）。
+
+        描述列展示「分组 · 描述 · 用法」三段（数据源 ``command_meta``，
+        缺失时回退 ``get_command_help`` 的注册表 help 文本）。
         """
         commands = self._cached("commands", [])
-        ranked = _ranked(commands, prefix)
+        metas = self._cached("command_meta", {}) or {}
         # ★ P3（review 2026-08-22）：``get_command_help`` 经模块级惰性缓存
         #   （``_get_command_help``）取得——修复前每 Tab 重复 from import +
         #   try/except。
         get_command_help = _get_command_help()
         result: list[CompletionItem] = []
-        for cmd in ranked:
-            # Claude TUI parity 步骤 3.7：命令描述（注册表 help；无则空串）
-            desc = ""
-            if get_command_help is not None:
-                try:
-                    desc = get_command_help(cmd)
-                except Exception:
-                    # ★ P3（review 2026-08-22）：修复前 ``except Exception: pass``
-                    #   静默丢弃命令描述获取失败——补 debug 日志（exc_info）。
-                    _logger.debug(
-                        "get_command_help(%r) 失败", cmd, exc_info=True,
-                    )
+        for cmd in _rank_fuzzy(commands, prefix):
             result.append(CompletionItem(
-                cmd, start_pos=-len(prefix), item_type="command", desc=desc,
+                cmd, start_pos=-len(prefix), item_type="command",
+                desc=self._command_desc(cmd, metas, get_command_help),
             ))
         return result
 
+    @staticmethod
+    def _command_desc(cmd: str, metas: dict, get_command_help: Callable | None) -> str:
+        """命令候选描述：「分组 · 描述 · 用法 /cmd <usage>」。
+
+        元数据缺失（旧命令表 / 注册表未挂载）时仅回退注册表 help 文本；
+        全部缺失返回空串（弹窗不显示描述列，布局与修复前一致）。
+        """
+        info = metas.get(cmd) if isinstance(metas, dict) else None
+        if not isinstance(info, dict):
+            info = {}
+        desc = str(info.get("desc") or "")
+        if not desc and get_command_help is not None:
+            try:
+                desc = get_command_help(cmd)
+            except Exception:
+                # ★ P3（review 2026-08-22）：修复前 ``except Exception: pass``
+                #   静默丢弃命令描述获取失败——补 debug 日志（exc_info）。
+                _logger.debug(
+                    "get_command_help(%r) 失败", cmd, exc_info=True,
+                )
+        parts: list[str] = []
+        group_label = info.get("group_label")
+        if group_label:
+            parts.append(str(group_label))
+        if desc:
+            parts.append(str(desc))
+        usage = str(info.get("usage") or "")
+        if usage:
+            prefix = cmd if cmd.startswith("/") else f"/{cmd}"
+            parts.append(f"用法 {prefix} {usage}")
+        return " · ".join(parts)
+
     # ── 参数补全 ───────────────────────────────────────
+
+    #: /title 子命令（与 ``_cmd_title`` 分支一致）
+    _TITLE_SUBCOMMANDS: tuple = (
+        ("show", "显示当前标题"),
+        ("refresh", "重新生成标题"),
+        ("set", "设置标题（/title set <文本>）"),
+        ("auto", "自动生成开关"),
+    )
+
+    #: /sandbox 子命令（与 ``_cmd_sandbox`` 分支一致）
+    _SANDBOX_SUBCOMMANDS: tuple = (
+        ("history", "消息维度的沙盒历史"),
+        ("records", "变更记录流水"),
+    )
+
+    #: /skill 子命令（与 SkillPlugin 分支一致）
+    _SKILL_SUBCOMMANDS: tuple = (
+        ("list", "列出技能（可跟 installed）"),
+        ("install", "安装 <owner/repo[@ref]>"),
+        ("update", "更新 <owner/repo[@ref]>"),
+        ("remove", "移除 <owner/repo|技能名>"),
+        ("info", "查看技能详情 <技能名>"),
+        ("refresh", "刷新技能目录缓存"),
+        ("help", "显示用法"),
+    )
+
+    #: /context 常用 token 容量（``/context <值>`` 写入上下文窗口）
+    _CONTEXT_TOKENS: tuple = (
+        ("128k", "128K 上下文窗口"),
+        ("256k", "256K 上下文窗口"),
+        ("512k", "512K 上下文窗口"),
+        ("1m", "1M 上下文窗口"),
+    )
+
+    #: /loop 常用循环次数（``/loop <次数> <提词>``）
+    _LOOP_COUNTS: tuple = (
+        ("1", "循环 1 次"),
+        ("2", "循环 2 次"),
+        ("3", "循环 3 次"),
+        ("5", "循环 5 次"),
+        ("10", "循环 10 次"),
+    )
 
     def _complete_param(self, text: str) -> list[CompletionItem]:
         """补全命令参数。
 
         只有命令名无参数时（如 "/model"），返回全部参数作为候选项，
         确保选中命令后自动弹出参数补全弹窗，无需先输入空格。
+
+        命令名大小写不敏感（``/MODEL`` 与 ``/model`` 等价），候选文本使用
+        规范化的小写命令名。
         """
         parts = text.split(maxsplit=1)
         if len(parts) < 2:
             cmd_name = text.strip()
-            if cmd_name not in self._PARAM_COMMANDS:
+            key = cmd_name.lower()
+            if key not in self._PARAM_COMMANDS:
                 return []
+            param_words: list[str] = []
             # 无参数部分 → 返回所有参数（空前缀匹配全部）
             param_last = ""
             start = 0
@@ -551,7 +834,8 @@ class CompletionEngine:
             replace_full = True
         else:
             cmd_name = parts[0]
-            if cmd_name not in self._PARAM_COMMANDS:
+            key = cmd_name.lower()
+            if key not in self._PARAM_COMMANDS:
                 return []
             param_part = parts[1]
             param_words = param_part.split()
@@ -564,8 +848,10 @@ class CompletionEngine:
             # **完整替换串**（``f"{cmd_name} {m}"``）+ start_pos=0 → 应用后
             # 保留 ``/model <param>``。
             replace_full = not param_words
+        # 规范化命令名（大小写不敏感；候选文本统一小写命令名）
+        cmd_name = "/" + key.lstrip("/")
 
-        if cmd_name == "/model":
+        if key == "/model":
             models = self._cached("models", [])
             current = _current_config_value("model")
             # 方向D 步骤13：语义排序（精确 > 前缀 > 子串，长度升序）
@@ -579,7 +865,7 @@ class CompletionEngine:
                 for m in _ranked(models, param_last)
             ]
 
-        elif cmd_name == "/theme":
+        elif key == "/theme":
             themes = self._cached("themes", [])
             current = _current_config_value("theme")
             ranked = _ranked([name for name, _desc in themes], param_last)
@@ -593,7 +879,7 @@ class CompletionEngine:
                 for name in ranked
             ]
 
-        elif cmd_name == "/load":
+        elif key == "/load":
             # ★ 2026-10-10（用户需求）：会话列表**懒加载**——未预热，首次读取
             #   （补全菜单弹出）时触发后台流式加载，界面先显示「加载中…」占位，
             #   数据就绪后经 _CmplHandler 监听器动态刷新候选。
@@ -616,12 +902,213 @@ class CompletionEngine:
                 ))
             return result
 
-        elif cmd_name == "/config":
+        elif key == "/config":
             return self._complete_config_param(
                 parts, param_last, replace_full, start,
             )
 
+        elif key == "/title":
+            return self._complete_choice_param(
+                cmd_name, param_words, param_last, replace_full,
+                self._TITLE_SUBCOMMANDS,
+            )
+
+        elif key == "/sandbox":
+            return self._complete_choice_param(
+                cmd_name, param_words, param_last, replace_full,
+                self._SANDBOX_SUBCOMMANDS,
+            )
+
+        elif key == "/loop":
+            return self._complete_choice_param(
+                cmd_name, param_words, param_last, replace_full,
+                self._LOOP_COUNTS,
+            )
+
+        elif key == "/context":
+            return self._complete_context_param(
+                cmd_name, param_words, param_last, replace_full,
+            )
+
+        elif key == "/skill":
+            return self._complete_skill_param(
+                cmd_name, param_words, param_last, replace_full, start,
+            )
+
+        elif key == "/export":
+            # /export <输出路径>：路径补全（空前缀不列目录——与路径补全
+            # 「空前缀不搜索」一致，避免每条 /export 都弹出当前目录全部条目）。
+            if replace_full or not param_last:
+                return []
+            return self._complete_path(param_last)
+
         return []
+
+    # ── 一级子命令补全（/title /sandbox /loop 共用） ─────────
+
+    def _complete_choice_param(
+        self, cmd_name: str, words: list[str], prefix: str,
+        replace_full: bool, choices: tuple,
+    ) -> list[CompletionItem]:
+        """一级子命令补全。
+
+        - 无参数：候选为完整替换串 ``/cmd <子命令>``（保留命令前缀）；
+        - 子命令进行中：忽略大小写前缀/子串/子序列过滤，替换最后一个词；
+        - 子命令已完整输入：无候选（后续为自由文本或由调用方处理）。
+        """
+        if replace_full:
+            return [
+                CompletionItem(f"{cmd_name} {value}", start_pos=0,
+                               item_type="param", desc=desc)
+                for value, desc in self._rank_choices(choices, "")
+            ]
+        if len(words) != 1:
+            return []
+        if self._is_complete_choice(choices, words[0]):
+            return []
+        return [
+            CompletionItem(value, start_pos=-len(prefix),
+                           item_type="param", desc=desc)
+            for value, desc in self._rank_choices(choices, prefix)
+        ]
+
+    @staticmethod
+    def _rank_choices(choices: tuple, prefix: str) -> list[tuple[str, str]]:
+        """按 ``_rank_fuzzy`` 语义过滤/排序 ``(值, 说明)`` 候选；空前缀保持定义序。"""
+        if not prefix:
+            return list(choices)
+        desc_by_value = {value: desc for value, desc in choices}
+        return [
+            (value, desc_by_value[value])
+            for value in _rank_fuzzy(list(desc_by_value), prefix)
+        ]
+
+    @staticmethod
+    def _is_complete_choice(choices: tuple, word: str) -> bool:
+        """``word`` 是否已完整等于某个候选值（忽略大小写）。"""
+        low = str(word).lower()
+        return any(str(value).lower() == low for value, _desc in choices)
+
+    # ── /context 参数补全 ───────────────────────────────
+
+    def _complete_context_param(
+        self, cmd_name: str, words: list[str], prefix: str,
+        replace_full: bool,
+    ) -> list[CompletionItem]:
+        """``/context [128k|256k|512k|1m|<tokens>]`` 容量补全。
+
+        候选项为常用容量 + **当前生效值**（不在常用表中时按 k/m 归一化后
+        补入，desc 标注「当前」）；当前值来自配置 ``model_context_tokens``。
+        """
+        choices = list(self._CONTEXT_TOKENS)
+        # 配置读取用 RC 键名（小写 ``model_context_tokens``；大写
+        # ``MODEL_CONTEXT_TOKENS`` 是 CONFIG_KEYS 的写回键，rc 里不存在）。
+        current = _format_context_tokens(_current_config_value("model_context_tokens"))
+        values = {value for value, _desc in choices}
+        if current and current not in values:
+            choices.append((current, "当前上下文窗口"))
+        if replace_full:
+            return [
+                CompletionItem(
+                    f"{cmd_name} {value}", start_pos=0, item_type="param",
+                    desc="当前" if current and value == current else desc,
+                )
+                for value, desc in self._rank_choices(tuple(choices), "")
+            ]
+        if len(words) != 1 or self._is_complete_choice(tuple(choices), words[0]):
+            return []
+        return [
+            CompletionItem(
+                value, start_pos=-len(prefix), item_type="param",
+                desc="当前" if current and value == current else desc,
+            )
+            for value, desc in self._rank_choices(tuple(choices), prefix)
+        ]
+
+    # ── /skill 参数补全 ─────────────────────────────────
+
+    def _complete_skill_param(
+        self, cmd_name: str, words: list[str], prefix: str,
+        replace_full: bool, start: int,
+    ) -> list[CompletionItem]:
+        """``/skill`` 二级补全：子命令 + 子命令参数。
+
+        - 无参数 / 子命令进行中 → 子命令候选；
+        - ``list`` → ``installed``（只列已安装技能）；
+        - ``info`` / ``remove`` → 技能名（技能注册表，按需懒加载）；
+        - ``install`` / ``update`` → ``<owner/repo[@ref]>`` 自由文本（无候选）。
+        """
+        choices = self._SKILL_SUBCOMMANDS
+        if replace_full:
+            return [
+                CompletionItem(f"{cmd_name} {value}", start_pos=0,
+                               item_type="param", desc=desc)
+                for value, desc in self._rank_choices(choices, "")
+            ]
+        sub = words[0].lower() if words else ""
+        if not words:
+            return []
+        if len(words) == 1:
+            if self._is_complete_choice(choices, sub):
+                # 子命令已完整 → 二级参数（空值前缀：候选含子命令词，保证
+                # 词边界替换后保留 ``/skill <子命令>`` 前缀）
+                if sub == "list":
+                    return [CompletionItem(
+                        "list installed", start_pos=-len(sub), item_type="param",
+                        desc="只列已安装技能",
+                    )]
+                if sub in ("info", "remove"):
+                    return self._skill_name_items(sub, "", replace_sub=True)
+                return []
+            return [
+                CompletionItem(value, start_pos=-len(prefix),
+                               item_type="param", desc=desc)
+                for value, desc in self._rank_choices(choices, prefix)
+            ]
+        # 已有二级参数前缀（如 ``/skill info bu``）
+        if sub == "list":
+            installed_choices = (("installed", "只列已安装技能"),)
+            if self._is_complete_choice(installed_choices, words[-1]):
+                return []
+            return [
+                CompletionItem(value, start_pos=-len(words[-1]),
+                               item_type="param", desc=desc)
+                for value, desc in self._rank_choices(
+                    installed_choices, words[-1],
+                )
+            ]
+        if sub in ("info", "remove"):
+            return self._skill_name_items(sub, words[-1], replace_sub=False)
+        return []
+
+    def _skill_name_items(
+        self, sub: str, prefix: str, *, replace_sub: bool,
+    ) -> list[CompletionItem]:
+        """技能名候选（``/skill info|remove``）。
+
+        ``replace_sub=True``（子命令后无参数，``/skill info ``）：候选文本为
+        ``{子命令} {技能名}`` + 替换子命令词——``_apply_completion`` 的词边界
+        拼接后保留 ``/skill info`` 前缀；``replace_sub=False`` 时替换最后词。
+        """
+        skills = self._cached("skills", []) or []
+        choices = [(str(name), str(desc)) for name, desc in skills if name]
+        # 技能名已完整输入（如 ``/skill info build-helper``）→ 无候选：
+        # 避免应用后自动补全再次弹出同名候选。
+        if prefix and self._is_complete_choice(tuple(choices), prefix):
+            return []
+        ranked = self._rank_choices(tuple(choices), prefix)
+        items: list[CompletionItem] = []
+        for name, desc in ranked:
+            if replace_sub:
+                items.append(CompletionItem(
+                    f"{sub} {name}", start_pos=-len(sub),
+                    item_type="param", desc=desc,
+                ))
+            else:
+                items.append(CompletionItem(
+                    name, start_pos=-len(prefix), item_type="param", desc=desc,
+                ))
+        return items
 
     # ── /config 参数补全（2026-08-20 用户需求） ─────────────
 
@@ -691,6 +1178,12 @@ class CompletionEngine:
                         f"{sub} {key}", start_pos=-len(sub), item_type="param",
                     ))
                 return result
+            # ★ 2026-10-20（用户需求）：``/config set <键> <值>`` 的值补全——
+            #   键已完整输入（显示路径或写回键）时按该键的可枚举候选补值
+            #   （无候选值的键如数值输入项返回空，不再回退成键名补全）；
+            #   键未完整（如 ``/config set temp``）仍按前缀补全键名。
+            if sub == "set" and self._config_is_complete_key(words[1]):
+                return self._complete_config_value(words)
             # 已有参数词：替换最后一个词（key_prefix）
             key_prefix = words[-1]
             for key in _ranked(self._config_key_names(), key_prefix):
@@ -705,6 +1198,72 @@ class CompletionEngine:
                 start_pos=start, item_type="param",
             ))
         return result
+
+    def _config_is_complete_key(self, key_input: str) -> bool:
+        """``key_input`` 是否已是完整配置键名（显示路径；忽略大小写）。
+
+        用于区分「键已完整、进入值补全」与「键名仍在输入中、继续补键名」：
+        ``/config set temperature `` 的键完整但数值项无候选值（值补全返回
+        空），不能回退成键名补全把 ``temperature`` 再列一遍。
+        """
+        low = str(key_input).lower()
+        return any(str(name).lower() == low for name in self._config_key_names())
+
+    def _config_key_record(self, key_input: str) -> dict | None:
+        """按配置键查「候选值记录」（``config_values`` 数据源）。
+
+        键接受显示路径（``theme``）与写回键（``THEME``），大小写不敏感；
+        未收录（纯文本 / JSON 输入项）返回 None。
+        """
+        values = self._cached("config_values", {}) or {}
+        if not isinstance(values, dict):
+            return None
+        record = values.get(key_input)
+        if isinstance(record, dict):
+            return record
+        low = str(key_input).lower()
+        for name, item in values.items():
+            if str(name).lower() == low and isinstance(item, dict):
+                return item
+        return None
+
+    def _complete_config_value(self, words: list[str]) -> list[CompletionItem]:
+        """``/config set <键> <值>`` 值补全（枚举 / bool / 模型档案模型名）。
+
+        替换语义与 ``_apply_completion`` 的词边界拼接一致：
+          - 值前缀为空（``/config set theme ``）：候选 ``{键} {值}`` +
+            ``start_pos=-len(键)``——词边界匹配键词后拼接为
+            ``/config set theme dark``（键与子命令保留）；
+          - 值前缀非空（``/config set theme d``）：候选 ``{值}`` + 替换最后词。
+        """
+        key_input = words[1] if len(words) > 1 else ""
+        record = self._config_key_record(key_input)
+        if not record:
+            return []
+        options = record.get("options") or []
+        if not options:
+            return []
+        current = str(record.get("current") or "")
+        value_prefix = words[-1] if len(words) >= 3 else ""
+        choices = [(str(value), str(desc or "")) for value, desc in options]
+        # 值已完整输入（如 ``/config set theme dark``）→ 无候选：避免应用后
+        # 自动补全再次弹出同名候选。
+        if value_prefix and self._is_complete_choice(tuple(choices), value_prefix):
+            return []
+        items: list[CompletionItem] = []
+        for value, desc in self._rank_choices(tuple(choices), value_prefix):
+            label = "当前" if current and value == current else desc
+            if value_prefix:
+                items.append(CompletionItem(
+                    value, start_pos=-len(value_prefix),
+                    item_type="param", desc=label,
+                ))
+            else:
+                items.append(CompletionItem(
+                    f"{key_input} {value}", start_pos=-len(key_input),
+                    item_type="param", desc=label,
+                ))
+        return items
 
     # ── 路径补全 ───────────────────────────────────────
 

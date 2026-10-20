@@ -5,10 +5,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from tests._paths import prompts_dir
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_SIMPLE_PROMPT_PATH = _PROJECT_ROOT / "prompts" / "prompts_export_main_simple.md"
+_SIMPLE_PROMPT_PATH = prompts_dir() / "prompts_export_main_simple.md"
 
 #: 红线必须具备的核心约束片段
 _RED_LINE_FRAGMENTS = (
