@@ -35,7 +35,7 @@ from typing import Any
 
 from src.tui._screen import TerminalWidthCache
 from .element import Element
-from .terminal import cursor_shape_sequence, window_title_sequence
+from .terminal import cursor_shape_sequence
 
 _logger = logging.getLogger(__name__)
 
@@ -297,8 +297,10 @@ def render(
             进入 raw 模式（管道/重定向场景安全降级）。
         mouse: 启用鼠标上报（SGR 扩展坐标；框架扩展）——滚轮/点击/拖拽事件
             经 ``useMouseInput`` 到达组件。
-        windowTitle: 启动时设置终端窗口标题（退出不还原——官方无此 API，
-            标题属用户可见状态）。
+        windowTitle: 启动时设置终端窗口标题（OSC 0）——写入经
+            ``tui._window_title``，退出（unmount / 应用退出 / ``atexit``）时
+            还原为 ``CHAT_TERMINAL_TITLE`` 指定值，未指定则清空标题（终端
+            回退自身默认标题）。
         cursorShape: 启动时设置光标形状（``block``/``bar``/``underline`` 等，
             见 ``ink.terminal.CURSOR_SHAPES``）；unmount 还原 default。
 
@@ -358,7 +360,12 @@ def render(
         bracketed_paste=interactive_on,
     )
     if windowTitle is not None:
-        session.write_terminal_sequence(window_title_sequence(windowTitle))
+        # ★ 2026-10-20（用户需求：退出时还原原来的终端标题）：标题写入统一
+        #   经 ``tui._window_title``——记录「已接管」并记住写入流，退出
+        #   （InkSession.stop / 应用退出 / atexit）时还原。
+        from .._window_title import set_terminal_title
+
+        set_terminal_title(windowTitle, stream=session.renderer.stream)
     cursor_shape_applied = cursorShape is not None
     if cursor_shape_applied:
         session.write_terminal_sequence(cursor_shape_sequence(cursorShape))

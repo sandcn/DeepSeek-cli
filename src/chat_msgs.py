@@ -489,9 +489,18 @@ def _sync_terminal_title(title: str) -> None:
     会话保存生成标题后调用，使 Termux / 桌面终端窗口标签显示当前会话主题。
     延迟导入 ``set_window_title`` 避免数据层→UI 层模块级依赖（与
     ``publish_output`` 同模式）；无 TTY / 异常时静默失败（非关键路径）。
+
+    ★ 2026-10-20：尊重 ``session_title.sync_terminal_title`` 配置（与标题服务
+    的 ``title_updated`` 路径口径一致）——关闭后周期保存也不再改终端标题；
+    本轮改过的标题会由 ``tui._window_title`` 在退出时还原。
     """
     if not title:
         return
+    try:
+        if not bool(_session_title_config().get("sync_terminal_title", True)):
+            return
+    except Exception:
+        _logger.debug("读取标题同步配置失败（按启用处理）", exc_info=True)
     try:
         from .tui._screen import set_window_title
         set_window_title(title)
@@ -638,10 +647,11 @@ def save_session(messages: list[dict], model: str, session_id: str | None = None
         # 可能含孤立代理项（无法以 UTF-8 编码）——写入会话文件前替换为 U+FFFD。
         title = sanitize_surrogates(title)
         if title and not title_source:
-            # 已有会话文件却缺来源标记（旧版本写入的标题）：按「用户重命名，
-            # 已钉住」处理——历史标题可能是用户手动改的，宁可不再自动改名，
-            # 也不擅自覆盖用户数据。新会话的确定性回退标记为 fallback。
-            title_source = "user" if existing else "fallback"
+            # ★ 2026-10-20（用户需求「默认自动起标题」）：历史标题（旧版本写入、
+            #   无来源标记）按 fallback 处理——加载后下一条用户消息即可被自动
+            #   重新生成替换（用户已确认可能覆盖历史标题）。显式 /title set
+            #   的 user 来源仍钉住。
+            title_source = "fallback"
 
         data = {
             "id": sid,

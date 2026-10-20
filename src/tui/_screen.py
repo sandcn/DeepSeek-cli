@@ -595,22 +595,23 @@ def bg_256(color: int) -> str:
 # ═══════════════════════════════════════════════════════════
 
 def set_window_title(title: str) -> None:
-    """设置终端窗口标题。
+    """设置终端窗口标题（OSC 0；退出时由 ``tui._window_title`` 还原）。
 
-    通过 OSC 序列 ``\\033]0;title\\007`` 设置。
-    直接写入 ``sys.__stdout__``。
+    通过 OSC 序列 ``\\033]0;title\\007`` 设置，写入 ``sys.__stdout__``。
+
+    ★ 唯一真源：实际写入委托 ``tui._window_title.set_terminal_title``——它会
+    标记「程序已接管标题」，使退出（正常 / 异常 / ``atexit``）时能还原为
+    ``CHAT_TERMINAL_TITLE`` 指定值或清空标题（终端回退自身默认标题）。
 
     Args:
         title: 窗口标题。
     """
-    out = sys.__stdout__
-    if out is None:  # 无 TTY / pythonw 等场景：直接跳过（不抛异常）
-        _logger.debug("窗口标题写入跳过（stdout 不可用）: %r", title)
-        return
     try:
-        out.write(f"\033]0;{title}\007")
-        out.flush()
-    except (OSError, ValueError, AttributeError):  # BUG-52：无 TTY 时 stdout 为 None
+        from ._window_title import set_terminal_title
+
+        set_terminal_title(title)
+    except Exception:
+        # BUG-52：无 TTY 时 stdout 为 None；委托层异常同样静默降级
         _logger.debug("窗口标题写入失败（无 TTY？）: %r", title, exc_info=True)
 
 #: 剪贴板写入上限（原始字节）——base64 膨胀约 4/3，控制在 100 000 字节

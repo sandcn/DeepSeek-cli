@@ -97,6 +97,15 @@ async def main():
                 app.shutdown()
             except Exception:
                 _logger.debug("应用清理异常", exc_info=True)
+        # ── 终端窗口标题还原（用户需求：退出时还原原来的终端标题） ──
+        # TUI 退出路径（InkSession.stop）已还原时此处幂等；单次问答
+        # （``chat.py -p``）等无 TUI 路径由此兜底（另有 atexit 兜底未捕获异常）。
+        try:
+            from ..tui._window_title import restore_terminal_title
+
+            restore_terminal_title()
+        except Exception:
+            _logger.debug("还原终端窗口标题异常", exc_info=True)
         # ── 卸载内核插件树（逆序撤销全部注册，含 MCP 连接关闭） ──
         try:
             await shutdown_kernel(kernel)

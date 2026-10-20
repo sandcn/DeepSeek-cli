@@ -1133,6 +1133,17 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                 monitor.stop()
             except Exception:
                 _logger.debug("系统监控停止异常", exc_info=True)
+        # ★ 2026-10-20（用户需求：退出程序时把原来的终端标题还原）：本会话
+        #   可能经 ``render(windowTitle=...)`` 改写过窗口标题——渲染线程已
+        #   join、终端模式已还原后写回原标题（``CHAT_TERMINAL_TITLE`` 指定值，
+        #   否则清空让终端回退自身默认标题）。幂等：应用主入口 / atexit 再次
+        #   调用时不会重复写。
+        try:
+            from .._window_title import restore_terminal_title
+
+            restore_terminal_title()
+        except Exception:
+            _logger.debug("还原终端窗口标题异常", exc_info=True)
 
     def flush(self, timeout: float | None = 5.0) -> None:
         """等待队列处理完成。

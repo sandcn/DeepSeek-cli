@@ -17,6 +17,21 @@ from ..api.escape_monitor import EscapeMonitor, stop_active_monitor
 
 _logger = logging.getLogger(__name__)
 
+#: 单次模式保存前等待标题生成的时长上限（秒）——让 ``chat.py -p`` 也能拿到
+#: 模型标题（标题生成是异步辅助任务，进程退出会取消它）。
+_SINGLE_TITLE_WAIT_SECONDS = 10.0
+
+
+async def _await_title_before_save(session) -> None:
+    """保存会话前等待标题生成（单次模式；超时/失败保留回退标题）。"""
+    service = getattr(session, "title_service", None)
+    if service is None:
+        return
+    try:
+        await service.wait_for_revision(_SINGLE_TITLE_WAIT_SECONDS)
+    except Exception:
+        _logger.debug("等待会话标题生成失败（非关键）", exc_info=True)
+
 
 def _missing_model_profile_notice() -> str | None:
     """未配置任何模型档案时返回提示文案（已配置 → None）。
@@ -62,6 +77,11 @@ async def run_single_mode_async(prompt_text):
 
     try:
         await session.run_single(prompt_text)
+
+        # ★ 2026-10-20（用户需求「默认自动起标题」）：单次模式回答完立即保存
+        #   并退出，标题辅助请求此前来不及完成（只能落到回退标题）。保存前
+        #   等待标题生成（最多 10 秒），让模型标题进入会话文件。
+        await _await_title_before_save(session)
 
         _save_and_show_recover(session, chat_ui)
     except Exception:

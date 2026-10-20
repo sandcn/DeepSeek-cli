@@ -654,11 +654,41 @@ class SessionTitleService:
 
         return run_coroutine_blocking(self.refresh_async())
 
+    async def wait_for_revision(self, timeout: float = 10.0) -> TitleSnapshot | None:
+        """等待进行中的自动修订结束（单次问答保存前用，确保标题落盘）。
+
+        标题生成是**异步辅助任务**：单次模式（``chat.py -p``）回答完立即保存
+        并退出，此前只能落到回退标题（实测进程退出时标题任务被取消）。调用方
+        在保存前等待一小段时间，即可让模型标题进入会话文件；超时则保留当前
+        标题、不阻塞退出。
+
+        Args:
+            timeout: 最长等待秒数（``0`` 立即返回）。
+
+        Returns:
+            等待结束后的当前快照（可能仍是回退标题）。
+        """
+        with self._lock:
+            task = self._task
+        if task is None or task.done():
+            return self.snapshot
+        try:
+            await asyncio.wait_for(task, timeout=max(0.0, float(timeout)))
+        except asyncio.TimeoutError:
+            _logger.debug("等待标题修订超时（%.1fs），保留当前标题", timeout)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _logger.debug("等待标题修订失败（保留当前标题）", exc_info=True)
+        return self.snapshot
+
     def restore_from_data(self, data: Any) -> TitleSnapshot | None:
         """从会话文件恢复标题状态（加载会话时调用）。
 
-        旧会话文件没有 ``title_source``：有标题即视为**已钉住**（历史标题可能
-        是用户手动重命名，宁可不动，也不擅自覆盖用户数据）。
+        ★ 2026-10-20（用户需求「默认自动起标题」）：历史标题（旧会话文件没有
+        ``title_source``）按 **fallback** 处理，**不再视为用户钉住**——加载后
+        下一条用户消息即可触发自动重新生成（可能覆盖历史标题，用户已确认）。
+        只有显式 ``/title set`` 产生的 ``source=user`` 才钉住。
         """
         if not isinstance(data, dict):
             return None
@@ -677,10 +707,9 @@ class SessionTitleService:
                 self._pinned = False
                 self._last_error = ""
             return None
-        legacy = not data.get("title_source")
         with self._lock:
             self._snapshot = snapshot
-            self._pinned = legacy or snapshot.source == SOURCE_USER
+            self._pinned = snapshot.source == SOURCE_USER
             self._last_error = ""
         return snapshot
 

@@ -406,11 +406,87 @@ async def test_session_switch_discards_stale_result():
     assert persistence.calls == []
 
 
-def test_restore_from_data_and_legacy_pins():
+@pytest.mark.asyncio
+async def test_legacy_session_is_retitled_automatically():
+    """历史会话（无来源标记）加载后：默认自动起标题，下一轮即被模型标题替换。"""
+    async def _not_interrupted():
+        return False
+
+    service = _make_service(
+        [{"role": "user", "content": "hi"}],
+        call_model=lambda messages: ("自动生成的标题", ""),
+    )
+    service.restore_from_data({"title": "旧的历史标题"})
+    assert service.pinned is False
+    service._interrupted = _not_interrupted
+
+    service.on_round_end()
+    await asyncio.sleep(0.05)
+    assert service.snapshot is not None
+    assert service.snapshot.title == "自动生成的标题"
+    assert service.snapshot.source == "provider"
+
+
+@pytest.mark.asyncio
+async def test_wait_for_revision_returns_provider_title():
+    """单次模式保存前等待：标题任务完成后返回模型标题。"""
+    async def _slow(messages):
+        await asyncio.sleep(0.05)
+        return "等待后的标题", ""
+
+    async def _not_interrupted():
+        return False
+
+    service = _make_service([{"role": "user", "content": "hi"}], call_model=_slow)
+    service.ensure_fallback()
+    service._interrupted = _not_interrupted
+    service._revision = 1
+    service._task = asyncio.create_task(service._run_revision(1))
+    snapshot = await service.wait_for_revision(5.0)
+    assert snapshot is not None and snapshot.title == "等待后的标题"
+    assert snapshot.source == "provider"
+    assert service.pinned is False
+
+
+@pytest.mark.asyncio
+async def test_wait_for_revision_timeout_keeps_current_title():
+    """等待超时：保留当前标题，不阻塞退出。"""
+    async def _hang(messages):
+        await asyncio.sleep(30)
+        return "不会到达", ""
+
+    async def _not_interrupted():
+        return False
+
+    service = _make_service([{"role": "user", "content": "hi"}], call_model=_hang)
+    service.ensure_fallback()
+    before = service.snapshot
+    service._interrupted = _not_interrupted
+    service._revision = 1
+    service._task = asyncio.create_task(service._run_revision(1))
+    snapshot = await service.wait_for_revision(0.05)
+    assert snapshot == before
+
+
+@pytest.mark.asyncio
+async def test_wait_for_revision_without_pending_task():
+    service = _make_service([{"role": "user", "content": "hi"}])
+    service.ensure_fallback()
+    assert await service.wait_for_revision(1.0) == service.snapshot
+
+
+def test_restore_from_data_legacy_title_is_not_pinned():
+    """历史标题（无 title_source）按 fallback 处理：默认自动起标题，不钉住。"""
     service = _make_service([{"role": "user", "content": "hi"}])
     snapshot = service.restore_from_data({"title": "旧标题"})
     assert snapshot is not None and snapshot.source == "fallback"
-    # 旧文件没有 title_source：视为已钉住（不擅自覆盖用户数据）
+    assert service.pinned is False
+
+
+def test_restore_from_data_user_source_still_pins():
+    service = _make_service([{"role": "user", "content": "hi"}])
+    snapshot = service.restore_from_data({"title": "手动标题", "title_source": "user"})
+    assert snapshot is not None and snapshot.source == "user"
     assert service.pinned is True
 
 
@@ -517,8 +593,8 @@ def test_rename_session_marks_user_source(msgs_dir):
     assert "title_message_seqs" not in data
 
 
-def test_save_session_keeps_unknown_source_as_user(msgs_dir):
-    """旧文件有标题但没有来源：保存时按用户标题（钉住）保留来源。"""
+def test_save_session_marks_unknown_source_as_fallback(msgs_dir):
+    """旧文件有标题但没有来源：保存时记为 fallback（默认自动起标题，不钉住）。"""
     (msgs_dir / "legacy.json").write_text(json.dumps({
         "id": "legacy", "title": "手工标题", "model": "m",
         "saved_at": "2026-08-01T00:00:00",
@@ -527,7 +603,7 @@ def test_save_session_keeps_unknown_source_as_user(msgs_dir):
     cm.save_session([{"role": "user", "content": "hi"}], "m", session_id="legacy")
     data = json.loads((msgs_dir / "legacy.json").read_text(encoding="utf-8"))
     assert data["title"] == "手工标题"
-    assert data["title_source"] == "user"
+    assert data["title_source"] == "fallback"
 
 
 # ═══════════════════════════════════════════════════════════════
