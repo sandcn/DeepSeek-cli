@@ -10,7 +10,8 @@
   - GUI 宿主检测（Windows Terminal / VS Code / ConEmu / JetBrains，跳过 tmux）
   - 运行环境检测（Cygwin / MSYS2 / WSL / Termux / Windows / macOS / Linux）
   - detect_command_line 单行组装（命令行不再混入终端）
-  - build_environment_info 注入「- 命令行:」「- GUI 程序:」行
+  - 版本号检测（Shell 版本环境变量 / PE 版本资源 / --version 探测 / 版本归一化）
+  - build_environment_info 注入「- 命令行:」「- GUI 程序:」行（均带版本号）
   - build_environment_info 注入写死的「- 文本编码格式: utf-8」「- 行尾格式: LF」
   - build_environment_info 不包含 Python 版本信息
   - build_work_md 的 cwd 解析（省略时回退进程工作目录）与缺失文件兜底
@@ -435,6 +436,174 @@ def test_detect_command_line_unknown(monkeypatch):
     assert out == "unknown"
 
 
+# ── 版本号检测 ───────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("5.2.21(1)-release", "5.2.21"),
+        ("2.9.6.0", "2.9.6"),
+        ("10.0.26100.8875 (WinBuild.160101.0800)", "10.0.26100.8875"),
+        ("mintty 2.9.6 (x86_64-pc-cygwin)", "2.9.6"),
+        ("3.44.0", "3.44.0"),
+        ("没有版本号", ""),
+        ("", ""),
+    ],
+)
+def test_normalize_version(raw, expected):
+    assert si._normalize_version(raw) == expected
+
+
+def test_decode_konsole_version():
+    assert si._decode_konsole_version("220400") == "22.04.00"
+    assert si._decode_konsole_version("230801") == "23.08.01"
+    assert si._decode_konsole_version("3.44.0") == "3.44.0"
+
+
+def test_resolve_shell_version_from_env(monkeypatch):
+    monkeypatch.setattr(si, "_ancestor_pids", lambda pid: [])
+    assert si._resolve_shell_version("bash", {"BASH_VERSION": "5.2.21(1)-release"}, 1) == "5.2.21"
+    assert si._resolve_shell_version("zsh", {"ZSH_VERSION": "5.9"}, 1) == "5.9"
+    assert si._resolve_shell_version("fish", {"FISH_VERSION": "3.6.0"}, 1) == "3.6.0"
+    # sh 常是 bash 的 POSIX 模式：BASH_VERSION 存在即取其版本
+    assert si._resolve_shell_version("sh", {"BASH_VERSION": "5.2.21(1)-release"}, 1) == "5.2.21"
+
+
+def test_resolve_shell_version_from_exe_resource(monkeypatch):
+    """cmd / powershell 不导出 shell 版本变量 → 读可执行文件版本资源。"""
+    monkeypatch.setattr(
+        si, "_ancestor_pids",
+        lambda pid: [(20, "cmd.exe"), (30, "WindowsTerminal.exe")],
+    )
+    monkeypatch.setattr(
+        si, "_process_version_path",
+        lambda pid: r"C:\Windows\System32\cmd.exe" if pid == 20 else "",
+    )
+    monkeypatch.setattr(
+        si, "_exe_file_version",
+        lambda path: "10.0.26100.8875" if path.endswith("cmd.exe") else "",
+    )
+    assert si._resolve_shell_version("cmd", {}, 10) == "10.0.26100.8875"
+
+
+def test_resolve_gui_version_from_env(monkeypatch):
+    monkeypatch.setattr(si, "_ancestor_pids", lambda pid: [])
+    assert si._resolve_gui_version("VS Code", {"TERM_PROGRAM_VERSION": "1.85.0"}, 1) == "1.85.0"
+    assert si._resolve_gui_version("Konsole", {"KONSOLE_VERSION": "220400"}, 1) == "22.04.00"
+    assert si._resolve_gui_version("Termux", {"TERMUX_VERSION": "0.118"}, 1) == "0.118"
+
+
+def test_resolve_gui_version_from_exe_resource(monkeypatch):
+    """Windows / Cygwin：GUI 宿主进程的可执行文件版本资源（mintty 3.6.4 ...）。"""
+    monkeypatch.setattr(si, "_ancestor_pids", lambda pid: [(20, "mintty"), (30, "explorer")])
+    monkeypatch.setattr(
+        si, "_process_version_path",
+        lambda pid: r"E:\bin\mintty.exe" if pid == 20 else "",
+    )
+    monkeypatch.setattr(
+        si, "_exe_file_version",
+        lambda path: "2.9.6" if path.endswith("mintty.exe") else "",
+    )
+    monkeypatch.setattr(si, "_probe_program_version", lambda path, name: "")
+    assert si._resolve_gui_version("mintty", {}, 10) == "2.9.6"
+
+
+def test_resolve_gui_version_from_probe(monkeypatch):
+    """没有版本资源（Linux）时询问终端自身 ``--version``。"""
+    monkeypatch.setattr(si, "_ancestor_pids", lambda pid: [(20, "gnome-terminal-server")])
+    monkeypatch.setattr(si, "_process_version_path", lambda pid: "")
+    monkeypatch.setattr(si, "_exe_file_version", lambda path: "")
+    monkeypatch.setattr(
+        si, "_process_exe_path",
+        lambda pid: "/usr/libexec/gnome-terminal-server",
+    )
+    seen: dict = {}
+
+    def fake_probe(path, name):
+        seen["call"] = (path, name)
+        return "3.44.0"
+
+    monkeypatch.setattr(si, "_probe_program_version", fake_probe)
+    assert si._resolve_gui_version("GNOME Terminal", {}, 10) == "3.44.0"
+    assert seen["call"] == ("/usr/libexec/gnome-terminal-server", "gnome-terminal-server")
+
+
+def test_resolve_gui_version_unknown(monkeypatch):
+    monkeypatch.setattr(si, "_ancestor_pids", lambda pid: [(20, "sshd")])
+    monkeypatch.setattr(si, "_probe_program_version", lambda path, name: "")
+    assert si._resolve_gui_version("", {}, 10) == ""
+    assert si._resolve_gui_version("mintty", {}, 10) == ""
+
+
+def test_probe_program_version_skips_unlisted_program(monkeypatch):
+    """表外程序不探测——构建提示词时不得为取版本号拉起 GUI 窗口。"""
+    monkeypatch.setattr(si, "os", SimpleNamespace(name="posix"))
+    assert si._probe_program_version("/usr/bin/not-a-terminal", "not-a-terminal") == ""
+
+
+def test_runtime_version(monkeypatch):
+    assert si._runtime_version("Cygwin", "3.5.4-1.x86_64") == "3.5.4"
+    assert si._runtime_version("Linux", "6.1.0-13-amd64") == "6.1.0"
+    assert si._runtime_version("", "6.1.0") == ""
+    monkeypatch.setattr(si._platform, "version", lambda: "10.0.26220")
+    assert si._runtime_version("Windows", "10") == "10.0.26220"
+
+
+def test_format_command_line_with_version():
+    assert si._format_command_line("bash", "Cygwin", "5.2.21") == "bash 5.2.21 (Cygwin)"
+    assert si._format_command_line("bash", "", "5.2.21") == "bash 5.2.21"
+    # Shell 版本取不到时用运行环境版本兜底（「命令行」始终带版本号）
+    assert si._format_command_line("bash", "Cygwin", "", "3.5.4") == "bash (Cygwin 3.5.4)"
+    assert si._format_command_line("", "Cygwin", "", "3.5.4") == "Cygwin 3.5.4"
+    assert si._format_command_line("", "Cygwin") == "Cygwin"
+
+
+def test_format_gui_program():
+    assert si._format_gui_program("mintty", "2.9.6") == "mintty 2.9.6"
+    assert si._format_gui_program("mintty", "") == "mintty"
+    assert si._format_gui_program("", "2.9.6") == ""
+
+
+def test_detect_command_line_with_version(monkeypatch):
+    monkeypatch.setattr(
+        si, "_ancestor_details",
+        lambda pid: [("/usr/bin/bash", ""), ("/usr/bin/mintty", "")],
+    )
+    monkeypatch.setattr(si, "_resolve_shell_version", lambda shell, env, pid: "5.2.21")
+    out = si.detect_command_line(
+        env={}, ppid=1, sys_platform="cygwin", release="CYGWIN_NT-10.0", with_version=True,
+    )
+    assert out == "bash 5.2.21 (Cygwin)"
+    # 不带 with_version 时保持既有输出（调用方不受影响）
+    assert si.detect_command_line(
+        env={}, ppid=1, sys_platform="cygwin", release="CYGWIN_NT-10.0",
+    ) == "bash (Cygwin)"
+
+
+def test_detect_gui_program_with_version(monkeypatch):
+    monkeypatch.setattr(si, "_ancestor_names", lambda pid: ["python", "mintty"])
+    monkeypatch.setattr(si, "_resolve_gui_version", lambda label, env, pid: "2.9.6")
+    assert si.detect_gui_program(env={}, ppid=1, with_version=True) == "mintty 2.9.6"
+    assert si.detect_gui_program(env={}, ppid=1) == "mintty"
+
+
+def test_detect_shell_and_gui_version_entrypoints(monkeypatch):
+    monkeypatch.setattr(si, "_ancestor_details", lambda pid: [("/usr/bin/bash", "")])
+    monkeypatch.setattr(si, "_ancestor_names", lambda pid: ["python", "mintty"])
+    monkeypatch.setattr(si, "_resolve_shell_version", lambda shell, env, pid: "5.2.21")
+    monkeypatch.setattr(si, "_resolve_gui_version", lambda label, env, pid: "2.9.6")
+    assert si.detect_shell_version(env={}, ppid=1) == "5.2.21"
+    assert si.detect_gui_program_version(env={}, ppid=1) == "2.9.6"
+
+
+def test_exe_file_version_live_pe_resource():
+    """真实 PE 文件（cmd.exe）能读到版本号；无 version.dll 的环境跳过。"""
+    path = os.environ.get("COMSPEC") or r"C:\Windows\System32\cmd.exe"
+    if si._version_dll() is None or not os.path.exists(path):
+        pytest.skip("当前平台没有可用的 version.dll / PE 文件")
+    assert si._normalize_version(si._exe_file_version(path)) != ""
+
+
 # ── GUI 宿主检测 ─────────────────────────────────────────
 
 def test_detect_gui_program_windows_terminal_env(monkeypatch):
@@ -486,26 +655,34 @@ def test_detect_terminal_expanded_aliases(monkeypatch):
 # ── build_environment_info 集成 ──────────────────────────
 
 def test_build_environment_info_contains_command_line(monkeypatch):
-    monkeypatch.setattr(ei, "detect_command_line", lambda: "bash (Cygwin)")
-    monkeypatch.setattr(ei, "detect_gui_program", lambda: "mintty")
+    seen: dict = {}
+
+    def fake_command_line(**kwargs):
+        seen.update(kwargs)
+        return "bash 5.2.21 (Cygwin)"
+
+    monkeypatch.setattr(ei, "detect_command_line", fake_command_line)
+    monkeypatch.setattr(ei, "detect_gui_program", lambda **kwargs: "mintty 2.9.6")
     text = ei.build_environment_info("/tmp/work")
     assert text.startswith("# 当前执行环境\n")
     assert "- 工作目录: /tmp/work" in text
-    assert "- 命令行: bash (Cygwin)" in text
-    assert "- GUI 程序: mintty" in text
+    assert "- 命令行: bash 5.2.21 (Cygwin)" in text
+    assert "- GUI 程序: mintty 2.9.6" in text
     assert text.endswith("\n")
+    # 「命令行」「GUI 程序」都要带版本号 → 构建时显式要求带版本
+    assert seen.get("with_version") is True
 
 
 def test_build_environment_info_gui_unknown(monkeypatch):
-    monkeypatch.setattr(ei, "detect_command_line", lambda: "bash (Linux)")
-    monkeypatch.setattr(ei, "detect_gui_program", lambda: "")
+    monkeypatch.setattr(ei, "detect_command_line", lambda **kwargs: "bash 5.2.21 (Linux)")
+    monkeypatch.setattr(ei, "detect_gui_program", lambda **kwargs: "")
     text = ei.build_environment_info("/tmp/work")
     assert "- GUI 程序: unknown" in text
 
 
 def test_build_environment_info_line_order(monkeypatch):
-    monkeypatch.setattr(ei, "detect_command_line", lambda: "bash (Cygwin)")
-    monkeypatch.setattr(ei, "detect_gui_program", lambda: "mintty")
+    monkeypatch.setattr(ei, "detect_command_line", lambda **kwargs: "bash 5.2.21 (Cygwin)")
+    monkeypatch.setattr(ei, "detect_gui_program", lambda **kwargs: "mintty 2.9.6")
     lines = ei.build_environment_info("/tmp/work").splitlines()
     cwd_idx = next(i for i, line in enumerate(lines) if line.startswith("- 工作目录:"))
     cmd_idx = next(i for i, line in enumerate(lines) if line.startswith("- 命令行:"))
@@ -520,8 +697,8 @@ def test_build_environment_info_line_order(monkeypatch):
 
 def test_build_environment_info_text_conventions_hardcoded(monkeypatch):
     """文本编码 / 行尾是写死的常量：不随平台与 locale 检测变化。"""
-    monkeypatch.setattr(ei, "detect_command_line", lambda: "cmd (Windows)")
-    monkeypatch.setattr(ei, "detect_gui_program", lambda: "Windows Terminal")
+    monkeypatch.setattr(ei, "detect_command_line", lambda **kwargs: "cmd 10.0.26100.8875 (Windows)")
+    monkeypatch.setattr(ei, "detect_gui_program", lambda **kwargs: "Windows Terminal 1.21.2911.0")
     monkeypatch.setattr(ei.platform, "system", lambda: "Windows")
     monkeypatch.setattr(ei.os, "linesep", "\r\n")
     text = ei.build_environment_info("/tmp/work")
@@ -535,8 +712,8 @@ def test_build_environment_info_text_conventions_hardcoded(monkeypatch):
 
 
 def test_build_environment_info_excludes_python(monkeypatch):
-    monkeypatch.setattr(ei, "detect_command_line", lambda: "bash (Cygwin)")
-    monkeypatch.setattr(ei, "detect_gui_program", lambda: "mintty")
+    monkeypatch.setattr(ei, "detect_command_line", lambda **kwargs: "bash 5.2.21 (Cygwin)")
+    monkeypatch.setattr(ei, "detect_gui_program", lambda **kwargs: "mintty 2.9.6")
     text = ei.build_environment_info("/tmp/work")
     assert "- Python:" not in text
     assert all(not line.startswith("- Python:") for line in text.splitlines())

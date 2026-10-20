@@ -20,14 +20,22 @@
     GUI 宿主，会继续向上找承载它的图形程序。
   - 运行环境：sys.platform + 环境变量识别 Cygwin / MSYS2 / WSL / Termux /
     Windows / macOS / Linux 等。
+  - 版本号：Shell 解释器与 GUI 宿主都尽量带版本号——优先环境变量
+    （BASH_VERSION / TERM_PROGRAM_VERSION ...），Windows / Cygwin 读可执行
+    文件的版本资源（version.dll），其余平台对已知终端程序探测 ``--version``。
+    系统提示词「当前执行环境」的「命令行」「GUI 程序」两行即用带版本号的
+    展示文本（``bash 5.2.21 (Cygwin)`` / ``mintty 2.9.6``）。
 """
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
 import platform as _platform
 import re
+import struct
+import subprocess
 import sys
 from typing import Mapping
 
@@ -35,7 +43,9 @@ __all__ = [
     "SHELL_ENV_MARKER",
     "detect_command_line",
     "detect_gui_program",
+    "detect_gui_program_version",
     "detect_shell",
+    "detect_shell_version",
     "detect_terminal",
     "detect_runtime",
 ]
@@ -235,6 +245,67 @@ _JETBRAINS_PROCESS_NAMES = {
     "rider", "rider64", "datagrip", "datagrip64", "rubymine", "rubymine64",
     "phpstorm", "phpstorm64", "studio", "studio64", "aqua", "aqua64",
 }
+
+#: Shell 版本号来自哪些环境变量（交互 shell 自行导出；cmd / powershell 不
+#: 导出，改读可执行文件的版本资源）。数据注册表
+#: ``shell_detect → shell_version_env`` 可覆盖。
+_SHELL_VERSION_ENV = {
+    "bash": ("BASH_VERSION",),
+    "zsh": ("ZSH_VERSION",),
+    "fish": ("FISH_VERSION",),
+    "ksh": ("KSH_VERSION",),
+    # sh 常是 bash / zsh / ksh 的 POSIX 模式：有对应变量就取它的版本
+    "sh": ("BASH_VERSION", "ZSH_VERSION", "KSH_VERSION"),
+}
+
+#: GUI 宿主版本环境变量 ``(变量名, 取值方式)``：``text`` 直接解析版本号，
+#: ``konsole`` 解码 KDE 的 ``220400`` → ``22.04.00``。
+_GUI_VERSION_ENV_RULES = (
+    ("TERM_PROGRAM_VERSION", "text"),
+    ("KONSOLE_VERSION", "konsole"),
+    ("TERMUX_VERSION", "text"),
+)
+
+#: 没有版本资源时「询问」终端自身版本的参数。只收**已知支持该参数、不会因
+#: 探测而弹出窗口**的程序；表外的 GUI 程序不做探测（宁可没有版本号，也不在
+#: 构建提示词时拉起 GUI）。数据注册表 ``shell_detect → gui_version_args`` 可覆盖。
+_GUI_VERSION_ARGS = {
+    "mintty": ("--version",),
+    "gnome-terminal": ("--version",),
+    "gnome-terminal-server": ("--version",),
+    "kgx": ("--version",),
+    "konsole": ("--version",),
+    "kitty": ("--version",),
+    "alacritty": ("--version",),
+    "xfce4-terminal": ("--version",),
+    "lxterminal": ("--version",),
+    "mate-terminal": ("--version",),
+    "qterminal": ("--version",),
+    "terminator": ("--version",),
+    "tilix": ("--version",),
+    "terminology": ("--version",),
+    "rio": ("--version",),
+    "contour": ("--version",),
+    "ghostty": ("--version",),
+    "wezterm-gui": ("--version",),
+    "xterm": ("-version",),
+    "uxterm": ("-version",),
+}
+
+#: 版本号文本：至少一个点，避免把年份 / 构建序号之类当成版本号。
+_VERSION_TEXT_RE = re.compile(r"\d+(?:\.\d+)+")
+#: ``VS_FIXEDFILEINFO`` 结构长度（13 × DWORD）；不足即视为无效资源。
+_FIXED_FILE_INFO_SIZE = 52
+#: ``--version`` 探测超时（秒）：只是取版本号，不能拖慢提示词构建。
+_PROBE_TIMEOUT = 2.0
+
+#: 可执行文件版本号缓存（``路径 → 版本号``）：一次会话只读一次。
+_EXE_VERSION_CACHE: dict = {}
+#: ``--version`` 探测缓存（``(路径, 参数) → 版本号``）。
+_PROBE_VERSION_CACHE: dict = {}
+#: ``version.dll`` 句柄与「是否已尝试加载」标志（非 Windows / 加载失败时为空）。
+_VERSION_DLL = None
+_VERSION_DLL_LOADED = False
 
 
 
@@ -600,6 +671,149 @@ def _ancestor_names(pid: int) -> list:
     return [name for name, _cmdline in _ancestor_details(pid)]
 
 
+def _proc_ancestor_pids(pid: int) -> list:
+    """``/proc`` 父进程链 → ``[(pid, 进程名)]``（含起点进程本身）。"""
+    entries: list = []
+    seen: set = set()
+    for _ in range(_MAX_ANCESTOR_DEPTH):
+        if not isinstance(pid, int) or pid <= 1 or pid in seen:
+            break
+        seen.add(pid)
+        name = _proc_name(pid)
+        if not name:
+            break
+        entries.append((pid, name))
+        pid = _proc_ppid(pid)
+    return entries
+
+
+def _psutil_ancestor_pids(pid: int) -> list:
+    """psutil 父进程链 → ``[(pid, 进程名)]``（取不到的进程跳过）。"""
+    try:
+        import psutil
+    except Exception:
+        return []
+    entries: list = []
+    try:
+        proc = psutil.Process(pid)
+        for _ in range(_MAX_ANCESTOR_DEPTH):
+            entries.append((proc.pid, proc.name()))
+            parent = proc.parent()
+            if parent is None:
+                break
+            proc = parent
+    except Exception:
+        return []
+    return entries
+
+
+def _win_ancestor_pids(pid: int) -> list:
+    """Windows 父进程链 → ``[(pid, 进程名)]``（Toolhelp32 快照）。"""
+    table = _win_process_table()
+    if not table:
+        return []
+    entries: list = []
+    seen: set = set()
+    for _ in range(_MAX_ANCESTOR_DEPTH):
+        if not isinstance(pid, int) or pid <= 0 or pid in seen:
+            break
+        seen.add(pid)
+        entry = table.get(pid)
+        if entry is None:
+            break
+        parent, name = entry
+        if name:
+            entries.append((pid, name))
+        pid = parent
+    return entries
+
+
+def _ancestor_pids(pid: int) -> list:
+    """当前平台父进程链 ``[(pid, 进程名)]``（含起点进程本身）。
+
+    版本号需要定位到**具体进程**（读它的可执行文件版本资源 / 询问版本），
+    因此与只取名字的 :func:`_ancestor_names` 分开：/proc → psutil → 原生
+    进程表，语义与 ``_ancestor_details`` 保持一致。
+    """
+    if os.name != "nt":
+        entries = _proc_ancestor_pids(pid)
+        if entries:
+            return entries
+    entries = _psutil_ancestor_pids(pid)
+    if entries:
+        return entries
+    return _win_ancestor_pids(pid)
+
+
+def _win_process_image_path(pid: int) -> str:
+    """Windows 进程可执行文件完整路径（``QueryFullProcessImageNameW``）。
+
+    Toolhelp32 快照只给进程名，读版本资源需要完整路径；取不到（权限不足 /
+    进程已退出 / 32 位 Python 读 64 位进程）返回空字符串。
+    """
+    if os.name != "nt":
+        return ""
+    try:
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.QueryFullProcessImageNameW.argtypes = (
+            wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD),
+        )
+        kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        #: PROCESS_QUERY_LIMITED_INFORMATION
+        handle = kernel32.OpenProcess(0x1000, False, int(pid))
+        if not handle:
+            return ""
+        try:
+            buffer = ctypes.create_unicode_buffer(32768)
+            size = wintypes.DWORD(len(buffer))
+            if not kernel32.QueryFullProcessImageNameW(
+                handle, 0, buffer, ctypes.byref(size),
+            ):
+                return ""
+            return buffer.value
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        logger.debug("读取进程可执行文件路径失败: pid=%s", pid, exc_info=True)
+        return ""
+
+
+def _process_version_path(pid: int) -> str:
+    """进程可执行文件的 Windows 路径（读 PE 版本资源用；取不到返回空串）。
+
+    Cygwin / MSYS2 的 ``/proc/<pid>/winexename`` 直接给 Windows 路径（原生
+    进程与 Cygwin 程序都有）；Windows 上用 ``QueryFullProcessImageNameW``。
+    """
+    win_path = _read_text(_proc_path(pid, "winexename")).strip()
+    if win_path:
+        return win_path
+    if os.name == "nt":
+        return _win_process_image_path(pid)
+    return ""
+
+
+def _process_exe_path(pid: int) -> str:
+    """进程可执行文件路径（启动 ``--version`` 探测用；取不到返回空串）。"""
+    try:
+        link = os.readlink(_proc_path(pid, "exe"))
+    except OSError:
+        link = ""
+    if link:
+        return link
+    name = _read_text(_proc_path(pid, "exename")).strip()
+    if name:
+        return name
+    if os.name == "nt":
+        return _win_process_image_path(pid)
+    return ""
+
+
 def _basename_lower(value: str) -> str:
     name = (value or "").strip().strip('"').strip("'")
     name = name.replace("\\", "/").rstrip("/")
@@ -764,6 +978,18 @@ def _detect_terminal(env: Mapping, ancestors: list) -> str:
     return ""
 
 
+def _gui_alias_for(name: str) -> str:
+    """进程名 → GUI 宿主展示名（tmux / screen 等复用器不在表内，返回空串）。"""
+    base = _basename_lower(name)
+    aliases = _detect_table("gui_terminal_process_aliases", _GUI_TERMINAL_PROCESS_ALIASES)
+    label = aliases.get(base)
+    if label:
+        return label
+    if base in _JETBRAINS_PROCESS_NAMES:
+        return "JetBrains"
+    return ""
+
+
 def _detect_gui_program(env: Mapping, ancestors: list) -> str:
     """检测承载当前命令行的 GUI 程序（Windows Terminal / VS Code / ...）。
 
@@ -781,14 +1007,10 @@ def _detect_gui_program(env: Mapping, ancestors: list) -> str:
         if var == "TERMINAL_EMULATOR":
             return _map_terminal_emulator(value)
         return label
-    aliases = _detect_table("gui_terminal_process_aliases", _GUI_TERMINAL_PROCESS_ALIASES)
     for name in ancestors:
-        base = _basename_lower(name)
-        label = aliases.get(base)
+        label = _gui_alias_for(name)
         if label:
             return label
-        if base in _JETBRAINS_PROCESS_NAMES:
-            return "JetBrains"
     return ""
 
 
@@ -806,15 +1028,47 @@ def detect_terminal(env: Mapping | None = None, ppid: int | None = None) -> str:
     return _detect_terminal(env, _ancestor_names(pid))
 
 
-def detect_gui_program(env: Mapping | None = None, ppid: int | None = None) -> str:
+def detect_gui_program(
+    env: Mapping | None = None,
+    ppid: int | None = None,
+    with_version: bool = False,
+) -> str:
     """检测承载当前命令行的 GUI 程序（如 Windows Terminal / VS Code / ConEmu）。
 
     只识别图形宿主：tmux / screen / VTE 等复用器或组件不算，会继续向上
     查找；SSH / 纯控制台等没有图形宿主时返回空字符串。
+
+    Args:
+        with_version: 是否附带版本号（``mintty 2.9.6``）；默认只给程序名，
+            保持既有调用方输出不变。版本号取不到时只返回程序名。
     """
     env = os.environ if env is None else env
     pid = os.getppid() if ppid is None else ppid
-    return _detect_gui_program(env, _ancestor_names(pid))
+    label = _detect_gui_program(env, _ancestor_names(pid))
+    if not with_version:
+        return label
+    return _format_gui_program(label, _resolve_gui_version(label, env, pid))
+
+
+def detect_gui_program_version(
+    env: Mapping | None = None,
+    ppid: int | None = None,
+) -> str:
+    """检测承载当前命令行的 GUI 程序版本号（取不到返回空字符串）。"""
+    env = os.environ if env is None else env
+    pid = os.getppid() if ppid is None else ppid
+    label = _detect_gui_program(env, _ancestor_names(pid))
+    return _resolve_gui_version(label, env, pid)
+
+
+def detect_shell_version(
+    env: Mapping | None = None,
+    ppid: int | None = None,
+) -> str:
+    """检测当前 Shell 解释器的版本号（取不到返回空字符串）。"""
+    env = os.environ if env is None else env
+    pid = os.getppid() if ppid is None else ppid
+    return _resolve_shell_version(_detect_shell(env, _ancestor_details(pid)), env, pid)
 
 
 def detect_runtime(
@@ -855,15 +1109,278 @@ def detect_runtime(
     return ""
 
 
-def _format_command_line(shell: str, runtime: str) -> str:
-    """命令行展示文本：Shell 解释器 +（运行环境）括号补充。
+def _trim_version(text: str) -> str:
+    """去掉 PE 版本号尾部只有 0 的第四段（``2.9.6.0`` → ``2.9.6``）。
 
-    GUI 宿主由 :func:`detect_gui_program` 单独返回，不再混入「命令行」，
+    只针对 4 段的版本号：``3.6.0`` / ``6.1.0`` 的末段 0 是真实版本位，保留。
+    """
+    parts = text.split(".")
+    if len(parts) == 4 and parts[-1] == "0":
+        parts.pop()
+    return ".".join(parts)
+
+
+def _normalize_version(text: str) -> str:
+    """从版本文本里提取 ``1.2.3`` 形式的版本号（没有版本号返回空串）。
+
+    例：``5.2.21(1)-release`` → ``5.2.21``；
+    ``10.0.26100.8875 (WinBuild.160101.0800)`` → ``10.0.26100.8875``。
+    """
+    match = _VERSION_TEXT_RE.search(text or "")
+    if not match:
+        return ""
+    return _trim_version(match.group(0))
+
+
+def _decode_konsole_version(value: str) -> str:
+    """解码 ``KONSOLE_VERSION``（KDE 的整数编码，``220400`` → ``22.04.00``）。"""
+    digits = re.sub(r"\D", "", value or "")
+    if len(digits) < 5:
+        return _normalize_version(value)
+    number = int(digits)
+    return f"{number // 10000}.{number // 100 % 100:02d}.{number % 100:02d}"
+
+
+def _version_dll():
+    """加载 ``version.dll``（Windows / Cygwin）；不可用时返回 ``None``。
+
+    Cygwin 的 ctypes 没有 ``WinDLL``，且 ``wintypes`` 的 ``DWORD`` 是 C
+    ``long``（Cygwin 为 8 字节），所以这里显式声明 32 位类型——否则
+    ``GetFileVersionInfoSizeW`` 的返回值与 ``VS_FIXEDFILEINFO`` 布局全部错位。
+    """
+    global _VERSION_DLL, _VERSION_DLL_LOADED
+    if _VERSION_DLL_LOADED:
+        return _VERSION_DLL
+    _VERSION_DLL_LOADED = True
+    loader = getattr(ctypes, "WinDLL", None) or getattr(ctypes, "CDLL", None)
+    if loader is None:  # pragma: no cover - 所有平台都有 CDLL
+        return None
+    try:
+        lib = loader("version.dll")
+        dword = ctypes.c_uint32
+        lib.GetFileVersionInfoSizeW.argtypes = (ctypes.c_wchar_p, ctypes.POINTER(dword))
+        lib.GetFileVersionInfoSizeW.restype = dword
+        lib.GetFileVersionInfoW.argtypes = (ctypes.c_wchar_p, dword, dword, ctypes.c_void_p)
+        lib.GetFileVersionInfoW.restype = ctypes.c_int
+        lib.VerQueryValueW.argtypes = (
+            ctypes.c_void_p, ctypes.c_wchar_p,
+            ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_uint),
+        )
+        lib.VerQueryValueW.restype = ctypes.c_int
+    except (OSError, AttributeError):
+        return None
+    _VERSION_DLL = lib
+    return lib
+
+
+def _ver_query(lib, block, sub: str):
+    """``VerQueryValueW`` → ``(指针地址, 长度)``；查询失败返回 ``None``。"""
+    pointer = ctypes.c_void_p()
+    length = ctypes.c_uint()
+    if not lib.VerQueryValueW(block, sub, ctypes.byref(pointer), ctypes.byref(length)):
+        return None
+    return pointer.value, length.value
+
+
+def _query_string_version(lib, block) -> str:
+    """版本资源里的 ``FileVersion`` / ``ProductVersion`` 字符串（优先英文翻译）。"""
+    translation = _ver_query(lib, block, "\\VarFileInfo\\Translation")
+    if not translation:
+        return ""
+    pointer, length = translation
+    raw = ctypes.string_at(pointer, length)
+    pairs = [
+        struct.unpack("<HH", raw[offset:offset + 4])
+        for offset in range(0, length - 3, 4)
+    ]
+    # 英文 / 中性翻译优先（其余保持资源里的顺序）
+    pairs.sort(key=lambda item: item[0] not in (0x0409, 0x0000))
+    for lang, codepage in pairs:
+        for key in ("FileVersion", "ProductVersion"):
+            found = _ver_query(lib, block, f"\\StringFileInfo\\{lang:04x}{codepage:04x}\\{key}")
+            if not found:
+                continue
+            value_pointer, value_length = found
+            version = _normalize_version(ctypes.wstring_at(value_pointer, value_length))
+            if version:
+                return version
+    return ""
+
+
+def _query_fixed_version(lib, block) -> str:
+    """``VS_FIXEDFILEINFO`` 里的文件版本（字符串资源缺失时的兜底）。"""
+    found = _ver_query(lib, block, "\\")
+    if not found:
+        return ""
+    pointer, length = found
+    if length < _FIXED_FILE_INFO_SIZE:
+        return ""
+    raw = ctypes.string_at(pointer, _FIXED_FILE_INFO_SIZE)
+    file_version_ms, file_version_ls = struct.unpack_from("<II", raw, 16)
+    parts = (
+        file_version_ms >> 16, file_version_ms & 0xFFFF,
+        file_version_ls >> 16, file_version_ls & 0xFFFF,
+    )
+    return _trim_version(".".join(str(part) for part in parts))
+
+
+def _read_exe_file_version(path: str) -> str:
+    """读 PE 可执行文件的版本资源（非 Windows / 读取失败返回空串）。"""
+    lib = _version_dll()
+    if lib is None or not path:
+        return ""
+    try:
+        size = lib.GetFileVersionInfoSizeW(path, None)
+        if not size:
+            return ""
+        buffer = ctypes.create_string_buffer(size)
+        block = ctypes.cast(buffer, ctypes.c_void_p)
+        if not lib.GetFileVersionInfoW(path, 0, size, block):
+            return ""
+        return _query_string_version(lib, block) or _query_fixed_version(lib, block)
+    except Exception:
+        logger.debug("读取可执行文件版本资源失败: %s", path, exc_info=True)
+        return ""
+
+
+def _exe_file_version(path: str) -> str:
+    """可执行文件版本号（按路径缓存：一次会话只读一次）。"""
+    if not path:
+        return ""
+    if path not in _EXE_VERSION_CACHE:
+        _EXE_VERSION_CACHE[path] = _read_exe_file_version(path)
+    return _EXE_VERSION_CACHE[path]
+
+
+def _probe_program_version(exe_path: str, name: str) -> str:
+    """询问程序自身版本（``<exe> --version``），结果按 ``(路径, 参数)`` 缓存。
+
+    只在非 Windows 平台探测：Windows / Cygwin 已有版本资源可读；且只探测
+    ``gui_version_args`` 表内**已知支持该参数**的终端程序——表外程序一律不
+    探测，避免在构建提示词时拉起 GUI 窗口。
+    """
+    if not exe_path or os.name == "nt":
+        return ""
+    args = _detect_table("gui_version_args", _GUI_VERSION_ARGS).get(name)
+    if not args:
+        return ""
+    key = (exe_path, tuple(args))
+    if key in _PROBE_VERSION_CACHE:
+        return _PROBE_VERSION_CACHE[key]
+    version = ""
+    try:
+        completed = subprocess.run(
+            [exe_path, *args],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=_PROBE_TIMEOUT,
+            check=False,
+        )
+        version = _normalize_version((completed.stdout or b"").decode("utf-8", "replace"))
+    except (OSError, subprocess.SubprocessError):
+        version = ""
+    _PROBE_VERSION_CACHE[key] = version
+    return version
+
+
+def _resolve_shell_version(shell: str, env: Mapping, pid: int) -> str:
+    """Shell 解释器版本号：版本环境变量 → 可执行文件版本资源。"""
+    if not shell:
+        return ""
+    variables = _detect_table("shell_version_env", _SHELL_VERSION_ENV).get(shell) or ()
+    if isinstance(variables, str):
+        variables = (variables,)
+    for var in variables:
+        version = _normalize_version(str(env.get(var) or ""))
+        if version:
+            return version
+    # cmd / powershell 不导出 shell 自身的版本变量：读可执行文件版本资源。
+    for entry_pid, name in _ancestor_pids(pid):
+        if _shell_from_name(name) != shell:
+            continue
+        version = _exe_file_version(_process_version_path(entry_pid))
+        if version:
+            return version
+    return ""
+
+
+def _resolve_gui_version(label: str, env: Mapping, pid: int) -> str:
+    """GUI 宿主版本号：环境变量 → 可执行文件版本资源 → ``--version`` 探测。"""
+    if not label:
+        return ""
+    for var, kind in _detect_table("gui_version_env_rules", _GUI_VERSION_ENV_RULES):
+        value = str(env.get(var) or "").strip()
+        if not value:
+            continue
+        if kind == "konsole":
+            version = _decode_konsole_version(value)
+        else:
+            version = _normalize_version(value)
+        if version:
+            return version
+    for entry_pid, name in _ancestor_pids(pid):
+        if _gui_alias_for(name) != label:
+            continue
+        version = _exe_file_version(_process_version_path(entry_pid))
+        if version:
+            return version
+        version = _probe_program_version(_process_exe_path(entry_pid), _basename_lower(name))
+        if version:
+            return version
+    return ""
+
+
+def _format_gui_program(label: str, version: str) -> str:
+    """GUI 宿主展示文本：``mintty 2.9.6``（版本号取不到时只有程序名）。"""
+    if not label:
+        return ""
+    return f"{label} {version}" if version else label
+
+
+def _runtime_version(runtime: str, release: str | None = None) -> str:
+    """运行环境版本号（Windows 构建号 / macOS 产品版本 / 其余取内核发布号）。
+
+    仅用于「Shell 版本取不到」时给「命令行」行补一个版本号，避免输出
+    ``bash (Cygwin)`` 这种没有版本号的行。
+    """
+    if not runtime:
+        return ""
+    if runtime == "Windows":
+        return _normalize_version(_platform.version())
+    if runtime == "macOS":
+        version = _normalize_version(_platform.mac_ver()[0])
+        if version:
+            return version
+    return _normalize_version(release if release is not None else _platform.release())
+
+
+def _format_command_line(
+    shell: str,
+    runtime: str,
+    version: str = "",
+    runtime_version: str = "",
+) -> str:
+    """命令行展示文本：Shell 解释器 + 版本号 +（运行环境）括号补充。
+
+    「命令行」始终带版本号：优先 Shell 版本（``bash 5.2.21 (Cygwin)``）；
+    Shell 版本取不到时用运行环境版本（``bash (Cygwin 3.5.4)``），保证模型
+    能区分同名 Shell 的不同版本。
+
+    GUI 宿主由 :func:`detect_gui_program` 单独返回，不混入「命令行」，
     避免「cmd (Windows Terminal, Windows)」这类把终端当命令行类型的误导。
     """
     if shell:
-        return f"{shell} ({runtime})" if runtime else shell
-    return runtime or "unknown"
+        name = f"{shell} {version}" if version else shell
+        if not runtime:
+            return name
+        if version:
+            return f"{name} ({runtime})"
+        tag = f"{runtime} {runtime_version}" if runtime_version else runtime
+        return f"{name} ({tag})"
+    if runtime:
+        return f"{runtime} {runtime_version}" if runtime_version else runtime
+    return "unknown"
 
 
 def detect_command_line(
@@ -871,17 +1388,27 @@ def detect_command_line(
     ppid: int | None = None,
     sys_platform: str | None = None,
     release: str | None = None,
+    with_version: bool = False,
 ) -> str:
-    """综合检测当前命令行类型，返回单行展示文本（Shell + 运行环境）。
+    """综合检测当前命令行类型，返回单行展示文本（Shell + 版本 + 运行环境）。
 
-    示例：``bash (Cygwin)`` / ``powershell (Windows)`` / ``zsh (Linux)``。
-    承载命令行的 GUI 程序（Windows Terminal / VS Code ...）由
-    :func:`detect_gui_program` 单独提供，不混入本函数的返回值。
+    示例：``bash 5.2.21 (Cygwin)`` / ``powershell 10.0.19041.1 (Windows)`` /
+    ``zsh (Linux)``。承载命令行的 GUI 程序（Windows Terminal / VS Code ...）
+    由 :func:`detect_gui_program` 单独提供，不混入本函数的返回值。
     全部维度均无法识别时返回 ``unknown``。
+
+    Args:
+        with_version: 是否附带版本号；默认不带（``bash (Cygwin)``），保持既有
+            调用方与测试的输出不变。系统提示词「当前执行环境」用
+            ``with_version=True``。
     """
     env = os.environ if env is None else env
     pid = os.getppid() if ppid is None else ppid
     details = _ancestor_details(pid)
     shell = _detect_shell(env, details)
     runtime = detect_runtime(env, sys_platform, release)
-    return _format_command_line(shell, runtime)
+    if not with_version:
+        return _format_command_line(shell, runtime)
+    shell_version = _resolve_shell_version(shell, env, pid)
+    runtime_version = "" if shell_version else _runtime_version(runtime, release)
+    return _format_command_line(shell, runtime, shell_version, runtime_version)

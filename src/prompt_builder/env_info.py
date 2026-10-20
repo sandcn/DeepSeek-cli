@@ -54,12 +54,14 @@ def build_environment_info(
     # ★ 修复（review 方向）：使用参数 cwd（_resolve_cwd 解析）——修复前
     #   硬编码 os.getcwd()，调用方为子代理 prompt 传入的其他工作目录被忽略。
     lines.append(f"- 工作目录: {_resolve_cwd(cwd)}")
-    lines.append(f"- 命令行: {detect_command_line()}")
+    # ★ 「命令行」「GUI 程序」都带版本号：模型据此判断 Shell / 终端的实际
+    #   版本能力（bash 4 vs 5、mintty 2.x vs 3.x），避免按旧版本行为给命令。
+    lines.append(f"- 命令行: {detect_command_line(with_version=True)}")
     # ★ GUI 宿主单独一行：承载当前命令行的 GUI 程序（Windows Terminal /
     #   VS Code / ConEmu ...）——「命令行」只描述 Shell 类型，避免把终端
     #   程序混进命令行（如 "cmd (Windows Terminal, Windows)" 误导模型）。
     #   没有图形宿主（SSH / 纯控制台）时输出 unknown。
-    lines.append(f"- GUI 程序: {detect_gui_program() or 'unknown'}")
+    lines.append(f"- GUI 程序: {detect_gui_program(with_version=True) or 'unknown'}")
     # ★ 文本编码 / 行尾写死：不随宿主平台变化（Windows 也不输出 GBK / CRLF），
     #   与写入工具的实际行为（UTF-8 + LF）保持一致。
     lines.append(f"- 文本编码格式: {TEXT_ENCODING}")

@@ -16,7 +16,12 @@ from .builder import (
     reset_prompts_cache,
 )
 from .env_info import build_work_md
-from .shell_info import detect_command_line, detect_gui_program
+from .shell_info import (
+    detect_command_line,
+    detect_gui_program,
+    detect_gui_program_version,
+    detect_shell_version,
+)
 from .vcs_info import check_version_control
 
 __all__ = [
@@ -31,5 +36,7 @@ __all__ = [
     "check_version_control",
     "detect_command_line",
     "detect_gui_program",
+    "detect_gui_program_version",
+    "detect_shell_version",
     "reset_prompts_cache",
 ]

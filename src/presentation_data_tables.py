@@ -668,6 +668,49 @@ SHELL_DETECT_DATA: dict = {
         "xterm": "xterm",
         "uxterm": "xterm",
     },
+    # ── 版本号来源（「命令行」「GUI 程序」两行都要带版本号） ──
+    #: shell → 版本环境变量。交互 shell 自行导出；cmd / powershell 不导出，
+    #: 改读可执行文件版本资源（见 ``shell_info._resolve_shell_version``）。
+    "shell_version_env": {
+        "bash": ["BASH_VERSION"],
+        "zsh": ["ZSH_VERSION"],
+        "fish": ["FISH_VERSION"],
+        "ksh": ["KSH_VERSION"],
+        # sh 常是 bash / zsh / ksh 的 POSIX 模式：有对应变量就取它的版本
+        "sh": ["BASH_VERSION", "ZSH_VERSION", "KSH_VERSION"],
+    },
+    #: GUI 宿主版本环境变量 ``[变量名, 取值方式]``——``text`` 直接解析版本号，
+    #: ``konsole`` 解码 KDE 的 ``220400`` → ``22.04.00``。
+    "gui_version_env_rules": [
+        ["TERM_PROGRAM_VERSION", "text"],
+        ["KONSOLE_VERSION", "konsole"],
+        ["TERMUX_VERSION", "text"],
+    ],
+    #: 没有版本资源时「询问」终端自身版本的参数。只收**已知支持该参数、不会因
+    #: 探测而弹出窗口**的程序；表外的 GUI 程序不做探测（宁可没有版本号，也不
+    #: 在构建提示词时拉起 GUI）。
+    "gui_version_args": {
+        "mintty": ["--version"],
+        "gnome-terminal": ["--version"],
+        "gnome-terminal-server": ["--version"],
+        "kgx": ["--version"],
+        "konsole": ["--version"],
+        "kitty": ["--version"],
+        "alacritty": ["--version"],
+        "xfce4-terminal": ["--version"],
+        "lxterminal": ["--version"],
+        "mate-terminal": ["--version"],
+        "qterminal": ["--version"],
+        "terminator": ["--version"],
+        "tilix": ["--version"],
+        "terminology": ["--version"],
+        "rio": ["--version"],
+        "contour": ["--version"],
+        "ghostty": ["--version"],
+        "wezterm-gui": ["--version"],
+        "xterm": ["-version"],
+        "uxterm": ["-version"],
+    },
 }
 
 # ── HTTP 状态码 → 用户可操作提示表（api/errors） ──────────────
