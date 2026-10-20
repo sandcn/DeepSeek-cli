@@ -178,6 +178,8 @@ class _SessionFrameMixin:
         主动渲染）与渲染线程的常规帧互斥，消除「双线程并发写 stream」（P3-20
         输出撕裂）。stub（无 ``_render_lock``）保持既有语义。
         """
+        started = time.perf_counter()
+        record = getattr(self, "_record_frame_metrics", None)
         lock = getattr(self, "_render_lock", None)
         if lock is None:
             self._frame_active = True
@@ -185,6 +187,8 @@ class _SessionFrameMixin:
                 self._render_frame_impl()
             finally:
                 self._frame_active = False
+                if record is not None:
+                    record((time.perf_counter() - started) * 1000.0)
             return
         with lock:
             self._frame_active = True
@@ -192,6 +196,8 @@ class _SessionFrameMixin:
                 self._render_frame_impl()
             finally:
                 self._frame_active = False
+                if record is not None:
+                    record((time.perf_counter() - started) * 1000.0)
 
     def _poll_terminal_size(self) -> None:
         """SIGWINCH 兜底：定期主动重探终端尺寸（刷新 ``_width_cache``）。
@@ -392,8 +398,13 @@ class _SessionFrameMixin:
         if self._should_reuse_idle_frame() and self._last_frame is not None:
             frame = self._last_frame
         else:
+            t_build = time.perf_counter()
             element = self._build_tree(self._model, width)
+            build_ms = (time.perf_counter() - t_build) * 1000.0
+            t_reconcile = time.perf_counter()
             self._reconciler.render(self._root_fiber, element, width, self._width_cache.get_height())
+            reconcile_ms = (time.perf_counter() - t_reconcile) * 1000.0
+            self._last_render_breakdown = (build_ms, reconcile_ms)
             frame = _components.render_frame(self._root_fiber, width)
             self._last_frame = frame
         # ★ 输出历史接线（committed 内容行数）：InkRenderer 只回调 committed
@@ -406,12 +417,20 @@ class _SessionFrameMixin:
         #   此处从 committed host fiber 的 ``layout_box.y`` 读取真实起始行
         #   （``_find_committed_chat`` 结果已由 ``render_frame`` 缓存于 root，
         #   O(1)）；App 顶部增删元素后输出历史不再错位。
-        committed_fiber = _components._find_committed_chat(self._root_fiber)
+        # ★ 内容区（架构解耦）：框架不读取 `committed_lines`、不内置聊天语义。
+        #   app 层 provider 返回 ``(起始行, 已提交行数)``；未注入时安全跳过。
+        provider = getattr(self, "_content_span_provider", None)
         content_start = None
-        if committed_fiber is not None and committed_fiber.layout_box is not None:
-            content_start = max(0, committed_fiber.layout_box.y)
+        content_count = 0
+        if provider is not None:
+            try:
+                span = provider(self._root_fiber)
+                if isinstance(span, tuple) and len(span) == 2:
+                    content_start, content_count = span
+            except Exception:
+                _logger.debug("content_span_provider 异常", exc_info=True)
         self._ink_renderer.set_content_line_count(
-            len(getattr(self._model, "committed_lines", None) or []),
+            int(content_count or 0),
             start=content_start,
             resync=size_changed,
         )
@@ -455,6 +474,14 @@ class _SessionFrameMixin:
                 advance()
             except Exception:
                 _logger.debug("_advance_frame_seq 异常", exc_info=True)
+        # 记录本帧消费的模型 revision（变更驱动：下一拍据此判断是否需要重建）
+        try:
+            model = getattr(self, "_model", None)
+            revision = getattr(model, "revision", None)
+            if revision is not None:
+                self._last_model_revision = revision
+        except Exception:
+            _logger.debug("记录 model revision 异常", exc_info=True)
 
     # ── 系统监控 ─────────────────────────────────────
 

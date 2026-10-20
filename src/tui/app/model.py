@@ -124,9 +124,25 @@ _FORWARD_REF_RE = re.compile(
 class AppModel(_ToolOutputMixin):
     """聊天 UI 应用模型。"""
 
+    # ── UI 状态版本（变更驱动的单一信号） ─────────────────
+    # 任何**显式**的 UI 状态变更（apply_cmd / InkBridge / 输入回显）都应调用
+    # ``touch()``；渲染调度据此判断是否需要重建，不再依赖宿主预测函数。
+    # 直接字段写入（命令线程设置 fullscreen 等）仍以 request_bottom_redraw
+    # 的脏标记兜底。
+    def touch(self) -> None:
+        """标记 UI 状态已变更（revision +1）。"""
+        self._revision += 1
+
+    @property
+    def revision(self) -> int:
+        """当前 UI 状态版本号（单调递增）。"""
+        return self._revision
+
     def __init__(self) -> None:
         # 未声明字段告警去重（同名只 warning 一次——getattr 探测可能高频）。
         self._unknown_attr_warned: set = set()
+        #: UI 状态版本号（touch() 递增；渲染调度读取）
+        self._revision: int = 0
         # ── 聊天块 ──
         self.blocks: list[ChatBlock] = []
         # ★ 增量渲染缓存：已关闭（提交）块的渲染行。

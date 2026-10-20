@@ -416,9 +416,13 @@ class Input:
         """单次非阻塞 stdin 读取 + 直接分发（委托 InputDispatcher）。"""
         return self._dispatcher.read_stdin_once()
 
-    def process_events(self) -> None:
-        """处理所有输入事件（委托 InputDispatcher）。"""
-        self._dispatcher.process_events()
+    def process_events(self) -> int:
+        """处理所有输入事件（委托 InputDispatcher）。
+
+        Returns:
+            int: 本拍处理的输入单元数（供渲染线程统计输入负载/延迟）。
+        """
+        return int(self._dispatcher.process_events() or 0)
 
     def _dispatch_key_event(self, event: KeyEvent) -> None:
         """根据 KeyEvent.kind 分发到对应的输入处理器（委托 InputDispatcher）。"""
@@ -830,6 +834,14 @@ class Input:
         组件消费时调用（宿主可接滚轮滚动等全局行为）；None 可清除。
         """
         self._dispatcher.set_mouse_fallback_callback(cb)
+
+    def set_scroll_callback(self, cb) -> None:
+        """设置全局滚动回调（备用屏视口；委托 InputDispatcher）。
+
+        cb 签名: ``(delta: int) -> bool``——正数向上、负数向下；True 表示
+        已消费（PageUp/PgDn/滚轮不再走补全翻页/鼠标兜底）。
+        """
+        self._dispatcher.set_scroll_callback(cb)
 
     def set_clear_screen_callback(self, cb) -> None:
         """设置 Ctrl+L 清屏回调（委托 InputDispatcher，Claude TUI parity 3.1）。

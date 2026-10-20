@@ -218,6 +218,8 @@ class InputDispatcher:
         # （宿主可接滚轮滚动等全局行为）。None 缺省时鼠标事件 no-op（不写
         # 输入缓冲——鼠标不是文本输入）。
         self._mouse_fallback_callback = None
+        #: 全局滚动回调（备用屏视口；``(delta) -> bool``，True=消费）
+        self._scroll_callback = None
 
     # ═══════════════════════════════════════════════════════
     # 中断与特殊按键处理（render 线程调用）
@@ -845,16 +847,19 @@ class InputDispatcher:
     _MAX_EVENTS_PER_FRAME = 4096
     _MAX_SECONDS_PER_FRAME = 0.02
 
-    def process_events(self) -> None:
+    def process_events(self) -> int:
         """处理输入事件（render 线程调用，带单帧预算）。
 
         循环调用 ``read_stdin_once()``，直到无可读数据或达到本帧预算
         （4096 个输入单元 / 20ms）。大段粘贴剩余部分保留在 InputIO.pending，
         下一帧继续，避免单帧长时间阻塞渲染。
+
+        Returns:
+            int: 本拍处理的输入单元数（0 = 无输入；供可观测性统计）。
         """
+        processed = 0
         try:
             deadline = time.monotonic() + self._MAX_SECONDS_PER_FRAME
-            processed = 0
             while processed < self._MAX_EVENTS_PER_FRAME:
                 if not self.read_stdin_once():
                     break
@@ -863,6 +868,7 @@ class InputDispatcher:
                     break
         except Exception:
             _logger.warning("process_events 异常", exc_info=True)
+        return processed
 
     def _router_consume(self, event: KeyEvent) -> bool:
         """router 优先分发统一入口（策略收敛，方向1 步骤1）。
@@ -1065,6 +1071,13 @@ class InputDispatcher:
             if event.char:
                 self._insert_pasted_text(event.char)
         elif kind == "mouse":
+            # 备用屏全局滚轮滚动优先；未消费再走宿主兜底回调。
+            if event.mouse_action == "wheel" and getattr(self, "_scroll_callback", None) is not None:
+                try:
+                    if self._scroll_callback(-int(event.mouse_wheel or 0)):
+                        return
+                except Exception:
+                    _logger.debug("滚轮滚动回调异常", exc_info=True)
             # 鼠标事件未被 useMouseInput 组件消费 → 兜底回调（宿主注入的
             # 滚轮滚动等全局行为）；未注入时 no-op（鼠标不写输入缓冲）。
             cb = self._mouse_fallback_callback
@@ -1129,6 +1142,14 @@ class InputDispatcher:
             else:
                 self._buffer_editor._left()
         elif kind in ("page_up", "page_down"):
+            # 备用屏视口滚动优先（启用时）；未启用/不生效则回退补全弹窗翻页。
+            cb = getattr(self, "_scroll_callback", None)
+            if cb is not None:
+                try:
+                    if cb(5 if kind == "page_up" else -5):
+                        return
+                except Exception:
+                    _logger.debug("滚动回调异常", exc_info=True)
             # 2026-08-05（增加操作）：PageUp/PageDown 补全弹窗翻页——补全
             # 可见时按页步进（每页 ±5 项，对齐弹窗可见行数）；补全不可见
             # 时 no-op（不改变输入缓冲/光标）。
@@ -1641,6 +1662,15 @@ class InputDispatcher:
         组件消费时调用本回调。None 清除（默认：鼠标事件 no-op）。
         """
         self.register_callback("mouse_fallback", cb)
+
+    def set_scroll_callback(self, cb) -> None:
+        """注入全局滚动回调（备用屏视口）。
+
+        Args:
+            cb: ``(delta: int) -> bool``——正数向上、负数向下；True 表示已
+                消费（PageUp/PgDn/滚轮不再走补全翻页/兜底）。None 清除。
+        """
+        self._scroll_callback = cb
 
     # ═══════════════════════════════════════════════════════
     # 窗口期 Enter 提交意图捕获（editmsg「很多上文时按回车不能编辑」修复）

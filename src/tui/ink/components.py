@@ -295,12 +295,12 @@ def _paint_children(fiber: Fiber, canvas: list, clip=None, inherit_bg=None) -> N
         child = child.sibling
 
 
-def _find_committed_chat(root: Fiber):
-    """DFS 查找静态行批量渲染 host fiber（StaticLines / committed-chat）。
+def _find_static_lines_host(root: Fiber):
+    """DFS 查找静态行批量渲染 host fiber（通用 ``static-lines`` 组件）。
 
-    组件树中聊天历史作为单个 host 挂载（ChatView use_memo 缓存元素），
-    静态行经 ``staticlines._paint`` 维护帧前缀缓存；render_frame 复用该前缀，
-    每帧只重建尾部 live 区——大历史下 Frame 构建 O(live) 而非 O(全部历史)。
+    ``static-lines`` 是通用静态行组件（不限于聊天）；render_frame 复用其帧
+    前缀缓存，让大段静态内容每帧只重建尾部 live 区。业务侧「聊天已提交历史」
+    的定位由 app 层 ``committed_span`` 提供，框架不再内置聊天语义。
 
     方向4（性能）：查找结果缓存于 root fiber（``_committed_chat_cache``）——
     reconciler 按 key 复用 fiber，静态行 host 在树中位置跨帧稳定，无需每帧
@@ -401,7 +401,7 @@ def render_frame(root: Fiber, width: int) -> Frame:
     #   全量（防御层，成本 O(1)）；非顶部前缀已由 ``chat_view._paint`` 跳过
     #   画布写入，回退全量前将前缀行填入画布对应区域（box.y 起）保证 committed
     #   行不丢失。
-    committed = _find_committed_chat(root)
+    committed = _find_static_lines_host(root)
     if committed is not None:
         prefix_info = committed._committed_prefix
         if prefix_info is not None:
@@ -493,4 +493,9 @@ def render_frame(root: Fiber, width: int) -> Frame:
     return Frame(_to_line(row, width) for row in canvas)
 
 
-__all__ = ["render_frame"]
+# 兼容别名：旧内部/测试仍可 import ``_find_committed_chat``（等价于通用
+# static-lines host 查找；业务「聊天历史」语义已移至 app 层）。
+_find_committed_chat = _find_static_lines_host
+
+
+__all__ = ["render_frame", "_find_static_lines_host", "_find_committed_chat"]

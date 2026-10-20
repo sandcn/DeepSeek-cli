@@ -610,39 +610,26 @@ python chat.py config set mcp_servers '[{"name":"fs","transport":"stdio","comman
 
 ---
 
-## 光标坐标追踪系统（CursorTracker）
+## 帧 / 输入可观测性（`InkSession.metrics()`）
 
-新增于 v2.2.0，全局统一的终端光标坐标追踪基础设施，消除分散在各渲染组件中的坐标推算累积误差。
+渲染线程与输入处理在同一 60Hz 节拍内运行；`InkSession.metrics()` 提供线程安全的
+运行时指标快照，用于定位「卡顿/帧耗时/输入积压」：
 
-### 核心 API
-
-| 方法 | 功能 |
+| 字段 | 含义 |
 |------|------|
-| `move_to(row, col)` | 写 ANSI CUP 序列 + 更新内部坐标 |
-| `move_xy(col, row)` | 0-based → 1-based 转换入口 |
-| `set(row, col)` | 仅更新内部状态，不写终端 |
-| `record_newlines(n)` | 追加 `n` 行后自动更新行号 + 列号复位 |
-| `record_move_down(n)` | 下移 `n` 行（滚动场景） |
-| `save()` / `restore(pos)` | 检查点模式（返回/恢复 CursorPosition 快照），支持渲染前后坐标范围对比 |
-| `pos → CursorPosition` | 获取当前坐标快照 |
+| `frames` | 已渲染帧数 |
+| `last_frame_ms` / `avg_frame_ms` / `max_frame_ms` | 最近 / 平均 / 最大单帧耗时（构建树 + 调和 + 布局 + 绘制 + 输出） |
+| `last_frame_lines` | 最近一帧文档行数 |
+| `input_events` | 累计处理的输入单元数（按键/粘贴字符） |
+| `last_input_ms` | 最近一帧 INPUT 阶段耗时 |
+| `queue_depth` | 渲染命令队列当前积压 |
 
-### 集成架构
+`render(debug=True)` 时上述指标随每帧输出到 stderr（`[ink:debug]` 行），
+不改变正常渲染行为。
 
-```
-ChatUIConsumer
-  └── CursorTracker（唯一实例，构造注入到所有子系统）
-        ├── ContentRenderer   → _do_content / _do_tool_output 等 14 种渲染后调用 record_newlines()
-        ├── RenderEngine       → _phase_render 记录渲染坐标范围，position_cursor 同步最终光标
-        ├── _BottomBar         → force_redraw / sync_bottom_lines / ensure_cursor_* 中 set 光标位置
-        └── _CompletionPopup   → render / render_cycle_update 中 set 弹窗行坐标
-```
-
-### 设计决策
-
-- **单线程使用** — 仅在 render 线程中操作，无需锁
-- **1-based 坐标** — 与终端 ANSI CUP 序列一致
-- **轻量无依赖** — 仅标准库，零外部依赖
-- **检查点模式** — `save/restore` 支持嵌套渲染场景的坐标回退
+> 终端坐标由 `InkRenderer` 内部维护（`_buf_h` / `_start_row` / `_effective_offset`
+> 与物理光标行），不再有独立的 `CursorTracker` 基础设施；行级 diff 与漂移修复
+> 均以渲染器内的物理缓冲记账为准。
 
 ---
 

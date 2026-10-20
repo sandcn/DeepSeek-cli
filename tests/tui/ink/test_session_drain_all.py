@@ -7,7 +7,7 @@
 
 本测试覆盖：
   1. 大规模积压（5000 条）一帧全部出队、队列清空；
-  2. 出队顺序严格按 ``(priority, seq)``（全量排空不改变优先级语义）；
+  2. 出队/应用顺序严格按事件序（seq；优先级仅用于背压/保留）；
   3. ``unfinished_tasks`` 归零、``queue.join()`` 可完成（flush 不挂起）；
   4. 空队列返回 ``(空, False, True)``；
   5. 「最新值覆盖」状态命令不因全量排空而重复/丢失，最新值生效。
@@ -55,8 +55,8 @@ def test_single_frame_drains_entire_backlog():
     assert cmds[-1].text == "c4999"
 
 
-def test_drain_all_preserves_priority_then_insert_order():
-    """全量排空仍严格按 (priority, seq)：低优先级命令最后处理但不会被跳过。"""
+def test_drain_all_applies_in_event_order():
+    """全量排空按事件序（seq）应用：优先级不重排同一帧内的命令。"""
     s = _make_session()
     for i in range(20):
         s.push_cmd(WriteLineCmd(text=f"low{i}"))
@@ -70,13 +70,13 @@ def test_drain_all_preserves_priority_then_insert_order():
     # PARSE_INFO 属「最新值覆盖」命令：5 次入队合并为 1 条（最新值）
     assert len(cmds) == 41
     names = [type(c).__name__ for c in cmds]
-    # prio0 流式 → prio2 解析进度 → prio3 低优先级
-    assert names[:20] == ["ContentCmd"] * 20
-    assert names[20:21] == ["ParseInfoCmd"]
-    assert names[21:] == ["WriteLineCmd"] * 20
-    assert [c.text for c in cmds[:20]] == [f"stream{i}" for i in range(20)]
-    assert cmds[20].tokens == 4
-    assert [c.text for c in cmds[21:]] == [f"low{i}" for i in range(20)]
+    # 事件序：先入队的 WRITE_LINE → 流式 → 解析进度
+    assert names[:20] == ["WriteLineCmd"] * 20
+    assert names[20:40] == ["ContentCmd"] * 20
+    assert names[40:41] == ["ParseInfoCmd"]
+    assert [c.text for c in cmds[:20]] == [f"low{i}" for i in range(20)]
+    assert [c.text for c in cmds[20:40]] == [f"stream{i}" for i in range(20)]
+    assert cmds[40].tokens == 4
 
 
 def test_unfinished_tasks_zero_and_join_returns():

@@ -38,6 +38,9 @@ def layout_children(fiber: Fiber) -> list[Fiber]:
     在深层 Fragment 嵌套下触发 RecursionError；队列（popleft + extendleft）
     保持文档顺序且无栈深度限制。
     """
+    cached = getattr(fiber, "_layout_children_cache", None)
+    if cached is not None:
+        return cached
     result: list[Fiber] = []
     pending: deque[Fiber] = deque()
     child = fiber.child
@@ -61,6 +64,7 @@ def layout_children(fiber: Fiber) -> list[Fiber]:
                 pending.extendleft(reversed(sub))
             else:
                 result.append(host)
+    fiber._layout_children_cache = result
     return result
 
 

@@ -139,6 +139,12 @@ class TuiConfig(ConfigBase):
     # 点击交互）。可通过 RC 键 ``tui_mouse`` 关闭。
     mouse: bool = True
 
+    # ── 备用屏渲染（B3，默认关闭） ──────────────────────
+    # True：使用 ``AlternateScreenRenderer``（固定视口、行级增量、退出还原
+    # 原屏幕、无 scrollback 输出历史）；False（默认）：现有流动模型。
+    # 可通过 RC 键 ``tui_alternate_screen`` 开启。
+    alternate_screen: bool = False
+
     def __post_init__(self) -> None:
         """强制渲染帧率恒定 60Hz——帧率不可被任何构造/覆盖路径降低。
 

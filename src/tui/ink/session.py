@@ -37,6 +37,7 @@ from src.tui._screen import (
 )
 from .reconciler import Reconciler
 from .renderer import InkRenderer
+from ._alt_screen_renderer import AlternateScreenRenderer
 from .terminal import RawModeController, TerminalModeManager
 from . import hooks as _hooks
 # ★ 命令优先级策略（方向B 拆分，2026-08-05）：优先级常量与映射函数自
@@ -94,10 +95,6 @@ _JOIN_RENDER_HARD_TIMEOUT = 30.0
 _FLUSH_HARD_CEILING = 60.0
 
 # ── 60Hz 节拍精度（2026-10-20 用户需求：render 线程跟 input 处理改成 60hz） ──
-#: 节拍尾段自旋保护（秒）——Windows/Cygwin 的 ``Event.wait`` 粒度在
-#: ``timeBeginPeriod(1)`` 后仍约 1ms；等待到「还剩 ≤1ms」后自旋补齐，
-#: 避免 wait 粒度把 16.67ms 的 60Hz 节拍拉低到 ~58Hz。
-_TICK_SPIN_GUARD = 0.001
 #: 高分辨率定时器请求（仅 Windows/Cygwin）：线程所有者集合 + winmm 句柄。
 #: 每个渲染线程在进入 ``_render`` 时申请、退出时释放；多个渲染线程/会话
 #: 并存时只申请一次，最后一个线程退出时恢复系统默认分辨率。
@@ -223,6 +220,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         width_cache: TerminalWidthCache | None = None,
         config: TuiConfig | None = None,
         stream=None,
+        alternate_screen: bool = False,
     ):
         self._model = model
         self._apply_fn = apply_cmd
@@ -239,9 +237,16 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         # ★ 增量渲染屏幕坐标（方向1）：渲染器接收终端屏幕高度——文档高于屏幕
         #   时按屏幕坐标跟踪物理光标（防 cursor_up 越出屏幕顶部错位）、可见区
         #   上方（滚动区）的行跳过重写（头部动画不再引发整帧重写）。
-        self._ink_renderer = InkRenderer(
-            stream=stream, height=self._width_cache.get_height(),
+        self._ink_renderer = (
+            AlternateScreenRenderer(
+                stream=stream, height=self._width_cache.get_height(),
+            )
+            if alternate_screen
+            else InkRenderer(
+                stream=stream, height=self._width_cache.get_height(),
+            )
         )
+        self._alternate_screen = bool(alternate_screen)
 
         # ── 队列 / 线程 ──
         self._cmd_queue: queue.PriorityQueue = queue.PriorityQueue(maxsize=self._config.cmd_queue_maxsize)
@@ -388,8 +393,100 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #: 宿主注入的「静态状态」预测函数（None = 恒不复用，默认行为与既有
         #: 恒定 60Hz 全量渲染完全一致）
         self._idle_frame_predicate: Callable[[], bool] | None = None
+        if self._alternate_screen:
+            # 备用屏默认变更驱动：无脏/无动画/无 revision 变化时跳过全量重绘。
+            # （render() 独立会话无宿主 predicate；备用屏不做 scrollback 增量，
+            # 静态帧重绘纯属浪费。）
+            self._idle_frame_predicate = lambda: True
         #: 本拍「无变更」标记（``_should_render`` 写入；空闲帧复用的前置条件）
         self._idle_ok: bool = False
+        #: 上次渲染消费的模型 revision（变更驱动：revision 变化即重建）
+        self._last_model_revision: int = -1
+        #: 内容区定位回调（app 层注入；``(root_fiber) -> fiber | None``）。
+        #: 框架不内置「聊天已提交历史」语义——未注入时输出历史起始行未知，
+        #: 渲染器安全跳过内容行回调。
+        self._content_span_provider: Callable | None = None
+        # ── 帧/输入可观测性（架构改进：帧耗时、输入耗时与事件数） ──
+        #: 指标锁（渲染线程写、任意线程读；读多写少，开销可忽略）
+        self._metrics_lock = threading.Lock()
+        self._metrics_frames: int = 0
+        self._metrics_last_frame_ms: float = 0.0
+        self._metrics_total_frame_ms: float = 0.0
+        self._metrics_max_frame_ms: float = 0.0
+        self._metrics_last_frame_lines: int = 0
+        self._metrics_input_events: int = 0
+        self._metrics_last_input_ms: float = 0.0
+        self._metrics_queue_max_depth: int = 0
+        self._metrics_last_build_ms: float = 0.0
+        self._metrics_last_reconcile_ms: float = 0.0
+
+    # ── 可观测性 ─────────────────────────────────────
+
+    def _record_frame_metrics(self, elapsed_ms: float) -> None:
+        """记录一帧的耗时/行数（渲染线程调用；异常吞掉不影响渲染）。"""
+        try:
+            lock = getattr(self, "_metrics_lock", None)
+            if lock is None:
+                return
+            with lock:
+                self._metrics_frames += 1
+                self._metrics_last_frame_ms = elapsed_ms
+                self._metrics_total_frame_ms += elapsed_ms
+                if elapsed_ms > self._metrics_max_frame_ms:
+                    self._metrics_max_frame_ms = elapsed_ms
+                self._metrics_last_frame_lines = getattr(
+                    self, "_last_frame_lines", 0,
+                )
+                breakdown = getattr(self, "_last_render_breakdown", (0.0, 0.0))
+                self._metrics_last_build_ms = float(breakdown[0])
+                self._metrics_last_reconcile_ms = float(breakdown[1])
+        except Exception:
+            _logger.debug("帧指标记录异常", exc_info=True)
+
+    def _record_input_metrics(self, events: int, elapsed_ms: float) -> None:
+        """记录 INPUT 阶段处理事件数与耗时（渲染线程调用）。"""
+        try:
+            lock = getattr(self, "_metrics_lock", None)
+            if lock is None:
+                return
+            with lock:
+                self._metrics_input_events += max(0, int(events or 0))
+                self._metrics_last_input_ms = elapsed_ms
+        except Exception:
+            _logger.debug("输入指标记录异常", exc_info=True)
+
+    def metrics(self) -> dict:
+        """返回当前会话的帧/输入指标快照（线程安全，供调试/监控读取）。
+
+        Returns:
+            dict: ``frames`` / ``avg_frame_ms`` / ``max_frame_ms`` /
+            ``last_frame_ms`` / ``last_frame_lines`` / ``input_events`` /
+            ``last_input_ms`` / ``queue_depth``。
+        """
+        lock = getattr(self, "_metrics_lock", None)
+        try:
+            if lock is None:
+                return {}
+            with lock:
+                frames = self._metrics_frames
+                total = self._metrics_total_frame_ms
+                return {
+                    "frames": frames,
+                    "avg_frame_ms": (total / frames) if frames else 0.0,
+                    "max_frame_ms": self._metrics_max_frame_ms,
+                    "last_frame_ms": self._metrics_last_frame_ms,
+                    "last_frame_lines": self._metrics_last_frame_lines,
+                    "build_ms": self._metrics_last_build_ms,
+                    "reconcile_ms": self._metrics_last_reconcile_ms,
+                    "input_events": self._metrics_input_events,
+                    "last_input_ms": self._metrics_last_input_ms,
+                    "queue_depth": self._cmd_queue.qsize(),
+                    "queue_max_depth": self._metrics_queue_max_depth,
+                    "queue_dropped": getattr(self, "_cmd_queue_dropped", 0),
+                }
+        except Exception:
+            _logger.debug("读取指标异常", exc_info=True)
+            return {}
 
     # ── 注入 ─────────────────────────────────────────
 
@@ -759,6 +856,38 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
     def set_panel_refresh_callback(self, callback: Callable[[], None] | None) -> None:
         self._panel_refresh_cb = callback
 
+    def set_content_span_provider(self, provider: Callable | None) -> None:
+        """注入内容区 provider（app 层语义，框架不再内置）。
+
+        Args:
+            provider: ``(root_fiber) -> (start_row, line_count)``——返回输出
+                历史内容区的起始屏幕行（None=未知）与已提交行数。None 表示
+                不计算内容区（安全跳过输出历史回调）。
+        """
+        self._content_span_provider = provider
+
+    def scroll_by(self, delta: int) -> bool:
+        """滚动视口（仅备用屏渲染器支持；返回是否生效）。
+
+        正数向上查看更早内容，负数向下；请求一帧重绘。默认流动模型没有视口
+        （scrollback 由终端承担），返回 False。
+        """
+        fn = getattr(self._ink_renderer, "scroll_by", None)
+        if not callable(fn):
+            return False
+        fn(int(delta))
+        self._request_render()
+        return True
+
+    def scroll_to_bottom(self) -> bool:
+        """视口回到最新内容（仅备用屏；返回是否生效）。"""
+        fn = getattr(self._ink_renderer, "scroll_to_bottom", None)
+        if not callable(fn):
+            return False
+        fn()
+        self._request_render()
+        return True
+
     def request_bottom_redraw(self) -> None:
         self._bottom_redraw_requested.set()
         self._dirty = True
@@ -1067,6 +1196,12 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             return
         self._model.input_text = text
         self._model.input_cursor = len(text) if cursor_pos < 0 else cursor_pos
+        touch = getattr(self._model, "touch", None)
+        if callable(touch):
+            try:
+                touch()
+            except Exception:
+                _logger.debug("model.touch 异常", exc_info=True)
         self._request_render()
 
     def _request_render(self) -> None:
@@ -1405,17 +1540,13 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                 if now < next_loop:
                     remaining = next_loop - now
                     while remaining > 0:
-                        # ★ 尾段 ≤1ms 自旋（2026-10-20 用户需求：60Hz）：Windows/
-                        #   Cygwin 的 Event.wait 粒度约 1ms（timeBeginPeriod(1)
-                        #   后），纯 wait 会把 16.67ms 节拍拉低；仅最后 1ms 忙等，
-                        #   CPU 开销可控，且不减少任何渲染/输入处理工作。
-                        if remaining <= _TICK_SPIN_GUARD:
-                            while time.monotonic() < next_loop:
-                                pass
-                            break
-                        self._cmd_event.wait(
-                            timeout=remaining - _TICK_SPIN_GUARD,
-                        )
+                        # ★ 架构改进（2026-10-20）：去掉尾段 1ms 忙等自旋——
+                        #   渲染线程已申请 1ms 定时器分辨率（timeBeginPeriod(1)），
+                        #   Event.wait 粒度约 1ms，直接等到 next_loop 即可；
+                        #   原自旋每帧空转约 1ms（≈6% 单核占用）且放大电池/低配
+                        #   机上的无谓功耗。若个别平台 wait 粒度不足，由下方
+                        #   ``remaining`` 重算补足，不会提前渲染。
+                        self._cmd_event.wait(timeout=remaining)
                         self._cmd_event.clear()
                         now = time.monotonic()
                         remaining = next_loop - now
@@ -1543,6 +1674,16 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                         except Exception:
                             _logger.debug("应用命令前刷新 model.width 异常", exc_info=True)
                     self._apply_commands(commands)
+                    # 命令即模型变更：touch 递增 revision（变更驱动信号；
+                    # 与下方 _dirty 双保险）
+                    model = getattr(self, "_model", None)
+                    if model is not None:
+                        touch = getattr(model, "touch", None)
+                        if callable(touch):
+                            try:
+                                touch()
+                            except Exception:
+                                _logger.debug("model.touch 异常", exc_info=True)
                     # ★ BUG（2026-10-07 空闲帧复用引入）：命令即模型变更，必须
                     #   置脏——``_should_render`` 据此落位 ``_idle_ok=False``，
                     #   禁止本拍复用上一帧。修复前命令在 DRAIN_COMMANDS 阶段已
@@ -1603,10 +1744,16 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             out = self._stderr_stream
             if out is None:  # stderr 被关闭/分离：debug 输出无从写入
                 return
+            m = self.metrics()
             out.write(
                 f"[ink:debug] frame lines={self._last_frame_lines} "
                 f"queue={self._cmd_queue.qsize()} "
-                f"failures={self._consecutive_render_failures}\n"
+                f"failures={self._consecutive_render_failures} "
+                f"frame_ms={m.get('last_frame_ms', 0.0):.2f} "
+                f"avg_ms={m.get('avg_frame_ms', 0.0):.2f} "
+                f"max_ms={m.get('max_frame_ms', 0.0):.2f} "
+                f"input_ms={m.get('last_input_ms', 0.0):.2f} "
+                f"events={m.get('input_events', 0)}\n"
             )
             out.flush()
         except Exception:
@@ -1632,48 +1779,109 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
               - locked:   True=锁已获取；False=锁超时（调用方跳过本帧）。
         """
         commands: list = []
+        items: list[tuple[int, object]] = []
         with _try_acquire_output_lock(
             name="ink_session.drain_queue",
             timeout=self._config.drain_lock_timeout,
         ) as locked:
             if not locked:
                 return [], False, False
+            try:
+                depth = self._cmd_queue.qsize()
+                lock = getattr(self, "_metrics_lock", None)
+                if lock is not None and depth > getattr(self, "_metrics_queue_max_depth", 0):
+                    with lock:
+                        self._metrics_queue_max_depth = depth
+            except Exception:
+                _logger.debug("队列深度指标记录异常", exc_info=True)
             while True:
                 try:
-                    _, _, cmd = self._cmd_queue.get_nowait()
+                    _, seq, cmd = self._cmd_queue.get_nowait()
                     self._cmd_queue.task_done()
-                    commands.append(cmd)
+                    items.append((seq, cmd))
                 except queue.Empty:
                     break
+        # ★ 应用顺序 = 事件顺序（seq）。优先级仍用于入队背压/腾位/保留决策，
+        #   但不再重排同一帧内的应用顺序——修复 CRITICAL 命令（如 TOOL_CLOSE）
+        #   越过先发生的 USER_MSG/内容命令导致的显示/通道错序。全量排空下
+        #   不会饿死低优先级命令，故无需用优先级保证处理机会。
+        commands = [cmd for _, cmd in sorted(items, key=lambda it: it[0])]
         return commands, bool(commands), True
 
     def _should_render(self) -> bool:
-        """是否需渲染本帧：**恒定 True**——渲染线程每拍都渲染。
+        """本拍是否需要重建/渲染（变更驱动；60Hz 仅为节拍上限）。
 
-        ★ 2026-10-20（用户需求「render 线程跟 input 处理改成 60hz，不能降减少
-        和降级」）：移除「空闲按需渲染」与「force 提前渲染」——任何状态
-        （空闲/无命令/无动画）都恰按 ``render_interval``（1/60s）节拍渲染
-        一帧，既不跳过也不提前，帧率严格 60Hz 且不可被配置/参数改变
-        （``TuiConfig`` 的 ``__post_init__`` 强制 ``render_interval`` 及帧率
-        派生节流参数恒为 60Hz 真源；``render(maxFps=...)`` 不再改变帧率）。
-        输入处理 ``_phase_process_input`` 位于同一帧的 INPUT 阶段，因此输入
-        轮询频率随本方法保证的节拍同步为 60Hz（不降低、不降级）。
+        渲染循环仍按 ``render_interval``（1/60s）唤醒并执行 INPUT/命令排空，
+        但只有满足下列任一条件才执行「建树 + 调和 + 布局 + 绘制 + 输出」：
 
-        节拍由 ``_render`` 循环的 ``next_loop``（``render_interval``）保证，
-        本方法不再重复节流。重绘请求（``_bottom_redraw_requested``）消费为
-        脏标记，供等待方（``waitUntilRenderFlush`` / ``flush``）判断「待渲染
-        变更是否已消费」。
+          1. 有脏标记（命令应用 / 输入回显 / hooks setState / 外部重绘请求）；
+          2. 首帧（``_last_frame is None``）；
+          3. resize（``_resize_pending`` 或宽高与上次渲染不同）；
+          4. 存在激活的 ``useAnimation`` 动画；
+          5. 宿主注入的时间驱动预测函数返回「非静态」（``predicate() is False``，
+             如运行中工具时长、占位符渐显、系统监控）；
+          6. 有 ``flush_input_router`` 等待者（必须推进一帧发布新 router）。
+
+        无变更且无时间驱动内容时跳过重建（输入轮询照常进行），避免 60Hz
+        全量重建空转；帧率不会超过 ``render_interval``。
 
         Returns:
-            True — 固定渲染本拍。
+            True — 本拍需要渲染；False — 跳过重建（仅输入/命令排空）。
         """
         redraw_requested = self._bottom_redraw_requested.is_set()
         self._bottom_redraw_requested.clear()
-        # ★ 空闲帧复用（2026-10-07）：捕获「本拍是否有变更」——``_dirty`` 在此
-        #   清除（供等待方判断变更已消费），空闲复用判定在 ``_render_frame_impl``
-        #   内需读取清除前的语义，故显式落位 ``_idle_ok``。
-        self._idle_ok = not self._dirty and not redraw_requested
+        changed = bool(self._dirty or redraw_requested)
+        # 空闲复用判定需要「清除前」的语义（见 _render_frame_impl）
+        self._idle_ok = not changed
         self._dirty = False
+        if changed:
+            return True
+        # 模型 revision（apply_cmd / InkBridge / 输入回显 touch）变化 → 重建
+        model = getattr(self, "_model", None)
+        revision = getattr(model, "revision", None)
+        if revision is not None and revision != getattr(
+            self, "_last_model_revision", -1,
+        ):
+            return True
+        if getattr(self, "_last_frame", None) is None:
+            return True
+        if getattr(self, "_resize_pending", False):
+            return True
+        # 尺寸主动轮询（SIGWINCH 兜底）：部分终端 resize 不发信号
+        try:
+            self._poll_terminal_size()
+        except Exception:
+            _logger.debug("_should_render 尺寸轮询异常", exc_info=True)
+        try:
+            if (
+                self._width_cache.get_width() != getattr(self, "_last_render_width", 0)
+                or self._width_cache.get_height() != getattr(self, "_last_render_height", 0)
+            ):
+                return True
+        except Exception:
+            return True
+        # 动画驱动（useAnimation 订阅者）
+        try:
+            from ._animation import has_active_animations
+
+            if has_active_animations(ctx=getattr(self, "_hook_ctx", None)):
+                return True
+        except Exception:
+            _logger.debug("_should_render 动画探测异常", exc_info=True)
+        # 宿主时间驱动内容（predicate=True 表示宿主判定静态）
+        # flush_input_router 等待者：必须推进帧发布新 router
+        waiters = getattr(self, "_frame_flush_waiters", None)
+        if waiters:
+            return True
+        predicate = getattr(self, "_idle_frame_predicate", None)
+        if predicate is not None:
+            try:
+                return not bool(predicate())
+            except Exception:
+                _logger.debug("空闲预测函数异常（本帧渲染）", exc_info=True)
+                return True
+        # 无预测函数（独立 render()/测试）：保持兼容——按节拍渲染，
+        # 由使用方自行注入 predicate 获得空闲跳过能力。
         return True
 
     # ── 阶段 ─────────────────────────────────────────
@@ -1717,10 +1925,16 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         60Hz，不跳帧、不降采样、不减少单帧输入处理预算。
         """
         if self._input is not None:
+            started = time.perf_counter()
+            events = 0
             try:
-                self._input.process_events()
+                events = int(self._input.process_events() or 0)
             except Exception:
                 _logger.warning("_phase_process_input 异常", exc_info=True)
+            finally:
+                record = getattr(self, "_record_input_metrics", None)
+                if record is not None:
+                    record(events, (time.perf_counter() - started) * 1000.0)
 
     def _phase_pre_update_panels(self) -> None:
         if self._panel_refresh_cb is not None:
