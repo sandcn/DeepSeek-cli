@@ -397,7 +397,6 @@ class Reconciler:
         # ★ 性能（方向1）：空元素快路径——直接删除全部旧子链（跳过 map
         #   构建与消费循环；``_mark_deleted`` 置 sibling=None，先取 next）。
         if not elements:
-            return_fiber._layout_children_cache = None
             c = return_fiber.child
             while c is not None:
                 nxt = c.sibling
@@ -414,8 +413,6 @@ class Reconciler:
         if self._try_reuse_stable(return_fiber, elements):
             return
 
-        # B5：子链进入完整调和（可能新增/删除/重排）→ 失效 layout_children 缓存。
-        return_fiber._layout_children_cache = None
         old_list: list[Fiber] = []
         child = return_fiber.child
         while child is not None:
@@ -557,9 +554,6 @@ class Reconciler:
         # 保留以防未来重构改变前置快路径/调用方语义）。
         if n_old == 0:
             return False
-        # B5：尾部新增元素会改变 host 子节点列表 → 失效 layout_children 缓存。
-        if len(elements) != n_old:
-            return_fiber._layout_children_cache = None
         # 第二趟：按序复用 + 创建尾部新元素
         first: Fiber | None = None
         prev: Fiber | None = None

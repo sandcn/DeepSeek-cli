@@ -213,14 +213,6 @@ class InkBridge(_BottomBarCompatMixin):
     def _request_redraw(self) -> None:
         # P2-8：不再裸吞异常——记录 debug 日志（request_bottom_redraw 异常
         # 属非关键降级，不阻断调用方）。
-        # 状态版本：桥接层所有状态写入都经本方法收口，touch 后渲染调度
-        # 即使没有脏标记也能感知变更（变更驱动单一信号）。
-        try:
-            touch = getattr(self._model, "touch", None)
-            if callable(touch):
-                touch()
-        except Exception:
-            _logger.debug("model.touch 异常", exc_info=True)
         try:
             self._session.request_bottom_redraw()
         except Exception:

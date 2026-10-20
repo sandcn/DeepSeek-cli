@@ -220,10 +220,6 @@ DEFAULTS = {
     # 终端原生文本选择在多数终端需按住 Shift（xterm 约定）。
     # False = 不协商（终端原生选择优先，失去滚轮/点击交互）。
     "tui_mouse": True,
-    # 备用屏渲染（B3，默认关闭）：True 时 TUI 使用备用屏固定视口渲染器
-    # （``AlternateScreenRenderer``：全量/行级增量、无 scrollback、退出还原
-    # 原屏幕）。默认 False 保持现有「内容流入 scrollback」模型。
-    "tui_alternate_screen": False,
     # ── 上下文压缩（compaction，dsh 同款语义） ──
     # 设上下文窗口为 W、请求输出预留为 O、额外压力余量 B：
     #   触发阈值 thresholdTokens = floor(min(W * threshold_ratio, W - O - B))
@@ -523,13 +519,6 @@ CONFIG_KEYS = {
         "rc_path": ("tui_mouse",),
         "type": bool,
         "default": True,
-        "cacheable": True,
-    },
-    # 备用屏渲染开关（B3；默认关闭，保持 scrollback 模型）
-    "TUI_ALTERNATE_SCREEN": {
-        "rc_path": ("tui_alternate_screen",),
-        "type": bool,
-        "default": False,
         "cacheable": True,
     },
     # ---- HTTP 性能配置（嵌套路径） ----

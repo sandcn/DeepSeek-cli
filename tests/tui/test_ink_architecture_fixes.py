@@ -403,17 +403,10 @@ def test_render_interval_is_fixed_60hz():
     assert not hasattr(cfg, "idle_render")
 
 
-def test_should_render_change_driven():
-    """渲染调度：有变更/首帧才重建，空闲跳过（60Hz 仅节拍上限）。"""
+def test_should_render_always_renders_each_tick():
+    """渲染线程恒定 60Hz：每拍都渲染（空闲不跳过，节拍由渲染循环保证）。"""
     from src.tui.ink.session import InkSession
     from src.tui._config import TuiConfig
-
-    class _SizeCache:
-        def get_width(self):
-            return 80
-
-        def get_height(self):
-            return 24
 
     ctx = H.HookContext()
     stub = object.__new__(InkSession)
@@ -422,21 +415,12 @@ def test_should_render_change_driven():
     stub._dirty = False
     stub._model = None
     stub._hook_ctx = ctx
-    stub._last_frame = object()
-    stub._resize_pending = False
-    stub._width_cache = _SizeCache()
-    stub._last_render_width = 80
-    stub._last_render_height = 24
-    stub._idle_frame_predicate = lambda: True
-    stub._frame_flush_waiters = []
 
     H.push_context(ctx)
     try:
-        assert stub._should_render() is False  # 空闲：跳过重建
-        stub._dirty = True
-        assert stub._should_render() is True   # 脏：重建
-        assert stub._dirty is False
-        # 重绘请求消费为脏标记后清空
+        assert stub._should_render() is True   # 空闲：仍渲染（恒定 60Hz）
+        assert stub._should_render() is True   # 每拍都渲染
+        # 重绘请求消费为脏标记后清空（不提前、不跳过）
         stub._bottom_redraw_requested.set()
         assert stub._should_render() is True
         assert not stub._bottom_redraw_requested.is_set()

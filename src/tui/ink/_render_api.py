@@ -336,7 +336,6 @@ def render(
         build_tree=_build_tree,
         stream=out_stream if out_stream is not None else sys.stdout,
         width_cache=TerminalWidthCache(),
-        alternate_screen=bool(alternateScreen),
     )
     # 尺寸覆盖（TerminalWidthCache 只读接口——直接写独立缓存字段）
     # ★ P2 review：改用公开入口 ``set_dimensions``——修复前直接写

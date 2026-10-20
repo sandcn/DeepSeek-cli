@@ -326,9 +326,6 @@ class Fiber:
     #: 静态行 host fiber 查找缓存（``components._find_committed_chat``）——
     #: 指向命中的 StaticLines host fiber；未找到时为 None。
     _committed_chat_cache: Any = None
-    #: ``layout_children`` 结果缓存（B5）：子链未变化时复用 host 子节点列表。
-    #: 由 ``reconciler._reconcile_children`` 在调和该容器的子节点前清空。
-    _layout_children_cache: Any = None
     #: committed 前缀超宽行截断结果缓存 ``(src_prefix, src_len, truncated,
     #: width)``——``components.render_frame`` 维护（仅超宽前缀路径使用）。
     _truncated_prefix_cache: Any = None

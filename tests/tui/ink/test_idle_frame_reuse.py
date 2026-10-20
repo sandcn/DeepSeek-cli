@@ -1,8 +1,8 @@
-"""空闲帧复用 / 变更驱动调度测试。
+"""空闲帧复用测试 — 60Hz 节拍不变前提下的空转 CPU 优化。
 
-``InkSession._should_render`` 采用变更驱动：无脏标记、无动画、无 resize、
-宿主判定静态时**跳过重建**（帧号不推进）；宿主预测为「非静态」或存在脏
-标记时正常重建。输入轮询仍按 60Hz 节拍独立执行。
+``InkSession.set_idle_frame_predicate`` 注入宿主「静态状态」预测：静态拍
+复用上一帧（跳过组件树重建/调和/布局/绘制），**帧号照常推进**（对外仍
+恒定 60Hz）；未注入预测函数时行为与既有恒定 60Hz 全量渲染完全一致。
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ def _make_session(build_calls: list) -> InkSession:
     )
 
 
-def test_idle_reuse_skips_rebuild():
+def test_idle_reuse_skips_rebuild_but_keeps_60hz():
     calls: list = []
     session = _make_session(calls)
     session.set_idle_frame_predicate(lambda: True)
@@ -43,13 +43,14 @@ def test_idle_reuse_skips_rebuild():
     finally:
         session.stop()
     frames = session._frame_seq
-    # 空闲：只渲染首帧（及少量系统统计脏帧），不逐帧重建
-    assert frames <= 4, f"空闲仍在逐帧重建：{frames}"
+    # 60Hz 节拍保持：0.4s ≈ 24 帧（远多于「只渲染首帧」的按需渲染）
+    assert frames >= 6, f"帧号推进不足（节拍被破坏）：{frames}"
+    # 组件树仅重建少数几帧（首帧 + 系统统计脏帧），其余拍复用上一帧
     assert len(calls) <= 4, f"空闲拍仍在重建组件树：{len(calls)}"
-    assert len(calls) == frames
+    assert len(calls) < frames
 
 
-def test_without_predicate_renders_each_tick():
+def test_without_predicate_always_rebuilds():
     calls: list = []
     session = _make_session(calls)
     session.start()
@@ -58,8 +59,8 @@ def test_without_predicate_renders_each_tick():
     finally:
         session.stop()
     frames = session._frame_seq
-    # 未注入预测函数：保持兼容（按节拍渲染）
     assert frames >= 4
+    # 未注入预测函数：维持既有行为（每拍重建）
     assert len(calls) >= frames - 1
 
 

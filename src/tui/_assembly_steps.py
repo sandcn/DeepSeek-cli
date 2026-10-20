@@ -50,7 +50,6 @@ def create_shared():
         drop_path_normalize=_rc_drop_path_normalize(),
         bracketed_paste=_rc_bracketed_paste(),
         mouse=_rc_mouse(),
-        alternate_screen=_rc_alternate_screen(),
     )
     model = AppModel()
     return tui_config, model
@@ -97,17 +96,6 @@ def _rc_mouse() -> bool:
     except Exception:
         _logger.debug("读取 tui_mouse 失败，使用默认值", exc_info=True)
         return TuiConfig.defaults().mouse
-
-
-def _rc_alternate_screen() -> bool:
-    """读取 RC 配置 ``tui_alternate_screen``（备用屏渲染开关，B3）。"""
-    from src.tui._config import TuiConfig
-    try:
-        from src.config import TUI_ALTERNATE_SCREEN
-        return bool(TUI_ALTERNATE_SCREEN)
-    except Exception:
-        _logger.debug("读取 tui_alternate_screen 失败，使用默认值", exc_info=True)
-        return TuiConfig.defaults().alternate_screen
 
 
 def create_chat_domain():
@@ -195,7 +183,6 @@ def create_framework(model, tui_config, line_tracker, input_instance):
     from src.tui.ink.session import InkSession
     from src.tui.app.apply import apply_cmd
     from src.tui.app.app import build_app_element
-    from src.tui.app.committed_span import committed_content_span
     from src.tui._ink_bridge import InkBridge
     from src.tui._screen import register_sigwinch_callback
 
@@ -204,12 +191,6 @@ def create_framework(model, tui_config, line_tracker, input_instance):
         apply_cmd=apply_cmd,
         build_tree=build_app_element,
         config=tui_config,
-        alternate_screen=tui_config.alternate_screen,
-    )
-    # ★ 架构解耦：输出历史内容区由 app 层计算（committed_lines + static-lines
-    #   host 布局），ink 框架只接收 (起始行, 行数) 两个数字。
-    session.set_content_span_provider(
-        lambda root: committed_content_span(root, model),
     )
     # ★ 2026-08-05 装配层重构：输出历史接线收敛为公开方法 set_line_tracker
     #   （取代对 ``session._ink_renderer.set_line_callback`` + 私有字段
@@ -220,9 +201,6 @@ def create_framework(model, tui_config, line_tracker, input_instance):
     # ★ 注入 Input：render 循环的 _phase_process_input 需调用 process_events()
     #   读取 stdin——未注入则输入完全无效（用户无法输入）。
     session.set_input(input_instance)
-    # 备用屏滚动接线：PageUp/PgDn/滚轮 → session.scroll_by（流动模型返回
-    # False，自动回退原有补全翻页/鼠标兜底语义）。
-    input_instance.set_scroll_callback(session.scroll_by)
     # 输入 echo → 模型输入状态
     input_instance.set_echo_callback(session.update_input)
     # 方向D 步骤14：Ctrl+R 反向历史搜索（配置门控，默认 False 保持 switch_model）

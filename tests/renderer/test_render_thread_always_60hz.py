@@ -1,13 +1,18 @@
-"""渲染调度与输入轮询回归测试（变更驱动 + 60Hz 上限）。
+"""渲染线程与输入处理恒定 60Hz 回归测试（2026-10-20 用户需求）。
+
+需求：「render 线程跟 input 处理改成 60hz，不能降减少和降级」。
 
 覆盖：
   1. 帧率真源常量（``RENDER_HZ`` / ``RENDER_INTERVAL_SEC``）与配置默认值；
-  2. ``TuiConfig`` 帧率不可降低（构造 / ``with_overrides`` 均被强制回 1/60）；
-  3. ``InkSession._should_render``：变更驱动（脏/首帧/重绘才重建，空闲跳过）；
-  4. ``InkSession._needs_animation`` 不存在；
-  5. ``render(maxFps=...)`` 不改变节拍；
-  6. 端到端：空闲会话不持续重建，但输入轮询仍按 60Hz 节拍执行；
-  7. 输入处理：``_phase_process_input`` 每个节拍执行一次（与是否重建无关）。
+  2. ``TuiConfig`` 帧率不可降低（构造 / ``with_overrides`` 均被强制回 1/60，
+     帧率派生节流参数一并强制回 60Hz 真源）；
+  3. ``InkSession._should_render``：恒定渲染（每拍都渲染，不跳过、不提前，
+     节拍由渲染循环保证）；密集重绘请求不会导致超频；
+  4. ``InkSession._needs_animation``（按需渲染探测）已移除；
+  5. ``render(maxFps=...)`` 不再降低帧率；
+  6. 端到端：空闲会话持续运行产生的帧数 ≈ 60Hz；
+  7. 输入处理：``_phase_process_input`` 在每个渲染帧执行（输入轮询与渲染
+     同频 60Hz，不降采样、不减少单帧处理）。
 """
 
 from __future__ import annotations
@@ -74,86 +79,45 @@ class TestFixedFrameRateSource:
         assert not hasattr(TuiConfig.defaults(), "idle_render")
 
 
-class _SizeCache:
-    def get_width(self) -> int:
-        return 80
-
-    def get_height(self) -> int:
-        return 24
-
-
-class TestShouldRenderOnDemand:
-    """``_should_render`` 变更驱动语义：有变更才重建，空闲跳过。"""
+class TestShouldRenderAlways:
+    """``_should_render`` 恒定渲染语义（不再依赖脏/动画，不跳过、不提前）。"""
 
     def _stub(self) -> InkSession:
         stub = object.__new__(InkSession)
         stub._config = TuiConfig.defaults()
         stub._bottom_redraw_requested = threading.Event()
         stub._dirty = False
-        stub._last_frame = object()          # 已有上一帧
-        stub._resize_pending = False
-        stub._width_cache = _SizeCache()
-        stub._last_render_width = 80
-        stub._last_render_height = 24
-        stub._idle_frame_predicate = lambda: True   # 宿主判定静态
-        stub._frame_flush_waiters = []
         return stub
 
-    def test_idle_skips_rebuild(self):
+    def test_always_true(self):
         stub = self._stub()
-        assert stub._should_render() is False
-        assert stub._should_render() is False
-
-    def test_dirty_renders(self):
-        stub = self._stub()
-        stub._dirty = True
         assert stub._should_render() is True
-        assert stub._dirty is False
+        assert stub._should_render() is True
 
-    def test_redraw_request_consumed_and_renders(self):
+    def test_redraw_request_consumed_without_skipping(self):
         stub = self._stub()
         stub._bottom_redraw_requested.set()
         assert stub._should_render() is True
         assert not stub._bottom_redraw_requested.is_set()
-
-    def test_first_frame_renders(self):
-        stub = self._stub()
-        stub._last_frame = None
-        assert stub._should_render() is True
-
-    def test_host_time_driven_predicate_renders(self):
-        stub = self._stub()
-        stub._idle_frame_predicate = lambda: False   # 非静态
-        assert stub._should_render() is True
-        stub._idle_frame_predicate = lambda: True    # 静态
-        assert stub._should_render() is False
-
-    def test_without_predicate_keeps_rendering(self):
-        """无预测函数（独立 render()/测试）保持节拍渲染兼容。"""
-        stub = self._stub()
-        stub._idle_frame_predicate = None
-        assert stub._should_render() is True
 
     def test_animation_probe_removed(self):
         assert not hasattr(InkSession, "_needs_animation")
 
 
 class TestIdleRenderLoopAt60Hz:
-    """端到端：空闲会话跳过重建，但节拍与输入轮询仍按 60Hz 运行。"""
+    """端到端：空闲会话仍按 60Hz 持续渲染。"""
 
-    def test_idle_session_skips_rebuild(self):
+    def test_idle_session_renders_continuously(self):
         session = _make_session()
-        session.set_idle_frame_predicate(lambda: True)
         session.start()
         try:
             time.sleep(0.5)
         finally:
             session.stop()
         frames = session._frame_seq
-        # 无变更：仅首帧（及少量系统统计更新），不再 60Hz 全量重建
-        assert frames <= 5, f"空闲帧仍在持续重建（疑似恒定拉模式）：{frames}"
-        # 输入轮询照常（每节拍一次），事件计数不因跳过重建而减少
-        assert session.metrics()["frames"] == frames
+        # 恒定 60Hz：0.5s ≈ 30 帧（按需渲染时仅首帧 ~1 帧）
+        assert frames >= 12, f"空闲渲染帧数过少（疑似按需渲染/降频）：{frames}"
+        assert frames <= 60, f"空闲渲染超频（疑似忙循环）：{frames}"
 
     def test_frequent_redraw_requests_do_not_exceed_60hz(self):
         """密集重绘请求（模拟高频 force）不导致超频——帧率恒 ≤60Hz。"""
@@ -171,32 +135,31 @@ class TestIdleRenderLoopAt60Hz:
         assert frames <= 50, f"密集重绘请求导致超频：{frames}"
 
 
-def test_input_phase_runs_every_render_tick_at_60hz():
-    """INPUT 阶段每个节拍都调用 ``process_events``——与是否重建无关。"""
+def test_input_phase_runs_every_render_frame_at_60hz():
+    """INPUT 阶段每个渲染帧都调用 ``process_events``——输入处理 60Hz。"""
     session = _make_session()
-    session.set_idle_frame_predicate(lambda: True)
     calls: list[int] = []
 
     class _Input:
-        def process_events(self) -> int:
+        def process_events(self) -> None:
             calls.append(1)
-            return 0
 
     session._input = _Input()
-    started = time.monotonic()
     session.start()
     try:
         time.sleep(0.35)
     finally:
         session.stop()
-    elapsed = time.monotonic() - started
-    expected_ticks = elapsed / TuiConfig.defaults().render_interval
-    # 输入轮询按 60Hz 节拍执行（允许调度抖动）
-    assert len(calls) >= expected_ticks * 0.6, (
-        f"输入轮询被降采样：calls={len(calls)} expected≈{expected_ticks:.1f}"
+    frames = session._frame_seq
+    # 0.35s @60Hz ≈ 21 帧（至少覆盖持续渲染，而非按需首帧）
+    assert frames >= 8, f"渲染帧数过少（疑似降频）：{frames}"
+    # 输入处理与渲染同频：每个渲染帧执行一次（允许前后各一帧的边界误差）
+    assert len(calls) >= frames - 2, (
+        f"输入处理被降采样：calls={len(calls)} frames={frames}"
     )
-    # 空闲时不再逐帧重建
-    assert session._frame_seq <= 5
+    assert len(calls) <= frames + 5, (
+        f"输入处理超出渲染节拍：calls={len(calls)} frames={frames}"
+    )
 
 
 def test_render_max_fps_ignored(monkeypatch):

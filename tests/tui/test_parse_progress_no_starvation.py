@@ -109,7 +109,7 @@ class TestCoalesce:
         assert second[1] == first[1]
 
     def test_coalesce_preserves_other_command_order(self):
-        """合并不改变其它命令的相对顺序（按事件序应用）。"""
+        """合并不改变其它命令的相对顺序（阶段命令仍先出队）。"""
         s = _make_session()
         s.push_cmd(MainPhaseCmd(phase="parsing"))
         s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=10, elapsed=0.1))
@@ -117,9 +117,9 @@ class TestCoalesce:
         s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=99, elapsed=0.9))
         cmds = _drain_all(s)
         assert [type(c).__name__ for c in cmds] == [
-            "MainPhaseCmd", "ParseInfoCmd", "ContentCmd",
+            "MainPhaseCmd", "ContentCmd", "ParseInfoCmd",
         ]
-        assert cmds[1].tokens == 99
+        assert cmds[-1].tokens == 99
 
     def test_coalesce_unfinished_tasks_consistent(self):
         """条目数不变 ⇒ ``unfinished_tasks`` 一致，``queue.join`` 可完成。"""
@@ -206,15 +206,15 @@ class TestDrainAll:
         waiter.join(timeout=2.0)
         assert not waiter.is_alive(), "unfinished_tasks 未归零（queue.join 挂起）"
 
-    def test_drain_all_orders_by_event_sequence(self):
-        """全量出队按事件序（seq）应用；优先级不重排。"""
+    def test_drain_all_orders_by_priority_then_seq(self):
+        """全量出队仍严格按 (priority, seq) 顺序（低优先级最后处理）。"""
         s = _make_session()
         s.push_cmd(WriteLineCmd(text="low"))
         s.push_cmd(ContentCmd(text="prio0"))
         s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=1, elapsed=0.1))
         cmds, _c, _l = s._drain_commands_locked()
         assert [type(c).__name__ for c in cmds] == [
-            "WriteLineCmd", "ContentCmd", "ParseInfoCmd",
+            "ContentCmd", "ParseInfoCmd", "WriteLineCmd",
         ]
 
     def test_drain_all_after_multiple_batches_kept_order(self):

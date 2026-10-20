@@ -23,16 +23,12 @@ TUI 渲染错乱——标题行重复、内容与上方 shell 历史错位、底
 from __future__ import annotations
 
 import io
-import importlib.util
 
 import pytest
 
 from src.tui.ink.output import Frame
 from src.tui.ink.renderer import InkRenderer
 from src.tui.ink import Line, StyledRun
-
-#: CPR 查询用例依赖 POSIX termios（Windows 原生 Python 无该模块）。
-_HAS_TERMIOS = importlib.util.find_spec("termios") is not None
 
 try:
     import pyte
@@ -310,10 +306,6 @@ class _FakeIn:
         return 0
 
 
-@pytest.mark.skipif(
-    not _HAS_TERMIOS,
-    reason="CPR 查询依赖 POSIX termios（Windows 原生解释器无该模块）",
-)
 class TestQueryCursorRow:
     """DSR/CPR 光标行查询（``ESC[6n`` → ``ESC[row;colR``）。"""
 
