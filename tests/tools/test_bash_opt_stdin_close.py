@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 
 from src.tools import bash_opt as bash_opt_module
 from src.tools.bash_opt import BashOptFunc
@@ -258,6 +259,9 @@ async def test_stdin_default_uses_system_ansi_codepage(monkeypatch):
 
     实测：``cmd /c sort`` 用 UTF-8 写入中文时输出 ``涓�鏂囪�?``（UTF-8
     字节被按 936 解码），默认改用 GBK 后输出正常。
+
+    ★ Cygwin / MSYS2 的交互 shell 是 POSIX bash，命令多为 Cygwin 程序，
+    默认仍为 utf-8（原生程序请显式传 ``encoding='gbk'``）。
     """
     monkeypatch.setattr(bash_opt_module, "_windows_ansi_codepage", lambda: 936)
     stdin = _FakeStdin()
@@ -266,8 +270,12 @@ async def test_stdin_default_uses_system_ansi_codepage(monkeypatch):
 
     result = await _call(agent, op="stdin", text="中文")
 
-    assert stdin.written == ["中文".encode("gbk") + b"\n"]
-    assert "gbk" in result
+    if (sys.platform or "").startswith(("cygwin", "msys")):
+        assert stdin.written == ["中文".encode("utf-8") + b"\n"]
+        assert "utf-8" in result
+    else:
+        assert stdin.written == ["中文".encode("gbk") + b"\n"]
+        assert "gbk" in result
 
 
 async def test_stdin_default_is_utf8_without_ansi_codepage(monkeypatch):

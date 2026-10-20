@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -215,8 +216,15 @@ async def test_keys_pty_control_char_has_no_warning(monkeypatch, pty_writes):
 
 
 async def test_keys_pty_ctrl_c_note_mentions_conpty_and_kill(monkeypatch, pty_writes):
-    """ConPTY 下 Ctrl+C 只能尽力而为：提示必须给出 kill 兜底（实测部分程序可中断）。"""
+    """ConPTY 下 Ctrl+C 只能尽力而为：提示必须给出 kill 兜底（实测部分程序可中断）。
+
+    Cygwin / MSYS2 走 POSIX pty（不是 ConPTY），提示是「自行忽略 SIGINT」；
+    测试按平台分流，不能把 ``ConPTY`` 写死成全平台断言。
+    """
     _set_probe(monkeypatch, False)
     result = await _run_keys(_record(mode="pty"), "ctrl+c")
-    assert "ConPTY" in result
+    if os.name == "nt":
+        assert "ConPTY" in result
+    else:
+        assert "SIGINT" in result
     assert "op=kill" in result

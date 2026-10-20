@@ -15,7 +15,10 @@ xdotool/wmctrl、macOS 走 Quartz），本模块负责**跨平台一致的选择
     （Windows 为 exe 名，含 ``.exe`` 与否都可；忽略大小写）
   - ``fuzzy:关键词``（``like:`` 亦可）：**模糊匹配**——先按子串匹配标题 /
     类名 / 进程名，未命中再按相似度（>= :data:`FUZZY_THRESHOLD`）排序返回
-  - ``popup``：无标题的非主窗口（右键菜单、下拉浮层等自绘弹层）
+  - ``popup``：弹层 / 浮层窗口——优先无标题的非主窗口（右键菜单、下拉浮层
+    等自绘弹层）；有标题的 WinUI / XAML 弹出浮层（如 Win11 记事本的
+    「主机弹出窗口」，class=``Microsoft.UI.Content.PopupWindowSiteBridge``）、
+    带属主的弹出窗口、工具窗口同样识别
   - ``dialog``：对话框类窗口（类名含 dialog / Win32 ``#32770``）
   - ``all`` / ``*``：全部窗口（仅列举用）
 
@@ -622,18 +625,52 @@ def _match_needle(windows: Sequence[WindowInfo],
             if needle in item.class_name.lower()]
 
 
+#: 弹层类窗口的类名特征（小写子串）：XAML / WinUI 的弹出浮层、下拉、菜单、
+#: 覆盖层、提示框。这类窗口**常常带标题**（Win11 记事本的菜单浮层标题为
+#: 「主机弹出窗口」，class=``Microsoft.UI.Content.PopupWindowSiteBridge``），
+#: 只按「无标题」识别会漏掉，导致 ``popup`` 选择器对 UWP / WinUI 应用失效。
+_POPUP_CLASS_HINTS: tuple[str, ...] = (
+    "popup", "dropdown", "menu", "overlay", "tooltip", "flyout",
+)
+
+
+def is_popup_like(info: WindowInfo) -> bool:
+    """窗口是否具备弹层特征（主窗口除外）。
+
+    ``popup`` 选择器优先命中「无标题的非主窗口」，但 WinUI / XAML 应用的
+    菜单浮层往往**带标题**且没有 ``WS_EX_TOOLWINDOW`` 样式；这类窗口通过
+    以下特征识别：
+
+      - 类名含 popup / dropdown / menu / overlay / tooltip / flyout；
+      - 有属主窗口（``owner != 0``）——弹出层通常由主窗口拥有；
+      - ``tool_window``（右键菜单 / 下拉浮层的常见形态）。
+    """
+    if info.main:
+        return False
+    lowered = (info.class_name or "").strip().lower()
+    if any(hint in lowered for hint in _POPUP_CLASS_HINTS):
+        return True
+    if info.owner:
+        return True
+    return bool(info.tool_window)
+
+
 def _match_popup(windows: Sequence[WindowInfo]) -> list[WindowInfo]:
-    """匹配浮层 / 菜单类窗口：无标题窗口优先，且非主窗口优先，按 Z 序最靠前者优先。
+    """匹配浮层 / 菜单类窗口：无标题优先，其次按弹层特征，均按 Z 序返回。
 
     调用方传入的已是**可操作窗口**（可见且未最小化），因此不会命中隐藏的
     辅助窗口（那类窗口截图为全黑、输入也无效）。
+
+    1. 无标题的非主窗口——右键菜单、自绘下拉浮层的常见形态；
+    2. 有弹层特征的非主窗口（见 :func:`is_popup_like`）——覆盖 WinUI /
+       XAML **有标题**的弹出浮层与带属主的弹层。
     """
     ordered = sort_by_z(windows)
-    untitled = [item for item in ordered if not item.title.strip()]
-    if not untitled:
-        return []
-    non_main = [item for item in untitled if not item.main]
-    return non_main or untitled
+    non_main = [item for item in ordered if not item.main]
+    untitled = [item for item in non_main if not item.title.strip()]
+    if untitled:
+        return untitled
+    return [item for item in non_main if is_popup_like(item)]
 
 
 def _match_dialog(windows: Sequence[WindowInfo]) -> list[WindowInfo]:
@@ -928,6 +965,7 @@ __all__ = [
     "filter_windows",
     "indexed_summary",
     "is_auxiliary_window",
+    "is_popup_like",
     "is_selectable",
     "main_rank",
     "main_window",

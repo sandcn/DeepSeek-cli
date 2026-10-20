@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from src.tools import bash_opt as bash_opt_module
 from src.tools._screenshot.monitors import Monitor
 from src.tools._screenshot.result import CaptureResult

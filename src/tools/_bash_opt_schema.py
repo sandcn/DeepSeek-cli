@@ -122,11 +122,12 @@ def build_bash_opt_schema() -> dict[str, Any]:
                             "轮尝试）；校验时仍存活的残留 PID 会在结果中列出；"
                             "记录的 PID 已被系统复用（创建时间不匹配）时拒绝杀"
                             "\n- stdin：向任务 stdin 发送文本输入（需 text；"
-                            "encoding 指定文本编码，缺省随平台：Windows 取系统"
-                            " ANSI 代码页（中文系统即 gbk——cmd 内建 / sort /"
-                            " findstr 等原生控制台程序按该代码页读管道 stdin），"
-                            "其它平台 utf-8；按 UTF-8 读 stdin 的程序请显式传"
-                            " encoding='utf-8'）"
+                            "encoding 指定文本编码，缺省随平台：Windows 原生取"
+                            "系统 ANSI 代码页对应编码（中文 Windows 通常为 "
+                            "gbk / cp936，系统启用 UTF-8 时可能为 utf-8）；"
+                            "Cygwin / MSYS2 固定 utf-8（其 shell 与多数程序按 "
+                            "UTF-8 读 stdin），需 GBK 的原生控制台程序请显式传"
+                            " encoding='gbk'；其它平台 utf-8）"
                             "\n- close_stdin：关闭任务 stdin（发送 EOF）。"
                             "依赖输入结束才输出 / 退出的命令（sort / findstr / "
                             "cat / more / cmd 的 set / p 等）用它能正常跑完并"
@@ -269,8 +270,9 @@ def build_bash_opt_schema() -> dict[str, Any]:
                         "description": (
                             "stdin / type 操作的文本内容："
                             "stdin 为发送到后台命令 stdin 的内容（按 encoding "
-                            "指定的编码编码；缺省随平台，Windows 为系统 ANSI "
-                            "代码页即中文系统的 gbk；不经过 shell 解释）；"
+                            "指定的编码编码；缺省随平台，Windows 原生为系统 ANSI "
+                            "代码页（中文 Windows 通常 gbk），Cygwin / MSYS2 为 "
+                            "utf-8；不经过 shell 解释）；"
                             "type 为注入到 GUI 窗口的文本（逐字符输入，支持任意 "
                             "Unicode，'\\n' 与 '\\t' 转为回车/制表键）。"
                         ),
@@ -288,12 +290,12 @@ def build_bash_opt_schema() -> dict[str, Any]:
                         "type": "string",
                         "description": (
                             "仅 stdin 生效：发送文本使用的编码（Python 编码名）。"
-                            "缺省随平台：Windows 取系统 ANSI 代码页对应编码"
-                            "（中文系统为 gbk / cp936——cmd 内建命令 / sort / "
-                            "findstr / more 等按该代码页读管道 stdin，写 UTF-8 "
-                            "会显示成乱码），其它平台 utf-8。按 UTF-8 读 stdin "
-                            "的程序（Python / PowerShell 脚本）可显式传 "
-                            "'utf-8'。"
+                            "缺省随平台：Windows 原生取系统 ANSI 代码页对应编码"
+                            "（中文 Windows 通常为 gbk / cp936；系统启用 UTF-8 时"
+                            "可能为 utf-8），Cygwin / MSYS2 固定 utf-8（其 shell 与"
+                            "多数程序按 UTF-8 读 stdin）。原生控制台程序（cmd 内建 / "
+                            "sort / findstr / more）可能按代码页读取管道 stdin，"
+                            "跨平台脚本建议显式传 encoding（'utf-8' / 'gbk'）。"
                         ),
                     },
                     "max_lines": {
@@ -339,7 +341,9 @@ def build_bash_opt_schema() -> dict[str, Any]:
                             "'title~:正则' / 'class~:正则' / 're:正则' 按正则匹配"
                             "标题 / 类名、'process:进程名'（如 process:chrome）"
                             "按进程（exe）名匹配、'fuzzy:关键词' 模糊匹配、"
-                            "'popup' 无标题弹层、'dialog' 对话框。"
+                            "'popup' 弹层 / 浮层（优先无标题的非主窗口；"
+                            "WinUI / XAML 有标题的弹出浮层、带属主的弹层、"
+                            "tool window 同样命中）、'dialog' 对话框。"
                             "不可见（visible=false）或已最小化的窗口不会被 "
                             "'main' / '#N' / 'popup' / 'dialog' 选中——它们截出来"
                             "是全黑图、输入也打不进去；需要这类窗口时用 "
@@ -444,8 +448,15 @@ def build_bash_opt_schema() -> dict[str, Any]:
                             "文件路径：screenshot 必填（截图保存的 PNG；无扩展名"
                             "自动补 .png，父目录不存在会自动创建）；annotate 可"
                             "指定要标注的已有 PNG（省略时从目标窗口现截，需 "
-                            "task_id）；record / replay 可指定宏文件路径（与 "
-                            "macro 二选一）。"
+                            "task_id）；locate / pixel 可指定要分析 / 定位的已有 "
+                            "PNG（省略时从目标窗口现截，需 task_id）——给 path 时"
+                            "无需 task_id，可直接分析 screenshot screen=true 的"
+                            "整屏产物或任意图片，此时坐标以图片左上角为原点、"
+                            "没有 screen_* 屏幕坐标换算；record / replay 可指定"
+                            "宏文件路径（与 macro 二选一）。支持 Windows 盘符路径"
+                            "（E:/tmp/a.png、E:\\tmp\\a.png）——Cygwin / MSYS2 下"
+                            "自动换算为 /cygdrive/e/tmp/a.png（MSYS2 为 "
+                            "/e/tmp/a.png），不会落到工作目录下的 E:/..."
                         ),
                     },
                     "crop": {
@@ -453,7 +464,8 @@ def build_bash_opt_schema() -> dict[str, Any]:
                         "description": (
                             "screenshot / locate 可选：窗口内的像素区域，"
                             "格式 'x,y,width,height'（如 '100,50,800,600'），"
-                            "以整窗截图左上角为原点（(0,0) 即窗口左上角）。"
+                            "以整窗截图左上角为原点（(0,0) 即窗口左上角）；"
+                            "locate 给了 path 时以该图片左上角为原点。"
                             "screenshot：只截取该区域，省略时输出整窗原始像素"
                             "（不做任何缩放），区域须完全落在窗口截图内，"
                             "越界会报错并提示窗口实际尺寸；"
@@ -472,6 +484,7 @@ def build_bash_opt_schema() -> dict[str, Any]:
                             "（语义值按窗口实际尺寸在注入时换算，窗口缩放也不失准）。"
                             "move 必填；click / scroll 可选，省略则作用于窗口中心；"
                             "drag 用 from_x/from_y 指定起点；也可用 element 按控件名定位。"
+                            "pixel 给了 path 时，x / y 以该图片左上角为原点。"
                         ),
                     },
                     "y": {
@@ -850,15 +863,16 @@ def build_bash_opt_schema() -> dict[str, Any]:
                     "template": {
                         "type": "string",
                         "description": (
-                            "仅 locate：模板图片路径（PNG）。在窗口截图里"
-                            "搜索该小图（图标 / 按钮局部），返回其位置与"
-                            "置信度；与 query 二选一。"
+                            "仅 locate：模板图片路径（PNG）。在截图（或 path "
+                            "指定的已有图片）里搜索该小图（图标 / 按钮局部），"
+                            "返回其位置与置信度；与 query 二选一。"
                         ),
                     },
                     "query": {
                         "type": "string",
                         "description": (
-                            "仅 locate：要在画面里查找的文字（OCR）。"
+                            "仅 locate：要在画面里查找的文字（OCR；画面 = "
+                            "窗口截图或 path 指定的已有图片）。"
                             "返回匹配文字的包围盒坐标（支持跨词短语）；"
                             "与 template 二选一。也可用 text 传该查询。"
                             "精确匹配失败时自动做近似匹配：折叠 OCR 易混字符"
@@ -919,9 +933,9 @@ def build_bash_opt_schema() -> dict[str, Any]:
                         "description": (
                             "仅 pixel 可选：取色模式。"
                             "point（默认，需 x/y）读该像素颜色；"
-                            "region（可选 region，省略时统计整窗）统计区域"
-                            "均值 / 极值 / 主色；"
-                            "find（需 color）在窗口（或 region）内查找目标颜色，"
+                            "region（可选 region，省略时统计整窗 / 整图——"
+                            "窗口截图或 path 图片）统计区域均值 / 极值 / 主色；"
+                            "find（需 color）在整图（或 region）内查找目标颜色，"
                             "按连通块返回多个候选位置（可点击）。"
                         ),
                     },
@@ -939,8 +953,9 @@ def build_bash_opt_schema() -> dict[str, Any]:
                         "type": "string",
                         "description": (
                             "仅 pixel 使用：取色 / 查找区域（'x,y,width,height'，"
-                            "窗口截图坐标，原点为窗口截图左上角）；"
-                            "省略时：point 模式下用 x/y，find 模式下扫描整窗。"
+                            "窗口截图坐标，原点为窗口截图左上角；给了 path 时"
+                            "以该图片左上角为原点）；"
+                            "省略时：point 模式下用 x/y，find 模式下扫描整图。"
                         ),
                     },
                     "min_pixels": {

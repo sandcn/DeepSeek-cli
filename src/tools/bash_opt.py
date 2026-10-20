@@ -207,6 +207,7 @@ import json
 import logging
 import math
 import os
+import sys
 import tempfile
 import time
 from contextlib import asynccontextmanager
@@ -214,7 +215,7 @@ from contextlib import asynccontextmanager
 from .base import Func
 from .bash import READ_BUFFER_DROPPED_KEY, kill_process_tree
 from ._bash_opt_schema import build_bash_opt_schema
-from .file_ops import validate_path_security
+from .file_ops import normalize_user_path, validate_path_security
 from ._screenshot import (
     CropError,
     CropRegion,
@@ -347,12 +348,18 @@ def _windows_ansi_codepage():
     Windows Terminal 为 65001），而原生控制台程序从**管道**读 stdin 时按
     系统 ANSI 代码页（中文 Windows = 936）解码——按控制台代码页取会得到
     UTF-8，中文仍然乱码。
+
+    ★ Cygwin / MSYS2 的 ``os.name`` 是 ``posix``，没有 ``ctypes.windll``；
+    统一走 ``_process_output.windows_ansi_codepage()``（ctypes.CDLL +
+    ``kernel32.GetACP``），让该函数在 Cygwin 下也能返回真实代码页。
     """
-    if os.name != "nt":
+    if os.name != "nt" and not (sys.platform or "").startswith(("cygwin", "msys")):
         return None
     try:
-        import ctypes
-        return int(ctypes.windll.kernel32.GetACP())
+        from ._process_output import windows_ansi_codepage
+
+        value = int(windows_ansi_codepage())
+        return value if value > 0 else None
     except (AttributeError, OSError, ValueError):  # pragma: no cover - 平台相关
         return None
 
@@ -383,7 +390,14 @@ def default_stdin_encoding() -> str:
 
     确实按 UTF-8 读 stdin 的程序（Python / PowerShell 脚本等）请显式传
     ``encoding='utf-8'``。
+
+    ★ Cygwin / MSYS2 的默认值仍是 ``utf-8``：该平台的交互 shell 是 POSIX
+    bash，命令多为 Cygwin 程序（cat / python / 自编译工具），它们按 UTF-8
+    读取 stdin；原生 Windows 控制台程序需要 GBK 时请显式传
+    ``encoding='gbk'``（并优先用 ``pty=true``，见 ``op=stdin`` 的说明）。
     """
+    if (sys.platform or "").startswith(("cygwin", "msys")):
+        return "utf-8"
     return _codepage_to_encoding(_windows_ansi_codepage())
 
 
@@ -1148,7 +1162,8 @@ class BashOptFunc(Func):
         """
         if self.op in self._TASKLESS_OPS:
             return True
-        if self.op == "annotate":
+        if self.op in ("annotate", "locate", "pixel"):
+            # 显式 path：只分析已有 PNG（不依赖窗口 / 进程）
             return self.path is not None and bool(str(self.path).strip())
         if self.op == "screenshot":
             return self._screen_requested()
@@ -1361,6 +1376,11 @@ class BashOptFunc(Func):
                     job_handle=rec.get("job_handle"),
                     extra_pids=rec.get("descendant_pids"),
                     extra_create_times=rec.get("descendant_create_times"),
+                    winpid=rec.get("winpid"),
+                    extra_win_pids=rec.get("descendant_win_pids"),
+                    extra_win_create_times=rec.get("descendant_win_create_times"),
+                    win_hint=rec.get("win_hint"),
+                    win_start_time=rec.get("win_start_time"),
                 )
             except Exception as e:
                 logger.debug("kill 进程树异常: %s", e)
@@ -1380,7 +1400,28 @@ class BashOptFunc(Func):
             except Exception:
                 logger.debug("忽略异常（best-effort 路径）", exc_info=True)  # 任务取消过程异常忽略
 
-        # 3. 移除任务记录并更新 TUI 计数
+        # 3. 校验仍有残留时保留任务记录，便于再次 op=kill 补杀
+        residual = False
+        if result is not None:
+            residual = bool(
+                getattr(result, "remaining_pids", ())
+                or getattr(result, "remaining_win_pids", ())
+                or getattr(result, "job_remaining", 0)
+            )
+        if residual:
+            rec["managed_by_tool"] = True
+            rec["status"] = "kill_failed"
+            writer = rec.get("stdin_writer")
+            if writer is not None:
+                try:
+                    writer.close()
+                except Exception:  # pragma: no cover - 依赖底层句柄
+                    logger.debug("kill 残留时关闭 stdin 写端失败", exc_info=True)
+            rec["stdin_writer"] = None
+            rec["master_fd"] = None
+            return self._kill_report(result)
+
+        # 4. 移除任务记录并更新 TUI 计数
         if hasattr(agent, "_remove_background_task"):
             agent._remove_background_task(self.task_id)
         else:
@@ -1398,6 +1439,7 @@ class BashOptFunc(Func):
         if result is None:
             return f"(已杀死后台任务 {self.task_id} 及其所有进程树)"
         remaining = tuple(getattr(result, "remaining_pids", ()) or ())
+        remaining_win = tuple(getattr(result, "remaining_win_pids", ()) or ())
         attempts = int(getattr(result, "attempts", 0) or 0)
         if getattr(result, "pid_reused", False):
             return (f"(未杀死后台任务 {self.task_id}：记录的 PID "
@@ -1407,12 +1449,15 @@ class BashOptFunc(Func):
             return (f"(已杀死后台任务 {self.task_id} 及其所有进程树"
                     f"（{attempts} 轮尝试，未做杀后校验）)")
         job_remaining = int(getattr(result, "job_remaining", 0) or 0)
-        if not remaining and not job_remaining:
+        if not remaining and not remaining_win and not job_remaining:
             return (f"(已杀死后台任务 {self.task_id} 及其所有进程树"
                     f"（{attempts} 轮尝试后校验：无残留进程）)")
         parts: list[str] = []
         if remaining:
             parts.append(f"以下进程仍存活: {', '.join(str(p) for p in remaining)}")
+        if remaining_win:
+            parts.append(
+                f"以下 Windows 进程仍存活: {', '.join(str(p) for p in remaining_win)}")
         if job_remaining:
             parts.append(f"Job 内仍有 {job_remaining} 个进程未退出")
         return (f"(已尝试杀死后台任务 {self.task_id} 的进程树（{attempts} 轮），"
@@ -1976,15 +2021,68 @@ class BashOptFunc(Func):
     # ── 已结束任务的统一提示（screenshot / window / wait_window） ──
 
     @staticmethod
-    def _ended_task_note(rec: dict) -> str | None:
+    def _task_windows_alive(rec: dict) -> bool:
+        """任务记录登记的原生 Windows 进程是否仍存活。
+
+        App Execution Alias（notepad / mspaint 等 Store 应用）或经 explorer
+        启动的 GUI：任务根进程（Cygwin bash）启动完就退出，任务因此被标记
+        completed，但真实 GUI 进程仍在运行。此时 screenshot / 输入 op 仍
+        应可用——先看登记表里的 Windows PID / Job 成员 / exe 名提示。
+        """
+        try:
+            from . import _task_winpid, _win_proc
+        except Exception:  # pragma: no cover - 依赖导入链
+            return False
+        pid = rec.get("pid")
+        candidates: set[int] = set()
+        for value in (rec.get("winpid"), _task_winpid.winpid_for(pid) if pid else None):
+            if value:
+                candidates.add(int(value))
+        job = rec.get("job_handle")
+        if job:
+            try:
+                candidates.update(_task_winpid.job_processes(job))
+            except Exception:  # pragma: no cover - 依赖系统调用
+                pass
+        hint = rec.get("win_hint")
+        start_time = rec.get("win_start_time")
+        if hint:
+            try:
+                found = _win_proc.find_processes_by_name(hint)
+            except Exception:  # pragma: no cover - 依赖系统调用
+                found = []
+            for candidate in found:
+                try:
+                    create_time = _win_proc.process_create_time(candidate)
+                except Exception:  # pragma: no cover - 依赖系统调用
+                    create_time = None
+                if (start_time and create_time is not None
+                        and int(create_time) + 10_000_000 < int(start_time)):
+                    continue
+                candidates.add(int(candidate))
+        for candidate in candidates:
+            try:
+                if _win_proc.is_process_alive(candidate):
+                    return True
+            except Exception:  # pragma: no cover - 依赖系统调用
+                continue
+        return False
+
+    @classmethod
+    def _ended_task_note(cls, rec: dict) -> str | None:
         """任务已结束时返回状态描述，否则返回 ``None``。
 
         screenshot / window / wait_window 只对**运行中的进程**有意义：任务
         结束后进程（及其窗口）已不存在，继续按 PID 枚举窗口只会得到
         「没有可截图的可见窗口」，把「任务已结束」误报成「窗口不可见」，
         模型据此反复 restore / 重试。这里统一给出可读状态。
+
+        ★ App Execution Alias / detached GUI：根进程退出但真实 GUI 进程
+        仍存活（登记表可查），此时不算「任务已结束」。
         """
         if not rec.get("done"):
+            return None
+        if cls._task_windows_alive(rec):
             return None
         status = str(rec.get("status") or "completed")
         returncode = rec.get("returncode")
@@ -2359,12 +2457,13 @@ class BashOptFunc(Func):
 
     @staticmethod
     def _prepare_screenshot_path(path: str) -> str:
-        """规范化截图输出路径：展开 ~、补 .png、建父目录、安全校验。
+        """规范化截图输出路径：展开 ~、换算 Windows 盘符、补 .png、建父目录、
+        安全校验。
 
         Raises:
             ValueError: 路径为空、指向目录、或未通过安全校验。
         """
-        expanded = os.path.expanduser(path.strip())
+        expanded = normalize_user_path(path)
         if not expanded:
             raise ValueError("路径为空")
         absolute = os.path.abspath(expanded)
@@ -3619,10 +3718,8 @@ class BashOptFunc(Func):
         ``ocr_lang`` 指定 OCR 语言标签（如 ``zh-Hans-CN`` / ``en-US``），
         缺省按用户配置语言识别。
         """
+        rec = rec or {}
         pid = rec.get("pid")
-        if pid is None:
-            return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
-                    f"无法做图像 / 文字定位。可用 op=wait 查看任务状态)")
         template_raw = str(self.template).strip() if self.template is not None else ""
         query = self.query if self.query is not None else self.text
         query_provided = query is not None
@@ -3638,10 +3735,22 @@ class BashOptFunc(Func):
             crop = self._resolve_crop()
         except (ValueError, ImageMatchError, CropError) as exc:
             return f"(locate 参数非法: {exc})"
-        path = await self._temp_screenshot(pid, self.window)
-        if path is None:
-            return ("(locate 失败: 无法截取窗口画面（窗口可能尚未就绪或已关闭）——"
-                    "可用 op=windows 确认窗口状态，或先 op=wait_window 等窗口出现)")
+        try:
+            source_path = self._analysis_image_path()
+        except ValueError as exc:
+            return f"(locate 参数非法: {exc})"
+        temporary = source_path is None
+        if temporary:
+            if pid is None:
+                return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
+                        f"无法做图像 / 文字定位；也可用 path 指定已有 PNG。"
+                        f"可用 op=wait 查看任务状态)")
+            path = await self._temp_screenshot(pid, self.window)
+            if path is None:
+                return ("(locate 失败: 无法截取窗口画面（窗口可能尚未就绪或已关闭）——"
+                        "可用 op=windows 确认窗口状态，或先 op=wait_window 等窗口出现)")
+        else:
+            path = source_path
         try:
             if crop is not None:
                 invalid = self._validate_locate_crop(path, crop)
@@ -3658,8 +3767,11 @@ class BashOptFunc(Func):
                 ValueError) as exc:
             return f"(locate 失败: {exc})"
         finally:
-            self._remove_temp(path)
-        frame = await self._window_frame_for(pid, self.window)
+            if temporary:
+                self._remove_temp(path)
+        frame = None
+        if temporary:
+            frame = await self._window_frame_for(pid, self.window)
         if frame is not None:
             for item in payload["matches"]:
                 item["screen_x"] = item["x"] + frame.screen_x
@@ -3668,19 +3780,27 @@ class BashOptFunc(Func):
                 item["screen_center_y"] = item["center_y"] + frame.screen_y
             payload["frame"] = frame.to_dict()
         ocr_hint = payload.pop("ocr_hint", None)
-        hint = ("matches 里的 x/y/center_x/center_y 与输入 op 坐标同源"
-                "（窗口截图左上角为原点），可直接交给 click / move 的 x / y；"
-                "screen_* 是换算后的屏幕坐标。找到多个时可用 score 或 text "
-                "挑选；不确认时可 first 用 op=screenshot 复核")
+        if temporary:
+            hint = ("matches 里的 x/y/center_x/center_y 与输入 op 坐标同源"
+                    "（窗口截图左上角为原点），可直接交给 click / move 的 x / y；"
+                    "screen_* 是换算后的屏幕坐标。找到多个时可用 score 或 text "
+                    "挑选；不确认时可 first 用 op=screenshot 复核")
+            if self.window:
+                payload["window"] = str(self.window)
+        else:
+            hint = ("matches 里的 x/y/center_x/center_y 以 path 图片左上角为原点"
+                    "（与传入图片同源），可直接交给 click / move 的 x / y；"
+                    "图片不绑定窗口，因此没有 screen_* 屏幕坐标换算。"
+                    "找到多个时可用 score 或 text 挑选")
         if ocr_hint:
             hint = f"{hint}；{ocr_hint}"
         payload.update({
             "task_id": self.task_id,
             "op": "locate",
+            "source": "window" if temporary else "path",
+            "image": self._image_size_payload(path),
             "hint": hint,
         })
-        if self.window:
-            payload["window"] = str(self.window)
         if crop is not None:
             payload["crop"] = crop.to_dict()
         return json.dumps(payload, ensure_ascii=False)
@@ -3902,10 +4022,8 @@ class BashOptFunc(Func):
         坐标以窗口截图左上角为原点（与 ``op=screenshot`` / 输入 op 同源），
         ``x`` / ``y`` 支持 ``'center'`` / ``'50%'`` / ``'center+20'`` 等语义值。
         """
+        rec = rec or {}
         pid = rec.get("pid")
-        if pid is None:
-            return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
-                    f"无法取色。可用 op=wait 查看任务状态)")
         try:
             mode = self._resolve_pixel_mode()
         except ValueError as exc:
@@ -3928,10 +4046,22 @@ class BashOptFunc(Func):
             min_pixels = self._resolve_min_pixels()
         except (ValueError, CropError) as exc:
             return f"(pixel 参数非法: {exc})"
-        path = await self._temp_screenshot(pid, self.window)
-        if path is None:
-            return ("(pixel 失败: 无法截取窗口画面（窗口可能尚未就绪或已关闭）——"
-                    "可用 op=windows 确认窗口状态，或先 op=wait_window 等窗口出现)")
+        try:
+            source_path = self._analysis_image_path()
+        except ValueError as exc:
+            return f"(pixel 参数非法: {exc})"
+        temporary = source_path is None
+        if temporary:
+            if pid is None:
+                return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
+                        f"无法取色；也可用 path 指定已有 PNG。"
+                        f"可用 op=wait 查看任务状态)")
+            path = await self._temp_screenshot(pid, self.window)
+            if path is None:
+                return ("(pixel 失败: 无法截取窗口画面（窗口可能尚未就绪或已关闭）——"
+                        "可用 op=windows 确认窗口状态，或先 op=wait_window 等窗口出现)")
+        else:
+            path = source_path
         try:
             image = await asyncio.to_thread(decode_png_file, path)
             payload = self._pixel_payload(image, mode, target, tolerance,
@@ -3939,21 +4069,32 @@ class BashOptFunc(Func):
         except (ColorError, CropError, ValueError, ActionError, OSError) as exc:
             return f"(pixel 失败: {exc})"
         finally:
-            self._remove_temp(path)
+            if temporary:
+                self._remove_temp(path)
+        if "image" not in payload:
+            payload["image"] = {"width": image.width, "height": image.height}
+        if temporary:
+            hint = ("颜色坐标为窗口截图坐标（与 op=screenshot 产物同源）；"
+                    "find 模式返回的 center_x / center_y 可直接交给 click 的 x / y；"
+                    "screen_* 是换算后的屏幕坐标")
+        else:
+            hint = ("颜色坐标以 path 图片左上角为原点（与传入图片同源）；"
+                    "find 模式返回的 center_x / center_y 可直接交给 click 的 x / y；"
+                    "图片不绑定窗口，没有 screen_* 屏幕坐标换算")
         payload.update({
             "task_id": self.task_id,
             "op": "pixel",
             "mode": mode,
-            "hint": ("颜色坐标为窗口截图坐标（与 op=screenshot 产物同源）；"
-                     "find 模式返回的 center_x / center_y 可直接交给 click 的 x / y；"
-                     "screen_* 是换算后的屏幕坐标"),
+            "source": "window" if temporary else "path",
+            "hint": hint,
         })
-        if self.window:
+        if temporary and self.window:
             payload["window"] = str(self.window)
-        frame = await self._window_frame_for(pid, self.window)
-        if frame is not None:
-            payload["frame"] = frame.to_dict()
-            _attach_screen_coords(payload, frame)
+        if temporary:
+            frame = await self._window_frame_for(pid, self.window)
+            if frame is not None:
+                payload["frame"] = frame.to_dict()
+                _attach_screen_coords(payload, frame)
         return json.dumps(payload, ensure_ascii=False)
 
     def _resolve_pixel_mode(self) -> str:
@@ -4126,12 +4267,13 @@ class BashOptFunc(Func):
 
     @staticmethod
     def _prepare_image_path(path: str) -> str:
-        """规范化输入图片路径（展开 ~、补 .png、安全校验、要求存在）。
+        """规范化输入图片路径（展开 ~、换算 Windows 盘符、补 .png、安全校验、
+        要求存在）。
 
         Raises:
             ValueError: 路径为空、文件不存在或未通过安全校验。
         """
-        expanded = os.path.expanduser(str(path).strip())
+        expanded = normalize_user_path(str(path))
         if not expanded:
             raise ValueError("路径为空")
         absolute = os.path.abspath(expanded)
@@ -4141,6 +4283,31 @@ class BashOptFunc(Func):
         if not os.path.isfile(absolute):
             raise ValueError(f"输入图片不存在: {absolute}")
         return absolute
+
+    def _analysis_image_path(self) -> str | None:
+        """``op=locate`` / ``op=pixel`` 的输入图片：显式 ``path`` 优先。
+
+        未提供 ``path`` 时返回 ``None``（调用方改为现截目标窗口）；提供时
+        走与 ``annotate`` 相同的路径规范化（展开 ``~``、补 ``.png``、安全
+        校验、要求文件存在），因此可直接分析 ``op=screenshot screen=true``
+        的整屏产物或任意已有 PNG——不再受「只能截任务窗口」的限制。
+
+        Raises:
+            ValueError: 路径为空 / 文件不存在 / 未通过安全校验。
+        """
+        raw = self.path
+        if raw is None or not str(raw).strip():
+            return None
+        return self._prepare_image_path(str(raw))
+
+    @staticmethod
+    def _image_size_payload(path: str) -> dict:
+        """读取图片尺寸（``{width, height}``；读不出时返回空 dict）。"""
+        try:
+            width, height = read_png_size(path)
+        except (OSError, ValueError):
+            return {}
+        return {"width": width, "height": height}
 
     def _annotate_output_path(self, source: str) -> str:
         """解析标注输出路径：显式 output 优先，否则覆盖 path / 自动命名。"""

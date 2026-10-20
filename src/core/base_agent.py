@@ -15,7 +15,7 @@ import weakref
 from typing import Any, Callable
 
 from .sandbox_manager import get_sandbox_manager, set_current_message_index
-from .._unicode_text import sanitize_surrogates, sanitize_surrogates_deep
+from .._unicode_text import sanitize_surrogates_deep
 
 _logger = logging.getLogger(__name__)
 
@@ -1155,10 +1155,26 @@ def _close_background_job(rec) -> None:
     只关句柄、不终止成员：kill 语义由 ``kill_process_tree`` 内的
     ``TerminateJobObject`` 完成，这里负责记录移除时释放内核句柄，避免
     进程内生句柄泄漏。重复调用安全（先置空再关闭）。
+
+    同时注销 ``_task_winpid`` 里的任务登记（POSIX pid → Windows pid /
+    Job / exe 提示），避免 POSIX PID 被系统复用后窗口枚举命中旧任务。
     """
     if not isinstance(rec, dict):
         return
+    pid = rec.get("pid")
+    try:
+        from ..tools._task_winpid import unregister
+        unregister(pid)
+    except Exception:  # pragma: no cover - 依赖导入链
+        _logger.debug("注销任务 Windows PID 登记失败: %s", pid, exc_info=True)
     handle = rec.get("job_handle")
+    writer = rec.get("stdin_writer")
+    if writer is not None:
+        try:
+            writer.close()
+        except Exception:  # pragma: no cover - 依赖底层句柄
+            _logger.debug("关闭后台任务 stdin 写端失败", exc_info=True)
+        rec["stdin_writer"] = None
     if not handle:
         return
     rec["job_handle"] = None

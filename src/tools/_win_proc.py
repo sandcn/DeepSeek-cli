@@ -18,9 +18,11 @@ Toolhelp32 快照的 ``th32ParentProcessID`` 记录的是**创建时**的父 PID
   - :func:`is_process_alive`：``OpenProcess`` + ``GetExitCodeProcess``
     （权限不足视为「存在」，不把杀不掉的高权限进程谎报成已退出）。
 
-平台边界：只服务**原生 Windows**（``os.name == 'nt'``）。Cygwin / MSYS2
-的 pid 是 POSIX pid，需先经 ``/proc/<pid>/winpid`` 映射，调用方仍走
-``ps`` 与 ``os.kill``（见 ``_bash_support._prefer_ps_process_tree``）。
+平台边界：服务**原生 Windows 与 Cygwin / MSYS2**。Cygwin / MSYS2 的 pid
+是 POSIX pid，涉及 Windows 对象（Job / TerminateProcess / Toolhelp32）时
+需先经 ``/proc/<pid>/winpid`` 映射（:func:`to_winpid`）；POSIX 进程树仍由
+``_bash_support`` 用 ``ps`` 维护。Cygwin 的 ctypes 没有 ``WinDLL``，但
+x86_64 只有一种调用约定，用 ``ctypes.CDLL`` 可直接调用 kernel32。
 
 所有函数在非 Windows / API 不可用 / 调用失败时返回空值，绝不抛异常——
 杀进程树是中断热路径，辅助功能失败不应把调用方一起拖崩。
@@ -31,6 +33,8 @@ from __future__ import annotations
 import ctypes
 import logging
 import os
+import sys
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +53,72 @@ STILL_ACTIVE = 259
 ERROR_ACCESS_DENIED = 5
 #: ``QueryInformationJobObject`` 的信息类：基本统计（含活动进程数）
 JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1
+#: ``QueryInformationJobObject`` 的信息类：Job 内进程 PID 列表
+JOB_OBJECT_BASIC_PROCESS_ID_LIST = 3
+#: ``QueryInformationJobObject`` PID 列表的预分配容量（Cygwin 下项目任务
+#: 的后代数远小于此；超出时系统返回 ERROR_MORE_DATA，调用方按空表处理）
+_JOB_PID_LIST_CAPACITY = 4096
 #: ``CreateToolhelp32Snapshot`` 失败返回值
 _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+
+def is_cygwin_like() -> bool:
+    """当前解释器是否为 Cygwin / MSYS2（POSIX pid + Windows 内核）。"""
+    return (sys.platform or "").startswith(("cygwin", "msys"))
+
+
+def is_windows_like() -> bool:
+    """当前环境是否能调用 Win32 API（原生 Windows / Cygwin / MSYS2）。"""
+    return os.name == "nt" or is_cygwin_like()
+
+
+def to_winpid(pid: int, *, retries: int = 0,
+              interval: float = 0.02) -> int | None:
+    """把进程号换算成 Windows PID。
+
+    - 原生 Windows：pid 本身即 Windows PID，原样返回；
+    - Cygwin / MSYS2：读 ``/proc/<pid>/winpid``（POSIX PID → Windows PID）；
+      进程刚创建时该文件可能尚未出现，``retries`` 可做短暂重试；
+    - 其它平台：返回 ``None``。
+
+    Args:
+        pid: 进程号（Cygwin 下为 POSIX pid）。
+        retries: 读取失败后的重试次数（默认 0）。
+        interval: 每次重试前的等待秒数。
+
+    Returns:
+        Windows PID；无法换算返回 ``None``。
+    """
+    if not _valid_pid(pid):
+        return None
+    if os.name == "nt":
+        return int(pid)
+    if not is_cygwin_like():
+        return None
+    attempts = max(0, int(retries)) + 1
+    for index in range(attempts):
+        try:
+            with open(f"/proc/{int(pid)}/winpid", encoding="utf-8") as handle:
+                value = int(handle.read().strip())
+            if value > 0:
+                return value
+        except (OSError, ValueError):
+            pass
+        if index + 1 < attempts:
+            time.sleep(max(0.0, float(interval)))
+    return None
+
+
+def _last_error() -> int:
+    """读取最近一次 Win32 调用的错误码（Cygwin 下回退 ``GetLastError``）。"""
+    try:
+        return int(ctypes.get_last_error())
+    except (AttributeError, OSError):
+        pass
+    try:
+        return int(ctypes.GetLastError())
+    except (AttributeError, OSError):
+        return 0
 
 
 class PROCESSENTRY32W(ctypes.Structure):
@@ -110,10 +178,17 @@ def _load_kernel32():
     global _kernel32, _load_failed
     if _kernel32 is not None:
         return _kernel32
-    if _load_failed or os.name != "nt":
+    if _load_failed or not is_windows_like():
         return None
     try:
-        lib = ctypes.WinDLL("kernel32", use_last_error=True)
+        # 原生 Windows 用 WinDLL（stdcall + use_last_error）；Cygwin 的 ctypes
+        # 没有 WinDLL，但 x86_64 只有一种调用约定，CDLL 可直接调用 Win32。
+        win_dll = getattr(ctypes, "WinDLL", None)
+        if win_dll is not None:
+            lib = win_dll("kernel32", use_last_error=True)
+        else:
+            # Cygwin 的 dlopen 需要完整 DLL 名（"kernel32" 会报 ENOENT）
+            lib = ctypes.CDLL("kernel32.dll")
         lib.CreateToolhelp32Snapshot.argtypes = (ctypes.c_uint32, ctypes.c_uint32)
         lib.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
         lib.Process32FirstW.argtypes = (ctypes.c_void_p, ctypes.POINTER(PROCESSENTRY32W))
@@ -152,6 +227,11 @@ def _load_kernel32():
             ctypes.c_uint32, ctypes.c_void_p,
         )
         lib.QueryInformationJobObject.restype = ctypes.c_int
+        # Job 成员判定（枚举 Job 内进程 -> 窗口归属 / 杀后补杀）
+        lib.IsProcessInJob.argtypes = (
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_int),
+        )
+        lib.IsProcessInJob.restype = ctypes.c_int
     except (AttributeError, OSError):
         _load_failed = True
         logger.debug("kernel32 进程 API 绑定失败（非 Windows 或系统受限）", exc_info=True)
@@ -161,7 +241,7 @@ def _load_kernel32():
 
 
 def is_supported() -> bool:
-    """当前环境是否可用本模块（原生 Windows 且 kernel32 API 绑定成功）。"""
+    """当前环境是否可用本模块（Windows 内核且 kernel32 API 绑定成功）。"""
     return _load_kernel32() is not None
 
 
@@ -197,6 +277,42 @@ def list_processes() -> list[tuple[int, int, str]]:
             ok = lib.Process32NextW(snapshot, ctypes.byref(entry))
     finally:
         lib.CloseHandle(snapshot)
+    return result
+
+
+def _exe_stem(name: str) -> str:
+    """可执行名归一化：小写、去掉 ``.exe`` 后缀（取不到返回空串）。
+
+    ★ Cygwin / MSYS2 下命令行通常写 ``mintty`` / ``python`` / ``sleep``
+    （不带 ``.exe``，PATH 查找由 Cygwin 完成），而 Toolhelp32 的
+    ``szExeFile`` 恒为 ``mintty.exe`` 这类带后缀的名字。若按字面精确比较，
+    ``op=windows`` / ``screenshot`` / 输入 op 的 hint 兜底（见
+    ``_screenshot.win.resolve_window_pids``）与 ``op=kill`` 的按名兜底就
+    完全命中不了——Cygwin 下 GUI 程序 daemon 化（mintty 会 reparent 到
+    init）后窗口无法归属到任务，实测 100% 复现。两侧统一剥掉后缀再比较。
+    """
+    text = (name or "").strip().lower()
+    if text.endswith(".exe"):
+        text = text[:-4]
+    return text
+
+
+def find_processes_by_name(name: str) -> list[int]:
+    """按可执行文件名（不区分大小写、忽略 ``.exe`` 后缀）返回存活 pid 列表。
+
+    供 Cygwin / MSYS2 下 App Execution Alias（Store 应用）与 daemon 化
+    GUI 程序（mintty 等）的窗口归属 / 杀树兜底：启动别名的实际进程可能
+    不是任务根进程的后代，但 exe 名通常仍能对上。命令名带不带 ``.exe``
+    都能匹配（见 :func:`_exe_stem`），不会误匹配 ``notepadplus.exe``
+    这类仅前缀相同的名字。
+    """
+    target = _exe_stem(name)
+    if not target:
+        return []
+    result: list[int] = []
+    for pid, _ppid, exe in list_processes():
+        if _exe_stem(exe) == target:
+            result.append(int(pid))
     return result
 
 
@@ -249,7 +365,7 @@ def is_process_alive(pid: int) -> bool:
         return False
     handle = lib.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
     if not handle:
-        if ctypes.get_last_error() == ERROR_ACCESS_DENIED:
+        if _last_error() == ERROR_ACCESS_DENIED:
             return True
         return False
     try:
@@ -367,6 +483,41 @@ def job_active_processes(job: int) -> int | None:
     return int(info.ActiveProcesses)
 
 
+def job_processes(job: int) -> list[int]:
+    """枚举作业对象内当前存活的 Windows pid（查询失败返回空表）。
+
+    ``QueryInformationJobObject`` 只给活动进程数，拿不到 PID 列表；这里用
+    ``JobObjectBasicProcessIdList``（信息类 3）一次取出全部成员 PID。Job
+    内可能包含 ``Toolhelp32`` 父链已断开的孤儿后代，因此窗口归属 / 杀后
+    补杀都以它为准。
+
+    注：Cygwin 的 ``IsProcessInJob`` 实测返回 0（无法判定成员），因此不采用
+    逐进程判定的方案。
+    """
+    lib = _load_kernel32()
+    if lib is None or not job:
+        return []
+    header = 8  # NumberOfAssignedProcesses + NumberOfProcessIdsInList（各 DWORD）
+    size = header + _JOB_PID_LIST_CAPACITY * ctypes.sizeof(ctypes.c_size_t)
+    buffer = ctypes.create_string_buffer(size)
+    ok = lib.QueryInformationJobObject(
+        ctypes.c_void_p(int(job)),
+        JOB_OBJECT_BASIC_PROCESS_ID_LIST,
+        buffer,
+        size,
+        None,
+    )
+    if not ok:
+        logger.debug("查询 Job 进程列表失败: job=%s err=%s", job, _last_error())
+        return []
+    count = int(ctypes.cast(buffer, ctypes.POINTER(ctypes.c_uint32))[1])
+    if count <= 0:
+        return []
+    count = min(count, _JOB_PID_LIST_CAPACITY)
+    array = (ctypes.c_size_t * count).from_buffer(buffer, header)
+    return [int(pid) for pid in array if int(pid) > 0]
+
+
 def close_handle(handle: int) -> None:
     """关闭内核句柄（Job / 进程句柄等；重复关闭 / 非法值静默忽略）。"""
     lib = _load_kernel32()
@@ -382,12 +533,17 @@ __all__ = [
     "assign_process_to_job",
     "close_handle",
     "create_job",
+    "find_processes_by_name",
+    "is_cygwin_like",
     "is_pid_reused",
     "is_process_alive",
     "is_supported",
+    "is_windows_like",
     "job_active_processes",
+    "job_processes",
     "list_processes",
     "process_create_time",
     "terminate_job",
     "terminate_process",
+    "to_winpid",
 ]

@@ -27,7 +27,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
-from ..file_ops import validate_path_security
+from ..file_ops import normalize_user_path, validate_path_security
 from .sequence import MAX_SEQUENCE_STEPS, SequenceError, parse_sequence
 
 logger = logging.getLogger(__name__)
@@ -180,10 +180,13 @@ def macro_path(name: str, directory: str | None = None) -> str:
 def resolve_macro_path(path: str) -> str:
     """把显式路径规范化为绝对路径并做安全检查。
 
+    支持 Windows 盘符路径（``E:/tmp/m.json``）——Cygwin / MSYS2 下由
+    :func:`normalize_user_path` 换算成 ``/cygdrive/e/...``。
+
     Raises:
         MacroError: 路径为空或未通过安全校验。
     """
-    expanded = os.path.expanduser(str(path or "").strip())
+    expanded = normalize_user_path(path)
     if not expanded:
         raise MacroError("宏文件路径不能为空")
     absolute = os.path.abspath(expanded)

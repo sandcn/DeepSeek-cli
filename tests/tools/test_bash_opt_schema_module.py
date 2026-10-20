@@ -107,3 +107,16 @@ def test_documented_enum_values_are_present():
 def test_boolean_flags_are_booleans(flag_key):
     props = build_bash_opt_schema()["function"]["parameters"]["properties"]
     assert props[flag_key]["type"] == "boolean"
+
+def test_stdin_encoding_description_covers_cygwin():
+    """Cygwin / MSYS2 下 stdin 默认 utf-8（与原生 Windows 的 ACP 不同）。
+
+    实测环境：Cygwin 的 ``GetACP`` 为 936、控制台却 ``chcp 65001``；若按
+    schema 旧文案「中文系统即 gbk」误传 ``encoding='gbk'``，cmd 内建命令
+    收到的中文反而乱码。描述必须明确 Cygwin / MSYS2 的默认值与显式传参。
+    """
+    props = build_bash_opt_schema()["function"]["parameters"]["properties"]
+    for key in ("op", "text", "encoding"):
+        desc = props[key]["description"]
+        assert "Cygwin" in desc and "utf-8" in desc, key
+    assert "gbk" in props["encoding"]["description"]

@@ -8,8 +8,6 @@ PowerShell 5.1 的 native 管道按 UTF-8 解码，于是每个 ASCII 字符后�
 
 from __future__ import annotations
 
-import pytest
-
 from src.tools._process_output import (
     OutputLineDecoder,
     _repair_wide_text,

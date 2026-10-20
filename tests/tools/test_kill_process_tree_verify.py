@@ -72,7 +72,7 @@ def test_kill_process_tree_retries_until_all_dead(monkeypatch):
     """第一轮杀完仍存活 → 自动再杀一次；第二轮全死后停止。"""
     rounds: list[int] = []
 
-    def fake_kill_once(root_pid, collected=None, extra_pids=None):
+    def fake_kill_once(root_pid, collected=None, extra_pids=None, **kwargs):
         rounds.append(root_pid)
         if collected is not None:
             collected.update({root_pid, root_pid + 1})
@@ -98,7 +98,7 @@ def test_kill_process_tree_reports_remaining_after_max_attempts(monkeypatch):
     """始终杀不死（如权限不足）：尝试到上限后报告残留 PID。"""
     calls: list[int] = []
 
-    def fake_kill_once(root_pid, collected=None, extra_pids=None):
+    def fake_kill_once(root_pid, collected=None, extra_pids=None, **kwargs):
         calls.append(root_pid)
         if collected is not None:
             collected.add(root_pid)
@@ -119,7 +119,7 @@ def test_kill_process_tree_attempts_param_limits_rounds(monkeypatch):
     """attempts=1 时只杀一轮（不补杀），仍报告残留。"""
     calls: list[int] = []
 
-    def fake_kill_once(root_pid, collected=None, extra_pids=None):
+    def fake_kill_once(root_pid, collected=None, extra_pids=None, **kwargs):
         calls.append(root_pid)
         if collected is not None:
             collected.add(root_pid)
@@ -139,7 +139,7 @@ def test_kill_process_tree_verify_false_single_round(monkeypatch):
     """verify=False：仅杀一轮、不校验不等待（兼容快速杀语义）。"""
     calls: list[int] = []
 
-    def fake_kill_once(root_pid, collected=None, extra_pids=None):
+    def fake_kill_once(root_pid, collected=None, extra_pids=None, **kwargs):
         calls.append(root_pid)
         if collected is not None:
             collected.add(root_pid)
@@ -160,7 +160,7 @@ def test_kill_process_tree_recollects_new_descendants(monkeypatch):
     """每轮重新收集后代：第二轮发现的「新 fork 后代」也被杀死并记录。"""
     rounds: list[int] = []
 
-    def fake_kill_once(root_pid, collected=None, extra_pids=None):
+    def fake_kill_once(root_pid, collected=None, extra_pids=None, **kwargs):
         rounds.append(root_pid)
         tree = [root_pid]
         if len(rounds) >= 2:

@@ -17,7 +17,6 @@
 
 from __future__ import annotations
 
-import difflib
 import json
 import locale
 import logging
@@ -207,7 +206,14 @@ _SEPARATOR_FOLD = frozenset("_-—–·•.．、 　\t")
 #: Windows 系统 OCR 对中文按单字拆框且会认错字（实测把「钮」认成「田」，
 #: 整句「确定取消按钮」因此精确 / 易混字符匹配全部落空）；这类错字无法用
 #: 字符级易混表穷举，改用「同一行拼接文本的相似度」兜底。要求至少 3 个
-#: 字符且相似度 >= 0.8，避免短查询 / 无关文本误命中。
+#: 字符，且查询字符按顺序出现在候选中的比例 >= 0.8，避免短查询 / 无关
+#: 文本误命中。
+#:
+#: ★ 用「LCS / 查询长度」而不是 ``difflib.SequenceMatcher.ratio()``：后者
+#: 的分母是两段文本长度之和，候选比查询多出几个字符（如行首的英文标签
+#: ``line6``）就会被双倍惩罚——实测「中文输入测试」被识别成
+#: 「中文输入氵则试」时，LCS 匹配 5/6 ≈ 0.83，而 SequenceMatcher 只有
+#: 2*5/(6+7) ≈ 0.77，恰好跌破阈值，导致 5 个字对上也查不到。
 _SIMILAR_MIN_CHARS = 3
 _SIMILAR_RATIO = 0.8
 
@@ -391,18 +397,39 @@ def _contains_cjk(text: str) -> bool:
     return False
 
 
+def _lcs_length(left: str, right: str) -> int:
+    """两个字符串的最长公共子序列（LCS）长度。
+
+    用滚动数组实现：只保留上一行，时间 O(len(left) * len(right))、空间
+    O(len(right))。查询与候选都只是一行文字，且候选长度受
+    :func:`_similar_length_slack` 限制，开销可忽略。
+    """
+    if not left or not right:
+        return 0
+    previous = [0] * (len(right) + 1)
+    for ch in left:
+        current = [0] * (len(right) + 1)
+        for index, other in enumerate(right, start=1):
+            if ch == other:
+                current[index] = previous[index - 1] + 1
+            else:
+                current[index] = max(previous[index], current[index - 1])
+        previous = current
+    return previous[-1]
+
+
 def _similar_phrase_matches(boxes: Sequence[TextBox], target: str) -> list[TextBox]:
     """按行拼接后做「相似度」近似匹配（中文 OCR 错字的兜底）。
 
     与 :func:`_phrase_matches` 的区别：那里要求查询是候选文本的**子串**
     （允许易混字符 / 分隔符折叠），只能覆盖「多认 / 少认 / 认成近形字母」；
-    这里用 ``difflib.SequenceMatcher`` 比较整段文本的相似度，能覆盖「认成
-    另一个汉字」——实测 Windows 系统 OCR 把「确定取消按钮」识别成
-    「确」「定」「取」「消」「按」「田」，6 个字错 1 个（相似度 5/6 ≈ 0.83），
+    这里用**最长公共子序列（LCS）占查询长度的比例**衡量相似度，能覆盖
+    「认成另一个汉字」——实测 Windows 系统 OCR 把「确定取消按钮」识别成
+    「确」「定」「取」「消」「按」「田」，6 个字错 1 个（LCS 5/6 ≈ 0.83），
     精确与易混字符匹配都命中不了。
 
     ★ 只在查询含 CJK 且折叠后长度 >= :data:`_SIMILAR_MIN_CHARS` 时启用，
-    并要求相似度 >= :data:`_SIMILAR_RATIO`：短查询（如两个汉字）或低相似度
+    并要求比例 >= :data:`_SIMILAR_RATIO`：短查询（如两个汉字）或低相似度
     一律不返回，避免把画面里无关文字当成命中。
 
     Args:
@@ -431,8 +458,8 @@ def _similar_phrase_matches(boxes: Sequence[TextBox], target: str) -> list[TextB
                     continue
                 if len(candidate) > len(normalized_target) + slack:
                     break
-                score = difflib.SequenceMatcher(
-                    None, normalized_target, candidate).ratio()
+                score = _lcs_length(
+                    normalized_target, candidate) / len(normalized_target)
                 if score >= _SIMILAR_RATIO:
                     hits.append((score, _union(ordered[start:end + 1])))
     if not hits:

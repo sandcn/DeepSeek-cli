@@ -6,6 +6,7 @@ import errno as _errno
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from .base import Func, print_to_terminal
 from . import _conpty
 from ._bash_support import (
     _has_dangerous_command,
+    is_shell_like_exe,
     _INTERRUPT_CHECK_INTERVAL,
     _READ_CHUNK_SIZE,
     _strip_ansi,
@@ -30,6 +32,8 @@ from ._bash_support import (
     close_process_job,
     terminate_process_job,
     ProcessTreeTracker,
+    PipeFdWriter,
+    open_interactive_stdin,
 )
 from ._process_output import OutputLineDecoder
 
@@ -38,6 +42,49 @@ from ..api.interrupt_async import is_interrupted
 from ..prompt_builder.shell_info import SHELL_ENV_MARKER, detect_shell
 
 logger = logging.getLogger(__name__)
+
+#: 能调用 Win32 进程 API 的平台（原生 Windows / Cygwin / MSYS2）。
+#: Cygwin 的 ``os.name`` 是 ``posix``，但内核是 Windows：Job / Toolhelp32 /
+#: TerminateProcess 都可用（经 ``_win_proc`` 的 ctypes.CDLL 绑定）。
+_WINDOWS_LIKE = os.name == "nt" or (sys.platform or "").startswith(("cygwin", "msys"))
+#: Cygwin / MSYS2：POSIX pid 与 Windows pid 是两套编号，原生程序 stdin
+#: 不能用 asyncio 的 socketpair（须用 os.pipe 显式建管道）。
+_CYGWIN_LIKE = (sys.platform or "").startswith(("cygwin", "msys"))
+
+#: 命令行中显式出现的 ``.exe`` token（用于 Cygwin 下 Store 应用 / App
+#: Execution Alias 的窗口归属兜底：真实进程可能不是任务根进程的后代，
+#: 但 exe 名通常仍能对上）。取**最后一个**，覆盖
+#: ``cmd /c notepad.exe``、``powershell -Command 'Start-Process notepad.exe'``。
+_EXE_TOKEN_RE = re.compile(r"""[^\s"']+\.exe""", re.IGNORECASE)
+
+
+def _command_exe_hint(command: str) -> str | None:
+    """从命令行提取可执行名提示（小写 basename；提取不到返回 None）。
+
+    ★ shell / 解释器不作为提示：Cygwin / MSYS2 下每个后台任务都有
+    ``bash.exe``，用 ``bash`` 这类通用名做「同名进程」兜底会把其它任务的
+    shell（及其 Windows 后代窗口）算进当前任务，实测导致 op=windows /
+    screenshot / 输入注入串到别的任务窗口。这类名字返回 ``None``，窗口
+    归属只走根 WINPID / Job / 进程树。
+    """
+    text = str(command or "")
+    matches = _EXE_TOKEN_RE.findall(text)
+    hint: str | None = None
+    if matches:
+        base = os.path.basename(matches[-1].strip("\"'"))
+        hint = base.lower() or None
+    else:
+        # 没有 .exe：取首个非赋值 token 的 basename（如 ``python script.py``）
+        for token in text.split():
+            if not token or token.startswith("-") or "=" in token:
+                continue
+            base = os.path.basename(token.strip("\"'"))
+            if base:
+                hint = base.lower()
+                break
+    if hint and is_shell_like_exe(hint):
+        return None
+    return hint
 
 # 尝试探测平台 PTY 可用性（不实际导入模块，避免无谓开销）
 try:
@@ -1140,11 +1187,25 @@ class BashFunc(Func):
         if shell_name:
             logger.debug("按交互 shell 执行命令: %s", shell_name)
 
+        # Cygwin / MSYS2：asyncio 的 stdin=PIPE 用 socketpair 实现，原生
+        # Windows 控制台程序读不了；交互模式改用 os.pipe() 建的真管道。
+        stdin_target = asyncio.subprocess.PIPE if interactive else asyncio.subprocess.DEVNULL
+        stdin_read_fd = None
+        stdin_writer = None
+        if interactive and _CYGWIN_LIKE:
+            try:
+                stdin_read_fd, stdin_writer = open_interactive_stdin()
+                stdin_target = stdin_read_fd
+            except OSError:
+                logger.debug("创建 stdin 管道失败，回退 asyncio PIPE", exc_info=True)
+                stdin_read_fd = None
+                stdin_writer = None
+
         try:
             process = await spawn_process(
                 launch_arg,
                 shell=use_shell,
-                stdin=asyncio.subprocess.PIPE if interactive else asyncio.subprocess.DEVNULL,
+                stdin=stdin_target,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 close_fds=True,
@@ -1154,7 +1215,21 @@ class BashFunc(Func):
         except BaseException:
             # ★ PowerShell ``-File`` 模式的临时脚本：进程没能创建也要清掉
             _remove_script_file(_script_path_from_launch(launch_arg))
+            if stdin_read_fd is not None:
+                try:
+                    os.close(stdin_read_fd)
+                except OSError:
+                    pass
+            if stdin_writer is not None:
+                stdin_writer.close()
             raise
+        finally:
+            # 子进程已拿到读端副本；父进程不再需要 read_fd
+            if stdin_read_fd is not None:
+                try:
+                    os.close(stdin_read_fd)
+                except OSError:
+                    pass
 
         # ★ Windows：创建后立即把进程加入 Job。父进程退出后 Job 成员关系
         #   仍保留，kill 时 TerminateJobObject 能杀掉 Toolhelp32 PPID 链已
@@ -1162,14 +1237,15 @@ class BashFunc(Func):
         #   句柄归属：后台任务 / 自动转后台 → 随任务记录保存（记录移除时
         #   关闭，见 _promote_to_background）；普通前台命令 → _run_exec 的
         #   finally 关闭。
-        win_job = create_process_job(process.pid) if os.name == "nt" else None
+        win_job = create_process_job(process.pid) if _WINDOWS_LIKE else None
 
         # ★ interactive_ready_fn 回调：提供 stdin 写端供 bash_opt 工具写入。
         if interactive_ready_fn is not None:
             try:
                 interactive_ready_fn(
                     process, "pipe",
-                    stdin_writer=process.stdin, job_handle=win_job,
+                    stdin_writer=stdin_writer or process.stdin,
+                    job_handle=win_job,
                 )
             except Exception:
                 logger.debug("interactive_ready_fn 回调异常")
@@ -1209,6 +1285,10 @@ class BashFunc(Func):
             raise
         finally:
             await process.wait()
+            # 关闭自定义 stdin 写端（原生 Windows 程序的 os.pipe）：进程已
+            # 退出，继续持有 fd 只会泄漏；后续 stdin 写入应得到「进程已结束」。
+            if isinstance(stdin_writer, PipeFdWriter):
+                stdin_writer.close()
             # ★ PowerShell ``-File`` 模式的临时包装脚本：进程结束后删除
             _remove_script_file(_script_path_from_launch(launch_arg))
 
@@ -1345,12 +1425,33 @@ class BashFunc(Func):
         # master 端能收到 EOF
         os.close(slave_fd)
 
+        # ★ Cygwin / MSYS2（POSIX PTY + Windows 内核）：为 PTY 子进程建立
+        #   Windows Job。Cygwin 的 ``bash -c`` 在 exec 成目标程序时会**重建
+        #   Windows 进程**（``/proc/<pid>/winpid`` 与 ``GetProcessTimes`` 的
+        #   创建时间都会变，实测 ready 时 22512 → exec 后 8060）。而任务记录
+        #   的 ``pid_create_time`` 是在子进程创建后立刻采样的（exec 前），
+        #   于是 ``op=kill`` 的 pid 复用防护会把这 15ms 的创建时间变化误判成
+        #   「PID 已被系统复用」而拒绝杀树——实测 PTY 后台任务（没有 Job，
+        #   ``job_was_active`` 为 0）100% 复现。Job 成员关系由内核维护，
+        #   exec 后仍然保留（实测 assign 后 ``QueryInformationJobObject``
+        #   活动进程数恒为 1），既让 kill 跳过复用判定，也让整树终止覆盖
+        #   exec 后的进程与后代。
+        #   原生 Windows 走 ``_run_conpty``（其分支内已创建 Job）。
+        win_job = None
+        if _WINDOWS_LIKE and interactive_ready_fn is not None:
+            try:
+                win_job = create_process_job(process.pid)
+            except Exception:  # pragma: no cover - 依赖系统调用
+                logger.debug("创建 PTY 进程 Job 失败", exc_info=True)
+
         # ★ interactive_ready_fn 回调：通知外层子进程已创建，提供交互句柄。
         #   在 master 包装为 asyncio 读管道前调用，保证 bash_opt 工具
         #   能尽早向 PTY master 写入输入。
         if interactive_ready_fn is not None:
             try:
-                interactive_ready_fn(process, "pty", master_fd=master_fd)
+                interactive_ready_fn(
+                    process, "pty", master_fd=master_fd, job_handle=win_job,
+                )
             except Exception:
                 logger.debug("interactive_ready_fn 回调异常")
 
@@ -1539,6 +1640,16 @@ class BashFunc(Func):
             holder["master_fd"] = master_fd
             holder["stdin_writer"] = stdin_writer
             holder["job_handle"] = job_handle
+            if _WINDOWS_LIKE:
+                try:
+                    from . import _win_proc
+                    from ._task_winpid import now_filetime
+                    holder["winpid"] = _win_proc.to_winpid(process.pid, retries=5)
+                    holder["win_start_time"] = now_filetime()
+                except Exception:  # pragma: no cover - 依赖系统调用
+                    holder["winpid"] = None
+                    holder["win_start_time"] = None
+                holder["win_hint"] = _command_exe_hint(self.command)
 
         # ★ 行回调代理（可变引用）：自动转后台后把 fn 置 None，断开实时输出，
         #   避免转后台后命令输出继续污染已闭合的工具卡片（工具已返回
@@ -1670,11 +1781,19 @@ class BashFunc(Func):
             "pid": pid,
             # 根进程创建时间（Windows；pid 复用防护）
             "pid_create_time": process_create_time(pid) if pid else None,
+            # 根进程的 Windows PID（Cygwin 下 POSIX pid 与 Windows pid 不同；
+            # 窗口枚举 / Job / TerminateProcess 需要它）
+            "winpid": holder.get("winpid"),
+            # 任务启动时间 / 可执行名提示（Store 应用窗口归属兜底）
+            "win_start_time": holder.get("win_start_time"),
+            "win_hint": holder.get("win_hint"),
             # Windows Job 句柄（杀整棵进程树；记录移除时关闭）
             "job_handle": holder.get("job_handle"),
             # 运行期采样累积的后代（见 BashFunc._sample_process_tree）
             "descendant_pids": set(),
             "descendant_create_times": {},
+            "descendant_win_pids": set(),
+            "descendant_win_create_times": {},
             "job_assigned": set(),
             "mode": holder.get("mode"),
             "master_fd": holder.get("master_fd"),
@@ -1695,11 +1814,20 @@ class BashFunc(Func):
         agent._register_background_task(task_id, rec)
         # Job 句柄归属转给任务记录：_run_exec 的 finally 不再关闭它
         holder["promoted"] = True
+        if _WINDOWS_LIKE and pid:
+            try:
+                from ._task_winpid import register
+                register(pid, rec.get("winpid"),
+                         job=rec.get("job_handle"),
+                         hint=rec.get("win_hint"),
+                         start_time=rec.get("win_start_time"))
+            except Exception:  # pragma: no cover - 依赖导入链
+                logger.debug("登记任务 Windows PID 失败", exc_info=True)
 
         # ★ Windows：转后台后启动进程树采样（与 background=True 路径一致），
         #   供 op=kill 覆盖 PPID 链断裂的孤儿后代。任务完成（done）后采样
         #   协程自行退出，记录移除时 Job 句柄关闭。
-        if os.name == "nt":
+        if _WINDOWS_LIKE:
             asyncio.ensure_future(self._sample_process_tree(agent, task_id))
 
         # ★ 转后台后输出改走 read_buffer：把任务记录引用写入 line_cb，
@@ -1827,12 +1955,19 @@ class BashFunc(Func):
             # 根进程创建时间（Windows FILETIME；pid 复用防护用，见
             # _bash_support.kill_process_tree 的 create_time 参数）
             "pid_create_time": None,
+            # 根进程的 Windows PID / 启动时间 / exe 名提示（Cygwin 下窗口
+            # 归属与原生子进程杀灭用；原生 Windows 也写入同一字段）
+            "winpid": None,
+            "win_start_time": None,
+            "win_hint": _command_exe_hint(self.command),
             # Windows Job 句柄（杀整棵进程树用；任务记录移除时关闭）
             "job_handle": None,
             # 运行期采样累积的后代（Python 断链 / Store 应用不继承 Job 时
             # 仍能定位孤儿；见 BashFunc._sample_process_tree）
             "descendant_pids": set(),
             "descendant_create_times": {},
+            "descendant_win_pids": set(),
+            "descendant_win_create_times": {},
             "job_assigned": set(),
             "mode": None,           # "pty" / "pipe"（写入方式）
             "master_fd": None,      # PTY master fd（mode="pty" 时，os.write 写入）
@@ -1888,6 +2023,19 @@ class BashFunc(Func):
             rec["mode"] = mode
             rec["master_fd"] = master_fd
             rec["stdin_writer"] = stdin_writer
+            if _WINDOWS_LIKE:
+                try:
+                    from . import _win_proc
+                    from ._task_winpid import now_filetime, register
+                    rec["winpid"] = _win_proc.to_winpid(process.pid, retries=5)
+                    rec["win_start_time"] = now_filetime()
+                    rec.setdefault("win_hint", _command_exe_hint(self.command))
+                    register(process.pid, rec.get("winpid"),
+                             job=job_handle,
+                             hint=rec.get("win_hint"),
+                             start_time=rec.get("win_start_time"))
+                except Exception:  # pragma: no cover - 依赖系统调用
+                    logger.debug("记录任务 Windows PID 失败", exc_info=True)
 
         async def _publish_line(text: str, is_stderr: bool) -> None:
             """后台任务实时输出行 → 任务记录 read_buffer（bash_opt read 消费）。"""
@@ -1903,7 +2051,7 @@ class BashFunc(Func):
         #   都会漏掉孤儿后代；采样把历史关系 / 观察到的存活 PID 存入任务记录，
         #   op=kill 时据此补杀（见 _bash_support.ProcessTreeTracker）。
         sample_task = None
-        if os.name == "nt":
+        if _WINDOWS_LIKE:
             sample_task = asyncio.ensure_future(
                 self._sample_process_tree(agent, task_id))
 
@@ -1988,7 +2136,7 @@ class BashFunc(Func):
                 if rec.get("done"):
                     # 任务已结束：停止采样（finally 保留最后一次结果）
                     return
-                pid = rec.get("pid")
+                pid = rec.get("winpid") or rec.get("pid")
                 if pid:
                     tracker.root_pid = int(pid)
                     try:
@@ -1996,8 +2144,15 @@ class BashFunc(Func):
                     except Exception:  # pragma: no cover - 依赖系统调用
                         logger.debug("后台任务进程树采样失败", exc_info=True)
                     if tracker.observed:
-                        rec["descendant_pids"] = set(tracker.observed)
-                        rec["descendant_create_times"] = dict(tracker.observed)
+                        if _CYGWIN_LIKE:
+                            # Cygwin：Toolhelp32 得到的是 Windows PID，不能
+                            # 混进 POSIX 的 descendant_pids（编码 / kill 两套
+                            # 编号）。单独存 Windows 后代。
+                            rec["descendant_win_pids"] = set(tracker.observed)
+                            rec["descendant_win_create_times"] = dict(tracker.observed)
+                        else:
+                            rec["descendant_pids"] = set(tracker.observed)
+                            rec["descendant_create_times"] = dict(tracker.observed)
                     job = rec.get("job_handle")
                     if job:
                         assigned = rec.get("job_assigned")
@@ -2023,8 +2178,12 @@ class BashFunc(Func):
             if agent is not None and hasattr(agent, "_background_tasks"):
                 rec = agent._background_tasks.get(task_id)
             if rec is not None and tracker.observed:
-                rec["descendant_pids"] = set(tracker.observed)
-                rec["descendant_create_times"] = dict(tracker.observed)
+                if _CYGWIN_LIKE:
+                    rec["descendant_win_pids"] = set(tracker.observed)
+                    rec["descendant_win_create_times"] = dict(tracker.observed)
+                else:
+                    rec["descendant_pids"] = set(tracker.observed)
+                    rec["descendant_create_times"] = dict(tracker.observed)
 
     # ── 父类契约实现 ──
     # execute() → 无 UI 副作用，只返回结果

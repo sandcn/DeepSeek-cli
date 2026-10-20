@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+import sys
 import tempfile
 import logging
 
@@ -50,6 +52,51 @@ def validate_path_security(path):
         raise ValueError(f"路径包含 NTFS 流或非法冒号: {check_path}")
     if ":" in basename and (":$" in basename or basename.count(":") > 1):
         raise ValueError(f"路径包含 NTFS 流或非法冒号: {check_path}")
+
+
+#: Windows 盘符路径（``E:/tmp/x`` / ``E:\tmp\x``）。Cygwin / MSYS2 的 Python
+#: 是 POSIX 语义，直接 ``os.path.abspath`` 会把它当相对路径
+#: （``<cwd>/E:/tmp/x``），必须在规范化前换成本平台的挂载点。
+_WINDOWS_DRIVE_PATH_RE = re.compile(r"^([A-Za-z]):[\\/](.*)$")
+
+
+def normalize_user_path(path):
+    """把用户给的路径换算成当前 Python 能直接打开的路径。
+
+    处理三类输入：
+
+      - 展开 ``~``；
+      - **Cygwin / MSYS2 下的 Windows 盘符路径**（``E:/tmp/x``、``E:\\tmp\\x``）
+        换成本平台挂载点（Cygwin ``/cygdrive/e/tmp/x``、MSYS2 ``/e/tmp/x``）。
+        这些平台的 Python 是 POSIX 语义，不换算的话 ``E:/tmp/x`` 会被
+        ``os.path.abspath`` 当成相对路径，落到工作目录下的 ``E:/tmp/x``
+        （实测截图被写进项目目录并新建了 ``E:`` 目录）；
+      - UNC 路径（``\\\\server\\share``）统一成 ``//server/share``。
+
+    原生 Windows / Linux 上盘符语义本就正确，原样返回。
+
+    Args:
+        path: 用户传入的路径（可含 ``~``、Windows 盘符 / 反斜杠）。
+
+    Returns:
+        规范化后的路径字符串；空输入返回空串。
+    """
+    text = os.path.expanduser(str(path or "").strip())
+    if not text:
+        return text
+    drive = _WINDOWS_DRIVE_PATH_RE.match(text)
+    if drive:
+        letter = drive.group(1).lower()
+        rest = drive.group(2).replace("\\", "/")
+        platform = (sys.platform or "").lower()
+        if platform.startswith("cygwin"):
+            return f"/cygdrive/{letter}/{rest}"
+        if platform.startswith("msys"):
+            return f"/{letter}/{rest}"
+        return text
+    if text.startswith("\\\\"):
+        return "//" + text.lstrip("\\").replace("\\", "/")
+    return text
 
 
 def get_plan_allowed_dir() -> str:

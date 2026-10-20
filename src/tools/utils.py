@@ -10,6 +10,7 @@ from .encoding import detect_encoding
 # re-export 文件操作
 from .file_ops import (
     validate_path_security,
+    normalize_user_path,
     check_file_size,
     atomic_write_file,
     get_last_user_message_preview,
@@ -154,6 +155,7 @@ __all__ = [
     "detect_encoding",
     # re-export：文件操作
     "validate_path_security",
+    "normalize_user_path",
     "check_file_size",
     "atomic_write_file",
     "get_last_user_message_preview",

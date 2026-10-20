@@ -71,6 +71,93 @@ _INTERRUPT_CHECK_INTERVAL = 0.2
 _READ_CHUNK_SIZE = 256 * 1024
 
 
+class PipeFdWriter:
+    """基于 ``os.pipe()`` 的后台任务 stdin 写端。
+
+    为什么需要：Cygwin 的 ``asyncio.create_subprocess_exec(stdin=PIPE)``
+    内部用 **socketpair** 实现 stdin，原生 Windows 控制台程序（cmd /
+    more.com / findstr / sort 等）无法从 socket 句柄读取 stdin——表现为
+    进程立即退出、``bash_opt stdin`` 报「管道已关闭」。``os.pipe()`` 创建
+    的是真正的管道句柄，原生程序可以正常读取。
+
+    接口与 ``asyncio.StreamWriter`` 的常用子集一致（``write`` / ``drain`` /
+    ``close`` / ``wait_closed``），供 ``bash_opt._write_unlocked`` 直接复用。
+    ``drain`` 在线程池中完成实际写入，避免阻塞事件循环；写缓冲满时按
+    ``BlockingIOError`` 短暂等待，总超时 ``timeout`` 秒后抛 ``TimeoutError``
+    （``OSError`` 子类，调用方会转成可读错误）。
+    """
+
+    def __init__(self, fd: int, *, timeout: float = 5.0):
+        self._fd = int(fd)
+        self._timeout = float(timeout)
+        self._buffer = bytearray()
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def write(self, data: bytes) -> None:
+        if self._closed:
+            raise ValueError("write to closed stdin")
+        self._buffer.extend(data)
+
+    async def drain(self) -> None:
+        if self._closed or not self._buffer:
+            return
+        data = bytes(self._buffer)
+        self._buffer.clear()
+        await asyncio.get_running_loop().run_in_executor(
+            None, self._write_all, data)
+
+    def _write_all(self, data: bytes) -> None:
+        """阻塞式写完整块（在线程池中执行；带总超时）。"""
+        view = memoryview(data)
+        deadline = time.monotonic() + self._timeout
+        while view:
+            try:
+                written = os.write(self._fd, view)
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("写入 stdin 超时（目标进程未读取输入）")
+                time.sleep(0.01)
+                continue
+            if written <= 0:
+                raise OSError("写入 stdin 失败：write 返回 0")
+            view = view[written:]
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._buffer:
+            try:
+                self._write_all(bytes(self._buffer))
+            except OSError:
+                logger.debug("关闭 stdin 前刷新残留数据失败", exc_info=True)
+            self._buffer.clear()
+        try:
+            os.close(self._fd)
+        except OSError:
+            pass
+
+    async def wait_closed(self) -> None:
+        """兼容 ``StreamWriter.wait_closed``：close() 已同步完成。"""
+        return None
+
+
+def open_interactive_stdin() -> tuple[int, PipeFdWriter]:
+    """创建供原生 Windows 子进程读取的 stdin 管道（Cygwin / MSYS2 用）。
+
+    Returns:
+        ``(read_fd, writer)``：``read_fd`` 传给子进程作为 stdin（启动后父进程
+        需关闭它），``writer`` 交给 ``bash_opt`` 写入。
+    """
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(write_fd, False)
+    return read_fd, PipeFdWriter(write_fd)
+
+
 # 模块级预编译正则（消除 _strip_ansi 每次调用的 re.compile 开销）
 _ANSI_STRIP_RE = _re.compile(
     r'\x1B(?:'
@@ -219,7 +306,10 @@ class KillResult:
         pid: 进程树根 PID（非法入参时为 0）。
         attempts: 实际执行的「收集 + 杀死 + 校验」轮数（>=1）。
         killed_pids: 各轮收集到的进程树 PID（根 + 递归后代，去重排序）。
+        killed_win_pids: Cygwin / MSYS2 下各轮收集到的 Windows PID（原生
+            进程树 / Job 成员 / Store 应用兜底；去重排序）。
         remaining_pids: 最后一轮校验时仍存活的 PID（空 = 已全部退出）。
+        remaining_win_pids: 最后一轮校验时仍存活的 Windows PID。
         verified: 是否执行了杀后校验（``verify=False`` 时为 False）。
         pid_reused: 记录的 PID 已被系统复用（创建时间不匹配）→ 为避免误杀
             无关进程，**未执行**进程树杀（仅 Windows 可判定）。
@@ -231,7 +321,9 @@ class KillResult:
     pid: int
     attempts: int = 0
     killed_pids: tuple[int, ...] = ()
+    killed_win_pids: tuple[int, ...] = ()
     remaining_pids: tuple[int, ...] = ()
+    remaining_win_pids: tuple[int, ...] = ()
     verified: bool = False
     pid_reused: bool = False
     job_remaining: int = 0
@@ -240,6 +332,7 @@ class KillResult:
     def success(self) -> bool:
         """进程树是否已被确认全部退出（未校验 / pid 被复用时恒为 False）。"""
         return (self.verified and not self.remaining_pids
+                and not self.remaining_win_pids
                 and not self.pid_reused and not self.job_remaining)
 
 
@@ -280,6 +373,31 @@ def _prefer_ps_process_tree() -> bool:
 def _is_windows() -> bool:
     """是否 Windows **原生**环境（Cygwin 的 ``os.name`` 为 ``posix``，不算）。"""
     return os.name == 'nt'
+
+
+def _is_cygwin_like() -> bool:
+    """是否 Cygwin / MSYS2（POSIX 进程表 + Windows 内核）。"""
+    return (sys.platform or '').startswith(('cygwin', 'msys'))
+
+
+def _is_windows_like() -> bool:
+    """是否能调用 Win32 进程 API（原生 Windows / Cygwin / MSYS2）。"""
+    return _is_windows() or _is_cygwin_like()
+
+
+def _winpid_of(pid: int, *, retries: int = 0) -> int | None:
+    """把进程号换算成 Windows PID（Cygwin 读 ``/proc/<pid>/winpid``）。"""
+    try:
+        from . import _win_proc
+        return _win_proc.to_winpid(int(pid), retries=retries)
+    except Exception:  # pragma: no cover - 依赖系统调用
+        logger.debug("POSIX -> Windows PID 换算失败: %s", pid, exc_info=True)
+        return None
+
+
+def _self_winpid() -> int | None:
+    """当前 Python 进程的 Windows PID（用于杀树时排除自身，防误杀）。"""
+    return _winpid_of(os.getpid())
 
 
 def _run_quiet(argv: list[str]) -> str:
@@ -592,6 +710,122 @@ def _kill_process_group(pid: int) -> None:
         pass
 
 
+def _kill_win_pid(pid: int) -> None:
+    """杀死单个 **Windows PID**（``TerminateProcess``，失败回退 taskkill）。
+
+    与 :func:`_kill_pid` 的区别：后者在 POSIX 平台用 ``os.kill``，Cygwin 下
+    的 POSIX pid 与 Windows pid 是两套编号，混用会误杀无关进程。这里只接受
+    Windows pid，供 Cygwin 的原生进程树 / Job 成员补杀使用。
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return
+    if pid <= 0:
+        return
+    self_winpid = _self_winpid()
+    if self_winpid and pid == self_winpid:
+        logger.warning("拒绝杀死当前进程自身的 Windows PID: %s", pid)
+        return
+    try:
+        from . import _win_proc
+    except Exception:  # pragma: no cover - 依赖系统调用
+        return
+    if not _win_proc.is_supported():
+        return
+    if not _win_proc.is_process_alive(pid):
+        return
+    try:
+        if _win_proc.terminate_process(pid):
+            return
+    except Exception:  # pragma: no cover - 依赖系统调用
+        logger.debug("TerminateProcess 失败: winpid=%s", pid, exc_info=True)
+    _run_quiet(['taskkill', '/F', '/T', '/PID', str(pid)])
+
+
+def _win_children_map() -> dict[int, list[int]]:
+    """Windows 进程表 → ``父 Windows pid → [子 Windows pid]``（失败返回空表）。"""
+    try:
+        from . import _win_proc
+        processes = _win_proc.list_processes()
+    except Exception:  # pragma: no cover - 依赖系统调用
+        logger.debug("Windows 进程表读取失败", exc_info=True)
+        return {}
+    mapping: dict[int, list[int]] = {}
+    for pid, ppid, _name in processes:
+        if pid == ppid:
+            continue
+        mapping.setdefault(int(ppid), []).append(int(pid))
+    return mapping
+
+
+def _collect_win_tree(root_pid: int | None) -> list[int]:
+    """返回 Windows 进程树（根 + 递归后代，去重；``None`` / 非法返回空表）。
+
+    只用于 Cygwin / MSYS2：这些平台的 POSIX 进程表（``ps``）看不到部分原生
+    Windows 子进程（GUI / detached），必须再沿 Windows PPID 链收集一遍。
+    """
+    if not root_pid or int(root_pid) <= 0:
+        return []
+    root = int(root_pid)
+    children = _win_children_map()
+    result = [root]
+    seen = {root}
+    stack = [(root, 0)]
+    while stack:
+        pid, depth = stack.pop()
+        if depth >= _DESCENDANT_MAX_DEPTH:
+            continue
+        for child in children.get(pid, ()):
+            if child in seen:
+                continue
+            seen.add(child)
+            result.append(child)
+            stack.append((child, depth + 1))
+    return result
+
+
+def _wait_win_until_exit(pids: list[int],
+                         timeout: float = _KILL_VERIFY_TIMEOUT) -> list[int]:
+    """轮询等待给定 Windows PID 全部退出；返回超时后仍存活的 PID 列表。"""
+    if not pids:
+        return []
+    try:
+        from . import _win_proc
+    except Exception:  # pragma: no cover - 依赖系统调用
+        return list(pids)
+    deadline = time.monotonic() + max(timeout, 0.0)
+    while True:
+        remaining = [pid for pid in pids if _win_proc.is_process_alive(pid)]
+        if not remaining or time.monotonic() >= deadline:
+            return remaining
+        time.sleep(_KILL_VERIFY_POLL)
+
+
+def _filter_reused_win_pids(pids, create_times) -> list[int]:
+    """过滤掉「Windows PID 已被系统复用」的候选（无法判定时保留）。"""
+    if not pids:
+        return []
+    times = create_times or {}
+    safe: list[int] = []
+    for pid in pids:
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            continue
+        create_time = times.get(pid)
+        if create_time:
+            try:
+                from . import _win_proc
+                if _win_proc.is_pid_reused(pid, create_time):
+                    logger.debug("Windows 候选进程 %s 的 PID 已被复用，跳过", pid)
+                    continue
+            except Exception:  # pragma: no cover - 依赖系统调用
+                pass
+        safe.append(pid)
+    return safe
+
+
 def _collect_tree_pids(root_pid: int) -> list[int]:
     """返回整棵进程树的 PID 列表（根 + 全部后代，已去重）。
 
@@ -686,7 +920,10 @@ def _filter_reused_pids(pids, create_times) -> list[int]:
 
 
 def _kill_tree_once(root_pid: int, collected: set[int] | None = None,
-                    extra_pids=None) -> list[int]:
+                    extra_pids=None, *,
+                    win_root: int | None = None,
+                    extra_win_pids=None,
+                    collected_win: set[int] | None = None) -> list[int]:
     """对进程树执行一轮杀死（进程组 + 递归后代），返回本轮涉及的 PID。
 
     先杀后代（倒序，叶方向优先）再杀根：SIGKILL / TerminateProcess 下父
@@ -694,6 +931,10 @@ def _kill_tree_once(root_pid: int, collected: set[int] | None = None,
 
     ``extra_pids``：任务运行期采样累积的后代（可能已脱离当前 PPID 链，
     Toolhelp32 收集不到）——一并纳入本轮杀与校验。
+
+    ``win_root`` / ``extra_win_pids``：Cygwin / MSYS2 下额外沿 **Windows
+    PID** 收集并杀死原生进程树（POSIX ``ps`` 看不到 GUI / detached 子进程）。
+    ``collected_win`` 收集本轮涉及的 Windows PID，供杀后校验。
 
     Windows 特例：进程表不可用（Toolhelp32 快照失败、收集不到任何后代）时
     退回 ``taskkill /F /T`` 的隐式树遍历——只杀根会让后代全部残留。
@@ -718,6 +959,27 @@ def _kill_tree_once(root_pid: int, collected: set[int] | None = None,
         _run_quiet(['taskkill', '/F', '/T', '/PID', str(root_pid)])
     else:
         _kill_pid(root_pid)
+
+    # ── Cygwin / MSYS2：再杀一遍 Windows 进程树 ──
+    # POSIX ps 只覆盖 Cygwin 进程表；原生 GUI / detached 进程（notepad、
+    # regedit 等）不在其中，必须沿 Windows PPID 链单独收集并用
+    # TerminateProcess / taskkill 终止。
+    if _is_cygwin_like():
+        win_tree = _collect_win_tree(win_root)
+        if extra_win_pids:
+            known_win = set(win_tree)
+            for pid in extra_win_pids:
+                try:
+                    pid = int(pid)
+                except (TypeError, ValueError):
+                    continue
+                if pid > 0 and pid not in known_win:
+                    known_win.add(pid)
+                    win_tree.append(pid)
+        if collected_win is not None:
+            collected_win.update(win_tree)
+        for pid in reversed(win_tree):
+            _kill_win_pid(pid)
     return tree
 
 
@@ -749,7 +1011,8 @@ def _kill_process_tree(pid: int, job_handle: int | None = None) -> None:
     if root_pid <= 0:
         return
     terminate_process_job(job_handle)
-    _kill_tree_once(root_pid)
+    win_root = _winpid_of(root_pid) if _is_cygwin_like() else None
+    _kill_tree_once(root_pid, win_root=win_root)
 
 
 def process_create_time(pid: int) -> int | None:
@@ -763,11 +1026,14 @@ def process_create_time(pid: int) -> int | None:
     非 Windows（没有统一的进程创建时间读取路径）或读不到时返回 ``None``
     （调用方按「无法判定」处理，不启用防护，保持原行为）。
     """
-    if not _is_windows():
+    if not _is_windows_like():
         return None
     try:
         from . import _win_proc
-        return _win_proc.process_create_time(pid)
+        winpid = _winpid_of(pid, retries=0) if _is_cygwin_like() else int(pid)
+        if not winpid:
+            return None
+        return _win_proc.process_create_time(winpid)
     except Exception:  # pragma: no cover - 依赖系统调用
         logger.debug("读取进程创建时间失败: pid=%s", pid, exc_info=True)
         return None
@@ -775,11 +1041,16 @@ def process_create_time(pid: int) -> int | None:
 
 def _pid_reused(pid: int, create_time: int | None) -> bool:
     """记录过创建时间的 PID 是否已被系统复用（无法判定时返回 False）。"""
-    if not create_time or not _is_windows():
+    if not create_time or not _is_windows_like():
         return False
     try:
         from . import _win_proc
-        return bool(_win_proc.is_pid_reused(pid, create_time))
+        winpid = _winpid_of(pid) if _is_cygwin_like() else int(pid)
+        if not winpid:
+            # POSIX 进程已退出（Cygwin exec 后 /proc 可能不存在）：无法用
+            # 创建时间判定，交给 Job / Windows 进程树兜底，不阻止杀。
+            return False
+        return bool(_win_proc.is_pid_reused(winpid, create_time))
     except Exception:  # pragma: no cover - 依赖系统调用
         logger.debug("pid 复用判定失败: pid=%s", pid, exc_info=True)
         return False
@@ -800,20 +1071,25 @@ def create_process_job(pid: int) -> int | None:
     """为刚创建的子进程 ``pid`` 创建 Job 并加入（失败 / 非 Windows → None）。
 
     越早调用覆盖越全（进程创建后立刻加入，其后代自动成为成员）。
+    Cygwin 下 ``pid`` 是 POSIX pid，先经 ``/proc/<pid>/winpid`` 换算；
+    换算失败（极短暂的就绪窗口）时做几次短重试。
     Assign 失败（父进程受 Job 限制等）时关闭句柄返回 None，调用方回退
     Toolhelp32 + ``taskkill /T``。
     """
-    if not _is_windows():
+    if not _is_windows_like():
         return None
     try:
         from . import _win_proc
+        winpid = _winpid_of(pid, retries=5)
+        if not winpid:
+            return None
         job = _win_proc.create_job()
         if not job:
             return None
-        if _win_proc.assign_process_to_job(job, pid):
+        if _win_proc.assign_process_to_job(job, winpid):
             return job
         _win_proc.close_handle(job)
-        logger.debug("AssignProcessToJobObject 失败: pid=%s", pid)
+        logger.debug("AssignProcessToJobObject 失败: pid=%s winpid=%s", pid, winpid)
     except Exception:  # pragma: no cover - 依赖系统调用
         logger.debug("创建进程 Job 失败: pid=%s", pid, exc_info=True)
     return None
@@ -821,7 +1097,7 @@ def create_process_job(pid: int) -> int | None:
 
 def terminate_process_job(job_handle: int | None) -> bool:
     """终止 Job 内全部进程（无句柄 / 非 Windows 返回 False）。"""
-    if not job_handle or not _is_windows():
+    if not job_handle or not _is_windows_like():
         return False
     try:
         from . import _win_proc
@@ -833,7 +1109,7 @@ def terminate_process_job(job_handle: int | None) -> bool:
 
 def job_active_processes(job_handle: int | None) -> int | None:
     """Job 内当前活动进程数（无句柄 / 非 Windows / 查询失败返回 None）。"""
-    if not job_handle or not _is_windows():
+    if not job_handle or not _is_windows_like():
         return None
     try:
         from . import _win_proc
@@ -845,7 +1121,7 @@ def job_active_processes(job_handle: int | None) -> int | None:
 
 def close_process_job(job_handle: int | None) -> None:
     """关闭 Job 句柄（不终止成员；幂等）。"""
-    if not job_handle or not _is_windows():
+    if not job_handle or not _is_windows_like():
         return
     try:
         from . import _win_proc
@@ -867,12 +1143,95 @@ def _wait_job_empty(job_handle: int | None,
         time.sleep(_KILL_VERIFY_POLL)
 
 
+#: 不承载「待操作 GUI 窗口」的 shell / 解释器名字（去 ``.exe``、去版本
+#: 后缀后的 stem）。Cygwin / MSYS2 下每个后台任务都至少有一个 bash.exe；
+#: 若把这类通用名当 ``win_hint`` 做「同名进程」兜底，就会把**其它任务**的
+#: shell 及其 Windows 后代（别的任务的窗口）算进本任务——实测
+#: ``op=windows`` / ``op=screenshot`` / ``op=type`` 会串到另一个任务的
+#: WinForms 窗口，``op=kill`` 也会误杀用户开着的同名程序。
+_SHELL_LIKE_STEMS = frozenset({
+    "bash", "sh", "dash", "ash", "zsh", "ksh", "mksh", "fish", "csh", "tcsh",
+    "cmd", "powershell", "pwsh", "wsl", "conhost", "winpty", "env",
+    "nohup", "setsid", "timeout", "nice", "xargs", "script", "su", "sudo",
+    "python", "python2", "python3", "py", "node", "nodejs", "ruby", "perl",
+    "php", "java", "dotnet", "mono", "busybox",
+})
+
+
+def is_shell_like_exe(name: str | None) -> bool:
+    """可执行名是否属于 shell / 解释器（这类进程不做同名窗口兜底）。
+
+    Args:
+        name: 可执行名（可带路径、``.exe`` 后缀、版本后缀，如
+            ``C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe``
+            或 ``python3.9``）。
+
+    Returns:
+        是 shell / 解释器返回 ``True``；空名或普通程序名返回 ``False``。
+    """
+    text = str(name or "").strip().lower().replace("\\", "/")
+    if text.endswith(".exe"):
+        text = text[:-4]
+    # 按两种分隔符取 basename（Cygwin 的 os.path.basename 不认反斜杠）
+    text = text.rsplit("/", 1)[-1]
+    if not text:
+        return False
+    if text in _SHELL_LIKE_STEMS:
+        return True
+    # python3.9 / node18 / perl5.36 这类带版本后缀的名字
+    stem = _re.sub(r"[\d._-]+$", "", text)
+    return bool(stem) and stem in _SHELL_LIKE_STEMS
+
+
+def _win_pids_for_hint(hint: str | None, start_time: int | None) -> list[int]:
+    """按可执行名 + 启动时间筛出「任务启动后新出现」的 Windows 进程。
+
+    Cygwin 下 App Execution Alias（Store 应用）或经 explorer 启动的窗口，
+    其进程既不在任务 Job 内，也不在 Toolhelp32 父子链上；只能靠命令行首个
+    token 的 exe 名 + 创建时间兜底。start_time 为 0/None 时不做时间过滤。
+
+    shell / 解释器名字直接返回空表（见 :func:`is_shell_like_exe`）；
+    创建时间读不到的候选也跳过——无法排除「用户早就开着的同名进程」，
+    宁可漏杀 App Execution Alias，也不误杀用户程序。
+    """
+    if not hint or is_shell_like_exe(hint):
+        return []
+    try:
+        from . import _win_proc
+        candidates = _win_proc.find_processes_by_name(hint)
+    except Exception:  # pragma: no cover - 依赖系统调用
+        logger.debug("按名称查找 Windows 进程失败: %s", hint, exc_info=True)
+        return []
+    if not start_time:
+        return candidates
+    result: list[int] = []
+    for pid in candidates:
+        try:
+            create_time = _win_proc.process_create_time(pid)
+        except Exception:  # pragma: no cover - 依赖系统调用
+            create_time = None
+        if create_time is None:
+            # 读不到创建时间就无法排除「用户早就开着的同名进程」：
+            # 宁可漏杀 App Execution Alias，也不误杀用户程序。
+            logger.debug("进程 %s 创建时间不可读，跳过按名兜底", pid)
+            continue
+        # 允许 1 秒的时钟粒度误差（FILETIME 是 100ns，但系统计时可能滞后）
+        if int(create_time) + 10_000_000 >= int(start_time):
+            result.append(pid)
+    return result
+
+
 def kill_process_tree(pid: int, *, attempts: int = KILL_MAX_ATTEMPTS,
                       verify: bool = True,
                       create_time: int | None = None,
                       job_handle: int | None = None,
                       extra_pids=None,
-                      extra_create_times=None) -> KillResult:
+                      extra_create_times=None,
+                      winpid: int | None = None,
+                      extra_win_pids=None,
+                      extra_win_create_times=None,
+                      win_hint: str | None = None,
+                      win_start_time: int | None = None) -> KillResult:
     """杀死进程及其所有后代，**杀后校验、未死补杀**（公开 API）。
 
     供 bash_opt（op=kill）与 ESC 中断兜底调用。流程：
@@ -881,8 +1240,9 @@ def kill_process_tree(pid: int, *, attempts: int = KILL_MAX_ATTEMPTS,
          退出、Toolhelp32 PPID 链断裂的孤儿后代）；
       2. 每轮重新收集整棵进程树（进程组 + 递归后代，可捕获本轮新 fork
          出来的后代），并并入运行期采样累积的 ``extra_pids``；
-      3. 先杀进程组（killpg），再逐个 SIGKILL / TerminateProcess 后代与
-         根进程；
+      3. Cygwin / MSYS2 再沿 **Windows PID** 收集一遍原生进程树（含 Job
+         成员与「按 exe 名 + 创建时间」匹配的 Store 应用），逐个
+         ``TerminateProcess`` / ``taskkill``；
       4. **校验**：轮询确认上述进程全部退出（僵尸视为已终止），并确认
          Job 内活动进程数归零；
       5. 仍有存活 → **再杀一次**（最多 ``attempts`` 轮）；
@@ -891,9 +1251,10 @@ def kill_process_tree(pid: int, *, attempts: int = KILL_MAX_ATTEMPTS,
     Windows 专用的 pid 复用防护：``create_time`` 为任务启动时记录的根进程
     创建时间，每轮杀之前比对；PID 已被系统复用时（创建时间不同）**不杀**，
     结果标记 ``pid_reused=True``——否则会误杀恰好复用了该 PID 的新进程树。
+    Job 内仍有活动成员时不做该拒绝（Job 是任务的权威归属）。
 
     Args:
-        pid: 进程树根 PID。
+        pid: 进程树根 PID（Cygwin 下为 POSIX pid）。
         attempts: 最大「收集 + 杀死 + 校验」轮数（>=1，默认 3）。
         verify: 是否执行杀后校验（``False`` 时仅杀一轮、不等待不重试，
             兼容旧的「快速杀」语义）。
@@ -901,16 +1262,24 @@ def kill_process_tree(pid: int, *, attempts: int = KILL_MAX_ATTEMPTS,
             不启用复用防护）。
         job_handle: 创建进程时为它建立的 Windows Job 句柄（``None`` 表示
             未启用；非 Windows 忽略）。
-        extra_pids: 任务运行期采样累积的后代 PID（可覆盖已脱离 PPID 链的
-            孤儿）；非空时一并杀与校验。
+        extra_pids: 任务运行期采样累积的 POSIX 后代 PID（可覆盖已脱离
+            PPID 链的孤儿）；非空时一并杀与校验。
         extra_create_times: ``extra_pids`` 对应的创建时间（pid 复用防护；
             不匹配的候选会被跳过）。
+        winpid: 根进程的 Windows PID（Cygwin 下由 ``_on_ready`` 记录；
+            不传时尝试用 ``/proc/<pid>/winpid`` 现读）。
+        extra_win_pids: 任务运行期采样累积的 Windows 后代 PID。
+        extra_win_create_times: ``extra_win_pids`` 对应的创建时间。
+        win_hint: 命令行首个 token 的 exe 名（小写 basename），用于
+            App Execution Alias / explorer 启动的 Store 应用兜底。
+        win_start_time: 任务启动时间（Windows FILETIME），与 ``win_hint``
+            一起过滤「任务启动前就存在的同名进程」。
 
     Returns:
-        KillResult；``remaining_pids`` 非空表示仍有进程未杀死
-        （可能权限不足或进程处于不可中断状态）；``pid_reused`` 为真表示
-        因 PID 被复用而未执行杀；``job_remaining`` 非零表示 Job 内仍有
-        活动进程。
+        KillResult；``remaining_pids`` / ``remaining_win_pids`` 非空表示仍有
+        进程未杀死（可能权限不足或进程处于不可中断状态）；``pid_reused``
+        为真表示因 PID 被复用而未执行杀；``job_remaining`` 非零表示 Job 内
+        仍有活动进程。
     """
     try:
         root_pid = int(pid)
@@ -923,18 +1292,33 @@ def kill_process_tree(pid: int, *, attempts: int = KILL_MAX_ATTEMPTS,
     except (TypeError, ValueError):
         rounds = KILL_MAX_ATTEMPTS
 
+    is_cyg = _is_cygwin_like()
+    if is_cyg:
+        win_root = int(winpid) if winpid else _winpid_of(root_pid)
+    else:
+        win_root = root_pid if _is_windows() else None
+
+    # Job 活动成员是任务的权威归属：先查一次，再终止（一次全体生效）
+    job_was_active = 0
     if job_handle:
-        # Job 终止是一次性、全体生效：先做一次，覆盖 Toolhelp32 收集不到的
-        # 孤儿后代（中间层已退出、PPID 链断裂）
+        try:
+            job_was_active = int(job_active_processes(job_handle) or 0)
+        except Exception:  # pragma: no cover - 依赖系统调用
+            job_was_active = 0
         terminate_process_job(job_handle)
     safe_extra = _filter_reused_pids(extra_pids, extra_create_times)
+    safe_extra_win = _filter_reused_win_pids(
+        extra_win_pids, extra_win_create_times)
 
     seen: set[int] = set()
+    seen_win: set[int] = set()
     remaining: list[int] = []
+    remaining_win: list[int] = []
     job_remaining = 0
     used = 0
     for index in range(1, rounds + 1):
-        if _pid_reused(root_pid, create_time):
+        reused = _pid_reused(root_pid, create_time) and not job_was_active
+        if reused:
             logger.warning(
                 "进程 %s 的 PID 已被系统复用（创建时间不匹配），跳过杀进程树",
                 root_pid,
@@ -943,26 +1327,69 @@ def kill_process_tree(pid: int, *, attempts: int = KILL_MAX_ATTEMPTS,
                 pid=root_pid,
                 attempts=used,
                 killed_pids=tuple(sorted(seen)),
+                killed_win_pids=tuple(sorted(seen_win)),
                 verified=verify,
                 pid_reused=True,
+                job_remaining=job_remaining,
             )
         used = index
-        _kill_tree_once(root_pid, seen, safe_extra)
+
+        # 每轮重新收集 Windows 候选：Job 成员 + 根 Windows 树的当前后代 +
+        # 运行期采样 + Store 应用兜底（按 exe 名 + 启动时间）。
+        round_win: list[int] = list(safe_extra_win)
+        if is_cyg:
+            if win_root:
+                round_win.extend(_collect_win_tree(win_root))
+            if job_handle:
+                try:
+                    from . import _win_proc
+                    round_win.extend(_win_proc.job_processes(job_handle))
+                except Exception:  # pragma: no cover - 依赖系统调用
+                    pass
+            round_win.extend(_win_pids_for_hint(win_hint, win_start_time))
+        # 去重、过滤自身
+        self_winpid = _self_winpid() if is_cyg else None
+        dedup_win: list[int] = []
+        for candidate in round_win:
+            try:
+                candidate = int(candidate)
+            except (TypeError, ValueError):
+                continue
+            if candidate <= 0 or candidate in seen_win:
+                continue
+            if self_winpid and candidate == self_winpid:
+                continue
+            seen_win.add(candidate)
+            dedup_win.append(candidate)
+
+        if is_cyg:
+            _kill_tree_once(
+                root_pid, seen, safe_extra,
+                win_root=win_root,
+                extra_win_pids=dedup_win,
+                collected_win=seen_win,
+            )
+        else:
+            _kill_tree_once(root_pid, seen, safe_extra)
         if not verify:
             break
         remaining = _wait_until_exit(sorted(seen))
+        if is_cyg:
+            remaining_win = _wait_win_until_exit(sorted(seen_win))
         job_remaining = _wait_job_empty(job_handle)
-        if not remaining and not job_remaining:
+        if not remaining and not remaining_win and not job_remaining:
             break
         logger.debug(
-            "进程树 %s 第 %d 轮杀死后仍有存活进程（pids=%s, job=%s）",
-            root_pid, index, remaining, job_remaining,
+            "进程树 %s 第 %d 轮杀死后仍有存活进程（pids=%s, winpids=%s, job=%s）",
+            root_pid, index, remaining, remaining_win, job_remaining,
         )
     return KillResult(
         pid=root_pid,
         attempts=used,
         killed_pids=tuple(sorted(seen)),
+        killed_win_pids=tuple(sorted(seen_win)),
         remaining_pids=tuple(remaining),
+        remaining_win_pids=tuple(remaining_win),
         verified=verify,
         job_remaining=job_remaining,
     )

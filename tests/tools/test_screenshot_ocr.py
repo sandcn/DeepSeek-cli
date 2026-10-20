@@ -338,3 +338,29 @@ def test_similar_phrase_matches_prefers_highest_score():
     assert mode == "similar"
     # 「确定取取消按钮」多一个字（6/7 ≈ 0.92）比「确定取消按田」（5/6 ≈ 0.83）更接近
     assert matches[0].left == 100
+
+# ── 相似度兜底：行首英文标签 + 多个错字（Cygwin 实测回归） ──
+
+def test_find_text_ex_similar_tolerates_extra_prefix_and_two_typos():
+    """实测：Windows OCR 把「中文输入测试」识别成「中文输入氵则试」。
+
+    行首还有英文标签 ``line6``（同一行），候选因此比查询长；相似度用
+    「LCS / 查询长度」计算（5/6 ≈ 0.83）应命中，而旧实现用
+    ``SequenceMatcher.ratio()``（2*5/(6+7) ≈ 0.77）会漏掉。
+    """
+    texts = ["line6", "中", "文", "输", "入", "氵", "则", "试"]
+    boxes = [_box(text, 20 * index, 5, 18, 16)
+             for index, text in enumerate(texts)]
+    matches, mode = find_text_ex(boxes, "中文输入测试")
+    assert mode == "similar"
+    assert len(matches) == 1
+    # 命中从「中」开始的 7 个单字框（x=20..158），不包含行首的 line6
+    assert matches[0].left == 20
+    assert matches[0].width == 20 * 6 + 18
+
+
+def test_lcs_length_counts_ordered_subsequence_only():
+    assert ocr._lcs_length("中文输入测试", "中文输入氵则试") == 5
+    assert ocr._lcs_length("abc", "acb") == 2
+    assert ocr._lcs_length("", "abc") == 0
+    assert ocr._lcs_length("中文", "中文") == 2

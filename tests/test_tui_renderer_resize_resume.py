@@ -16,8 +16,6 @@ import threading
 import time
 from types import SimpleNamespace
 
-import pytest
-
 from src.tui.ink._session_frame_mixin import _SessionFrameMixin
 from src.tui.ink.output import Frame, Line
 from src.tui.ink.renderer import InkRenderer

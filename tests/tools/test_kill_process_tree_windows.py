@@ -18,7 +18,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import subprocess
@@ -329,7 +328,7 @@ def test_kill_process_tree_passes_create_time_to_reuse_guard(monkeypatch):
         lambda pid, ct: seen.append((pid, ct)) or False,
     )
     monkeypatch.setattr(support, "_kill_tree_once",
-                        lambda root, collected=None, extra_pids=None: [root])
+                        lambda root, collected=None, extra_pids=None, **kwargs: [root])
 
     kill_process_tree(77, create_time=555, verify=False)
     kill_process_tree(78, verify=False)

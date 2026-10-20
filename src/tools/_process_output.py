@@ -41,23 +41,40 @@ __all__ = [
     "OutputLineDecoder",
     "decode_output",
     "default_output_encodings",
+    "windows_ansi_codepage",
 ]
 
 
 # ── 本机候选编码 ──────────────────────────────────────
+
+def _is_windows_like() -> bool:
+    """是否能读取 Windows 代码页（原生 Windows / Cygwin / MSYS2）。"""
+    return os.name == "nt" or (sys.platform or "").startswith(("cygwin", "msys"))
+
 
 def _windows_code_page(getter: str) -> int:
     """读取 Windows 代码页（``GetConsoleOutputCP`` / ``GetOEMCP`` / ``GetACP``）。
 
     非 Windows、无控制台（``GetConsoleOutputCP`` 返回 0）或 API 不可用时
     返回 0——调用方据此跳过该候选。
+
+    ★ Cygwin / MSYS2：``os.name`` 是 ``posix``，没有 ``ctypes.windll``，
+    但内核是 Windows，``ctypes.CDLL("kernel32.dll")`` 可正常调用。修复前
+    只认 ``os.name == 'nt'``，导致 Cygwin 下候选编码只有 UTF-8：原生程序
+    输出的 GBK（``cmd /c type``、旧版控制台工具、GBK 文件）全部变成
+    ``����``，且「系统」这类与 UTF-8 双重合法的短行被误读成 ``ϵͳ``。
     """
-    if os.name != "nt":
+    if not _is_windows_like():
         return 0
     try:
         import ctypes
 
-        value = int(getattr(ctypes.windll.kernel32, getter)())
+        loader = getattr(ctypes, "WinDLL", None)
+        if loader is not None:
+            lib = loader("kernel32", use_last_error=True)
+        else:
+            lib = ctypes.CDLL("kernel32.dll")
+        value = int(getattr(lib, getter)())
     except Exception:  # pragma: no cover - 极端环境（ctypes/kernel32 不可用）
         return 0
     return value if value > 0 else 0
@@ -80,6 +97,15 @@ def _code_page_encoding(code_page: int) -> str | None:
     return name
 
 
+def windows_ansi_codepage() -> int:
+    """系统 ANSI 代码页（``GetACP``；非 Windows / 取不到返回 0）。
+
+    供 ``bash_opt`` 的 ``op=stdin`` 默认编码与诊断使用。Cygwin / MSYS2
+    下同样可读（内核是 Windows）。
+    """
+    return _windows_code_page("GetACP")
+
+
 def default_output_encodings() -> tuple[str, ...]:
     """返回子进程输出解码的候选编码（顺序即优先级，UTF-8 恒在首位）。
 
@@ -99,7 +125,7 @@ def default_output_encodings() -> tuple[str, ...]:
         seen.add(lowered)
         encodings.append(name)
 
-    if os.name == "nt":
+    if _is_windows_like():
         for getter in ("GetConsoleOutputCP", "GetOEMCP", "GetACP"):
             _add(_code_page_encoding(_windows_code_page(getter)))
     try:

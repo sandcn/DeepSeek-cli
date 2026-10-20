@@ -20,6 +20,7 @@ from src.tools._screenshot.windows import (
     WindowSelector,
     describe_windows,
     filter_windows,
+    is_popup_like,
     main_window,
     mark_main,
     parse_control_request,
@@ -32,12 +33,12 @@ from src.tools._screenshot.windows import (
 
 def _win(handle, *, pid=10, title="", class_name="Chrome_WidgetWin_1",
          width=800, height=600, left=0, top=0, tool=False, minimized=False,
-         visible=True, foreground=False, order=0, main=False):
+         visible=True, foreground=False, order=0, main=False, owner=0):
     return WindowInfo(
         handle=handle, pid=pid, title=title, class_name=class_name,
         width=width, height=height, left=left, top=top,
         tool_window=tool, minimized=minimized, visible=visible,
-        foreground=foreground, order=order, main=main,
+        foreground=foreground, order=order, main=main, owner=owner,
     )
 
 
@@ -178,6 +179,61 @@ def test_filter_title_falls_back_to_class(sample_windows):
 def test_filter_popup_prefers_untitled_non_main(sample_windows):
     marked = mark_main(sample_windows)
     assert filter_windows(marked, parse_selector("popup"))[0].handle == 0x1002
+
+
+def test_filter_popup_matches_titled_xaml_popup():
+    """WinUI / XAML 弹层常带标题（如 Win11 记事本的「主机弹出窗口」）。"""
+    windows = [
+        _win(0x2001, title="无标题 - 记事本", width=900, height=600, order=0),
+        _win(0x2002, title="主机弹出窗口",
+             class_name="Microsoft.UI.Content.PopupWindowSiteBridge",
+             width=379, height=697, left=285, top=392, order=1, owner=0x2001),
+    ]
+    marked = mark_main(windows)
+    matched = filter_windows(marked, parse_selector("popup"))
+    assert [item.handle for item in matched] == [0x2002]
+    assert is_popup_like(matched[0]) is True
+
+
+def test_filter_popup_matches_titled_class_hint_without_owner():
+    """类名含 popup / dropdown 等特征即视为弹层（不要求属主 / tool 标记）。"""
+    windows = [
+        _win(0x2101, title="主窗口", width=900, height=600, order=0),
+        _win(0x2102, title="下拉选项", class_name="Chrome_Dropdown_Widget",
+             width=220, height=160, order=1),
+    ]
+    marked = mark_main(windows)
+    assert [item.handle for item in filter_windows(marked, parse_selector("popup"))] \
+        == [0x2102]
+
+
+def test_filter_popup_matches_owned_window():
+    """有属主窗口的弹层同样命中（如 Electron 的浮层）。"""
+    windows = [
+        _win(0x2201, title="主窗口", width=900, height=600, order=0),
+        _win(0x2202, title="浮层", class_name="Chrome_WidgetWin_1",
+             width=300, height=200, order=1, owner=0x2201),
+    ]
+    marked = mark_main(windows)
+    assert [item.handle for item in filter_windows(marked, parse_selector("popup"))] \
+        == [0x2202]
+
+
+def test_filter_popup_ignores_plain_titled_dialog():
+    """只有主窗口 + 普通对话框时，不把对话框误判为 popup（dialog 选择器负责）。"""
+    windows = [
+        _win(0x2301, title="主窗口", width=900, height=600, order=0),
+        _win(0x2302, title="保存", class_name="#32770",
+             width=400, height=200, order=1),
+    ]
+    marked = mark_main(windows)
+    assert filter_windows(marked, parse_selector("popup")) == []
+    assert filter_windows(marked, parse_selector("dialog"))[0].handle == 0x2302
+
+
+def test_is_popup_like_rejects_main_window():
+    main = _win(0x2401, title="主窗口", class_name="PopupLike", main=True)
+    assert is_popup_like(main) is False
 
 
 def test_filter_dialog_matches_class_hint(sample_windows):
