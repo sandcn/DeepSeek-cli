@@ -68,3 +68,17 @@ async def test_run_round_after_interrupted(session):
     assert second["interrupted"] is False
     assert session.state_name == "completed"
     assert [m["content"] for m in session.messages[-2:]] == ["continue", "ok"]
+
+
+async def test_title_revision_only_after_user_turns(session, monkeypatch):
+    """标题修订只在「处理一条用户消息」后安排；retry 不安排（用户需求 2026-10-20）。"""
+    calls: list = []
+    monkeypatch.setattr(
+        lifecycle, "_schedule_title_revision", lambda s: calls.append(s),
+    )
+
+    await session.run_round("hello")
+    assert len(calls) == 1
+
+    await session.retry()
+    assert len(calls) == 1, "retry 重新生成上一轮不应再调用标题模型"

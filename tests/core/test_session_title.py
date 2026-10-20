@@ -39,6 +39,7 @@ from src.core.session_title import (
     truncate_utf8,
 )
 from src.core.session_title.normalize import ELLIPSIS, clip_cjk, count_cjk
+from src.core.session_title.provider import select_messages_within_budget
 
 # ═══════════════════════════════════════════════════════════════
 # normalize
@@ -114,6 +115,47 @@ def test_system_prompt_carries_targets():
     prompt = build_system_prompt(target_words=6, target_cjk_characters=12)
     assert "6 个词" in prompt and "12 个汉字" in prompt
     assert "currentTitle" in prompt
+
+
+def test_system_prompt_prefers_latest_message():
+    """提示词明确「以最新用户消息为准」（用户需求）：标题反映当前主题。"""
+    prompt = build_system_prompt(target_words=6, target_cjk_characters=12)
+    assert "最新" in prompt
+    assert "当前" in prompt
+
+
+def test_select_messages_within_budget_keeps_latest():
+    """超预算时从最新往前保留；旧消息省略并计数（最新一定参与）。"""
+    messages = [(index, f"消息{index}") for index in range(100)]
+    selected, omitted = select_messages_within_budget(messages, 200)
+    assert selected and selected[-1] == (99, "消息99")
+    assert omitted > 0
+    assert omitted + len(selected) == 100
+
+
+def test_select_messages_truncates_oversized_latest():
+    """最新一条单独超预算：截断但保留（不能因旧消息挤掉最新诉求）。"""
+    big = "长" * 500
+    selected, omitted = select_messages_within_budget([(1, "旧"), (2, big)], 120)
+    assert selected and selected[-1][0] == 2
+    assert len(selected[-1][1]) < len(big)
+    assert omitted == 1
+
+
+def test_select_messages_no_limit_returns_all():
+    messages = [(1, "a"), (2, "b")]
+    assert select_messages_within_budget(messages, 0) == (messages, 0)
+
+
+def test_build_title_messages_budget_keeps_latest():
+    messages = [(index, "x" * 40) for index in range(50)] + [(99, "最新")]
+    built = build_title_messages(
+        messages, "", target_words=6, target_cjk_characters=12, max_input_bytes=2000,
+    )
+    payload = json.loads(built[1]["content"])
+    assert payload["messages"][-1]["text"] == "最新"
+    assert payload.get("omittedMessages", 0) > 0
+    assert request_bytes(built) <= 2000
 
 
 def test_user_payload_is_json_with_current_title():
@@ -346,26 +388,49 @@ async def test_empty_model_output_keeps_current_title():
 
 
 @pytest.mark.asyncio
-async def test_input_over_limit_skips_model_call():
-    calls: list = []
-    service = _make_service(
-        [{"role": "user", "content": "很长" * 5000}],
-        call_model=lambda messages: calls.append(messages) or ("标题", ""),
-    )
+async def test_over_budget_sends_latest_and_omits_old():
+    """超预算：所有消息尽量参与，旧消息被省略、最新消息必在（以最新为准）。"""
+    messages = [{"role": "user", "content": f"旧消息{index}"} for index in range(60)]
+    messages.append({"role": "user", "content": "最新的一条：请实现标题功能"})
+    calls: list[list[dict]] = []
+
+    def _call(built):
+        calls.append(built)
+        return "最新主题", ""
+
+    service = _make_service(messages, call_model=_call)
     service.ensure_fallback()
-    assert service.snapshot is not None
-    # 输入超过 max_input_bytes（默认 4096）：直接失败、保留旧标题、不调模型
     service._config = lambda: {
         "enabled": True, "target_words": 6, "target_cjk_characters": 12,
         "fallback_max_words": 8, "fallback_cjk_characters": 12,
         "fallback_max_bytes": 96, "max_title_bytes": 120,
-        "max_input_bytes": 256, "timeout_ms": 10000,
+        "max_input_bytes": 2000, "timeout_ms": 10000,
     }
-    before = service.snapshot
+    snapshot = await service.refresh_async()
+    assert snapshot is not None and snapshot.title == "最新主题"
+    assert calls
+    payload = json.loads(calls[0][1]["content"])
+    assert payload["messages"][-1]["text"] == "最新的一条：请实现标题功能"
+    assert payload["omittedMessages"] > 0
+    # 旧消息被裁掉（不是全部参与，但最新一定参与）
+    assert all(item["text"] != "旧消息0" for item in payload["messages"])
+
+
+@pytest.mark.asyncio
+async def test_within_budget_sends_all_user_messages():
+    """预算充足：所有用户消息都参与（不省略）。"""
+    messages = [
+        {"role": "user", "content": "第一条"},
+        {"role": "assistant", "content": "回答"},
+        {"role": "user", "content": "第二条"},
+    ]
+    calls: list[list[dict]] = []
+    service = _make_service(messages, call_model=lambda built: calls.append(built) or ("标题", ""))
+    service.ensure_fallback()
     await service.refresh_async()
-    assert calls == []
-    assert service.snapshot == before
-    assert "256" in service.last_error
+    payload = json.loads(calls[0][1]["content"])
+    assert [item["text"] for item in payload["messages"]] == ["第一条", "第二条"]
+    assert "omittedMessages" not in payload
 
 
 @pytest.mark.asyncio
@@ -473,6 +538,32 @@ async def test_wait_for_revision_without_pending_task():
     service = _make_service([{"role": "user", "content": "hi"}])
     service.ensure_fallback()
     assert await service.wait_for_revision(1.0) == service.snapshot
+
+
+def test_same_title_with_new_messages_updates_seqs():
+    """标题相同但参与消息变了：更新归属消息与时间戳（以最新一次为准）。"""
+    service = _make_service([{"role": "user", "content": "hi"}])
+    first = service._accept(
+        "标题", "provider", model="m", seqs=(1,), persist=False, target_sid=None,
+    )
+    second = service._accept(
+        "标题", "provider", model="m", seqs=(1, 2, 3), persist=False, target_sid=None,
+    )
+    assert second is not first
+    assert second.message_seqs == (1, 2, 3)
+    assert second.updated_at >= first.updated_at
+
+
+def test_same_title_same_messages_is_deduplicated():
+    """同一标题 + 同一批消息：真正无变化，不产生新快照。"""
+    service = _make_service([{"role": "user", "content": "hi"}])
+    first = service._accept(
+        "标题", "provider", model="m", seqs=(1,), persist=False, target_sid=None,
+    )
+    again = service._accept(
+        "标题", "provider", model="m", seqs=(1,), persist=False, target_sid=None,
+    )
+    assert again is first
 
 
 def test_restore_from_data_legacy_title_is_not_pinned():

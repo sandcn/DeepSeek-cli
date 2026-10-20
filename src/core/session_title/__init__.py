@@ -23,6 +23,7 @@ from .provider import (
     build_user_payload,
     parse_title_response,
     request_bytes,
+    select_messages_within_budget,
 )
 from .service import (
     SOURCE_FALLBACK,
@@ -47,6 +48,7 @@ __all__ = [
     "derive_fallback_title",
     "parse_title_response",
     "request_bytes",
+    "select_messages_within_budget",
     "sanitize_title",
     "truncate_utf8",
     "utf8_len",

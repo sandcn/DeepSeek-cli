@@ -446,18 +446,18 @@ class SessionTitleService:
             return
         with self._lock:
             current = self._snapshot
+        # ★ 2026-10-20（用户需求「所有用户消息参与、以最新为准」）：消息
+        #   全量传给标题模型；仅当超出 ``max_input_bytes`` 时按**最新优先**
+        #   裁剪（旧消息省略并计入 omittedMessages，最新一条必定保留），
+        #   而不是整次放弃（此前超限直接失败 → 长会话永远只剩旧标题）。
+        max_input_bytes = self._as_int(cfg, "max_input_bytes", 32768)
         messages = _provider.build_title_messages(
             eligible,
             current.title if current is not None else "",
             target_words=self._as_int(cfg, "target_words", 6),
             target_cjk_characters=self._as_int(cfg, "target_cjk_characters", 12),
+            max_input_bytes=max_input_bytes,
         )
-        max_input_bytes = self._as_int(cfg, "max_input_bytes", 4096)
-        if max_input_bytes > 0 and _provider.request_bytes(messages) > max_input_bytes:
-            self._record_error(
-                f"输入超过 {max_input_bytes} 字节上限，保留当前标题",
-            )
-            return
         timeout_ms = self._as_int(cfg, "timeout_ms", 10000)
         timeout = max(1.0, timeout_ms / 1000.0) if timeout_ms > 0 else None
         try:
@@ -518,21 +518,26 @@ class SessionTitleService:
         clean = truncate_utf8(sanitize_title(title), max_title_bytes).strip()
         if not clean:
             return None
+        seqs_tuple = tuple(int(seq) for seq in seqs)
         with self._lock:
             previous = self._snapshot
             if (
                 previous is not None
                 and previous.title == clean
                 and previous.source == source
+                and previous.message_seqs == seqs_tuple
             ):
-                # 同一来源产出的同一标题：不追加无意义事件 / 不重复写盘。
+                # 同一来源、同一标题、同一批消息：真正无变化，不追加事件 / 不写盘。
                 self._pinned = self._pinned or source == SOURCE_USER
                 return previous
+            # ★ 2026-10-20（用户需求「所有用户消息参与、以最新为准」）：标题相同但
+            #   参与消息变了（又有新的用户消息），仍视为一次新修订——更新归属
+            #   消息与时间戳并落盘，使「本次标题基于哪些消息」始终反映最新一次。
             snapshot = TitleSnapshot(
                 title=clean,
                 source=source,
                 model=str(model or ""),
-                message_seqs=tuple(int(seq) for seq in seqs),
+                message_seqs=seqs_tuple,
                 updated_at=time.time(),
             )
             self._snapshot = snapshot

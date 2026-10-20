@@ -303,7 +303,7 @@ async def run_pending_loop(session, max_iter: int = _MAX_PENDING_LOOP_ITER) -> t
 # ═══════════════════════════════════════════════════════════════
 
 async def retry(session) -> dict:
-    """重新执行上一轮对话。"""
+    """重新执行上一轮对话（不触发标题修订：重试不产生新的用户主题）。"""
     async with session._state.round_lock:
         session._state.retry_pending = False
         if session._state_machine.is_(SessionState.INIT):
@@ -312,7 +312,9 @@ async def retry(session) -> dict:
         session._state_machine.retry()
         try:
             async with _handle_round_error(session, "retry"):
-                return await _execute_round(session)
+                # ★ 2026-10-20（用户需求）：标题只在「处理一条用户消息」后调用；
+                #   重试/重新生成不是新的用户消息，不再触发标题模型。
+                return await _execute_round(session, user_turn=False)
         except (KeyboardInterrupt, asyncio.CancelledError):
             raise
         except Exception:
@@ -359,13 +361,16 @@ def _snapshot_token_stats(session) -> tuple[int, int, int]:
 
 
 async def _finalize_round(session, interrupted: bool,
-                          prev_stats: tuple[int, int, int]) -> dict:
+                          prev_stats: tuple[int, int, int],
+                          *, user_turn: bool = True) -> dict:
     """后置处理: enforce_message_limit → 计算 delta → 状态转换 → 自动保存 → 发射事件。
 
     Args:
         session: ChatSession 实例
         interrupted: agent.run() 是否被中断
         prev_stats: _snapshot_token_stats() 返回的前置快照
+        user_turn: 本轮是否由用户消息触发——只有用户轮才安排标题修订
+            （重试/重新生成不调用标题模型，见 ``_execute_round``）。
 
     Returns:
         结果字典（含 interrupted/session_id/delta/elapsed）
@@ -414,20 +419,30 @@ async def _finalize_round(session, interrupted: bool,
 
     # 发射事件并返回
     result = _emit_round_events(session, interrupted, session_id, delta)
-    # ★ 2026-10（dsh session-title 语义）：本轮结束后安排一次标题修订。
-    #   放在 round_end 事件之后——本轮 token delta 已结算，辅助请求不会混入
-    #   本轮消耗统计；生成在独立任务里跑，绝不阻塞对话。
-    _schedule_title_revision(session)
+    # ★ 2026-10（dsh session-title 语义）：**用户消息处理完**后安排一次标题修订
+    #   （每处理一条用户消息 = 最多一次；``/retry`` 重新生成上一轮不触发——
+    #   它不产生新主题，不应再调用标题模型）。放在 round_end 事件之后——本轮
+    #   token delta 已结算，辅助请求不会混入本轮消耗统计；生成在独立任务里跑，
+    #   绝不阻塞对话。除此之外只有手动 ``/title refresh`` / ``/title auto`` 会调用。
+    if user_turn:
+        _schedule_title_revision(session)
     return result
 
 
-async def _execute_round(session) -> dict:
-    """执行一轮对话的公共逻辑（编排方法）。"""
+async def _execute_round(session, *, user_turn: bool = True) -> dict:
+    """执行一轮对话的公共逻辑（编排方法）。
+
+    Args:
+        session: ChatSession 实例。
+        user_turn: 本轮是否由**用户消息**触发（``run_round`` / ``run_single`` /
+            排队消息为 True；``retry`` 重新生成上一轮为 False）。只有用户轮
+            结束后才安排会话标题修订——重试不产生新主题，不应再调用标题模型。
+    """
     _prepare_round(session)
     prev_stats = _snapshot_token_stats(session)
     session._emit("round_start")
     interrupted: bool = await session._agent.run()
-    return await _finalize_round(session, interrupted, prev_stats)
+    return await _finalize_round(session, interrupted, prev_stats, user_turn=user_turn)
 
 
 def _schedule_title_revision(session) -> None:
