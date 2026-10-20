@@ -178,6 +178,9 @@ async def run_round(session, user_input: str) -> dict:
         # 提前分配保证同一轮内 _auto_save / round_end 事件使用一致的 session_id。
         if not session._state.session_id:
             session._state.session_id = session._persistence_port.generate_id()
+        # ★ 2026-10-20（用户需求）：用户消息已写入会话日志、**主模型请求尚未
+        #   发出**——此刻安排标题修订，标题模型与主回答并发，不必等整轮结束。
+        _schedule_title_revision(session)
         try:
             async with _handle_round_error(session, "run_round"):
                 return await _execute_round(session)
@@ -303,7 +306,7 @@ async def run_pending_loop(session, max_iter: int = _MAX_PENDING_LOOP_ITER) -> t
 # ═══════════════════════════════════════════════════════════════
 
 async def retry(session) -> dict:
-    """重新执行上一轮对话（不触发标题修订：重试不产生新的用户主题）。"""
+    """重新执行上一轮对话（不触发标题修订：没有新的用户消息）。"""
     async with session._state.round_lock:
         session._state.retry_pending = False
         if session._state_machine.is_(SessionState.INIT):
@@ -312,9 +315,9 @@ async def retry(session) -> dict:
         session._state_machine.retry()
         try:
             async with _handle_round_error(session, "retry"):
-                # ★ 2026-10-20（用户需求）：标题只在「处理一条用户消息」后调用；
-                #   重试/重新生成不是新的用户消息，不再触发标题模型。
-                return await _execute_round(session, user_turn=False)
+                # ★ 2026-10-20（用户需求）：标题只在「消费用户消息」时调用；
+                #   重试/重新生成没有新用户消息，不触发标题模型。
+                return await _execute_round(session)
         except (KeyboardInterrupt, asyncio.CancelledError):
             raise
         except Exception:
@@ -336,6 +339,9 @@ async def run_single(session, prompt: str) -> dict:
         # ── AI 回复前提前分配 session_id ──────────────────
         if not session._state.session_id:
             session._state.session_id = session._persistence_port.generate_id()
+        # ★ 2026-10-20（用户需求）：用户消息入日志后、主模型请求发出前安排
+        #   标题修订（与主回答并发）。
+        _schedule_title_revision(session)
         async with _handle_round_error(session, "run_single"):
             result = await _execute_round(session)
         session.save()
@@ -361,16 +367,13 @@ def _snapshot_token_stats(session) -> tuple[int, int, int]:
 
 
 async def _finalize_round(session, interrupted: bool,
-                          prev_stats: tuple[int, int, int],
-                          *, user_turn: bool = True) -> dict:
+                          prev_stats: tuple[int, int, int]) -> dict:
     """后置处理: enforce_message_limit → 计算 delta → 状态转换 → 自动保存 → 发射事件。
 
     Args:
         session: ChatSession 实例
         interrupted: agent.run() 是否被中断
         prev_stats: _snapshot_token_stats() 返回的前置快照
-        user_turn: 本轮是否由用户消息触发——只有用户轮才安排标题修订
-            （重试/重新生成不调用标题模型，见 ``_execute_round``）。
 
     Returns:
         结果字典（含 interrupted/session_id/delta/elapsed）
@@ -419,43 +422,38 @@ async def _finalize_round(session, interrupted: bool,
 
     # 发射事件并返回
     result = _emit_round_events(session, interrupted, session_id, delta)
-    # ★ 2026-10（dsh session-title 语义）：**用户消息处理完**后安排一次标题修订
-    #   （每处理一条用户消息 = 最多一次；``/retry`` 重新生成上一轮不触发——
-    #   它不产生新主题，不应再调用标题模型）。放在 round_end 事件之后——本轮
-    #   token delta 已结算，辅助请求不会混入本轮消耗统计；生成在独立任务里跑，
-    #   绝不阻塞对话。除此之外只有手动 ``/title refresh`` / ``/title auto`` 会调用。
-    if user_turn:
-        _schedule_title_revision(session)
     return result
 
 
-async def _execute_round(session, *, user_turn: bool = True) -> dict:
+async def _execute_round(session) -> dict:
     """执行一轮对话的公共逻辑（编排方法）。
 
-    Args:
-        session: ChatSession 实例。
-        user_turn: 本轮是否由**用户消息**触发（``run_round`` / ``run_single`` /
-            排队消息为 True；``retry`` 重新生成上一轮为 False）。只有用户轮
-            结束后才安排会话标题修订——重试不产生新主题，不应再调用标题模型。
+    会话标题修订不在这里安排——它在用户消息入日志后、本函数调用**之前**
+    由 ``run_round`` / ``run_single`` 触发（见 ``_schedule_title_revision``）。
     """
     _prepare_round(session)
     prev_stats = _snapshot_token_stats(session)
     session._emit("round_start")
     interrupted: bool = await session._agent.run()
-    return await _finalize_round(session, interrupted, prev_stats, user_turn=user_turn)
+    return await _finalize_round(session, interrupted, prev_stats)
 
 
 def _schedule_title_revision(session) -> None:
-    """一轮结束后安排会话标题修订（all-prompts 节奏）。
+    """**消费一条用户消息后**、主模型请求发出前安排会话标题修订。
 
     用户钉住标题、标题功能关闭、无运行中事件循环时由服务内部静默跳过；
     任何异常都不得影响对话结果（标题是增强能力，不是主链路）。
+
+    时机（用户需求 2026-10-20）：``run_round`` / ``run_single`` 把用户消息写入
+    会话日志、分配 session_id 之后，``_execute_round``（真正发 API 请求）之前
+    调用——标题模型与主回答并发，不必等回答结束；``retry`` 等无新用户消息的
+    路径不调用。
     """
     service = getattr(session, "_title_service", None)
     if service is None:
         return
     try:
-        service.on_round_end()
+        service.on_user_message()
     except Exception:
         _logger.debug("安排会话标题修订失败（不影响对话）", exc_info=True)
 

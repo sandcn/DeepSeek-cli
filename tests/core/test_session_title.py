@@ -1,4 +1,4 @@
-"""会话标题子系统（dsh session-title 语义）—— 单元测试。
+﻿"""会话标题子系统（dsh session-title 语义）—— 单元测试。
 
 覆盖：
   - ``normalize``：清洗（ANSI / 控制符 / 不可见符 / 代理项）、UTF-8 安全截断、
@@ -299,18 +299,18 @@ def test_ensure_fallback_does_not_persist():
     assert persistence.calls == []
 
 
-def test_on_round_end_without_event_loop_is_safe():
+def test_on_user_message_without_event_loop_is_safe():
     service = _make_service([{"role": "user", "content": "hi"}])
-    service.on_round_end()  # 无运行中事件循环：只物化回退，不抛错
+    service.on_user_message()  # 无运行中事件循环：只物化回退，不抛错
     assert service.snapshot is not None
 
 
-def test_on_round_end_skips_when_pinned():
+def test_on_user_message_skips_when_pinned():
     service = _make_service([{"role": "user", "content": "hi"}])
     service.rename("钉住的标题")
 
     async def _run():
-        service.on_round_end()
+        service.on_user_message()
         await asyncio.sleep(0)
 
     asyncio.run(_run())
@@ -485,7 +485,7 @@ async def test_legacy_session_is_retitled_automatically():
     assert service.pinned is False
     service._interrupted = _not_interrupted
 
-    service.on_round_end()
+    service.on_user_message()
     await asyncio.sleep(0.05)
     assert service.snapshot is not None
     assert service.snapshot.title == "自动生成的标题"

@@ -70,15 +70,44 @@ async def test_run_round_after_interrupted(session):
     assert [m["content"] for m in session.messages[-2:]] == ["continue", "ok"]
 
 
+async def test_title_payload_includes_new_user_message(session, monkeypatch):
+    """提前调度（主模型请求前）时，新用户消息已在标题输入里（用户需求）。"""
+    import asyncio
+    import json
+
+    seen: list = []
+
+    async def _fake_call(messages):
+        seen.append(messages)
+        return ("标题", "")
+
+    service = session.title_service
+    service._call_model = _fake_call
+    monkeypatch.setattr(service, "_persist", lambda snapshot, sid: None)
+
+    await session.run_round("帮我实现登录功能")
+    await asyncio.sleep(0.1)
+    assert seen, "标题模型应被调用"
+    payload = json.loads(seen[0][1]["content"])
+    assert payload["messages"][-1]["text"] == "帮我实现登录功能"
+
+
 async def test_title_revision_only_after_user_turns(session, monkeypatch):
-    """标题修订只在「处理一条用户消息」后安排；retry 不安排（用户需求 2026-10-20）。"""
-    calls: list = []
+    """标题在「消费用户消息后、主模型请求发出前」安排；retry 不安排（用户需求）。"""
+    order: list[str] = []
     monkeypatch.setattr(
-        lifecycle, "_schedule_title_revision", lambda s: calls.append(s),
+        lifecycle, "_schedule_title_revision", lambda s: order.append("title"),
     )
+    original_run = session.agent.run
+
+    async def _run():
+        order.append("model")
+        return await original_run()
+
+    monkeypatch.setattr(session.agent, "run", _run)
 
     await session.run_round("hello")
-    assert len(calls) == 1
+    assert order == ["title", "model"], "标题应在主模型请求之前安排"
 
     await session.retry()
-    assert len(calls) == 1, "retry 重新生成上一轮不应再调用标题模型"
+    assert order == ["title", "model", "model"], "retry 不应再调用标题模型"
