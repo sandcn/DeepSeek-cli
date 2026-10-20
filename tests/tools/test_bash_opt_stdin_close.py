@@ -6,9 +6,11 @@
    ``stdin_closed``、清空 ``stdin_writer``）；pty 模式写 EOT（0x04）；
    重复调用 / 未就绪 / 无写端 / 关闭后继续写 stdin 都有可读提示；
    该 op 接管任务生命周期（与 stdin 一致）。
-2. ``op=stdin`` 的 ``encoding``：缺省按平台（Windows 取系统 ANSI 代码页，
-   中文系统 → gbk；其它平台 utf-8）；显式编码按指定值写出字节（含换行）；
-   未知编码 / 不可编码字符返回可读错误且不写字节。
+2. ``op=stdin`` 的 ``encoding``：缺省 **utf-8**（跟随 bash 工具为子进程
+   统一设置的 stdio 编码：包装脚本设置 Console Input/OutputEncoding 与
+   PYTHONIOENCODING / PYTHONUTF8，Python 等按 UTF-8 读 stdin——按 GBK 写
+   中文会直接 UnicodeDecodeError）；显式编码（如 ``gbk``）按指定值写出
+   字节（含换行）；未知编码 / 不可编码字符返回可读错误且不写字节。
 3. ``op=read`` 的 ``max_lines``：默认按 1000 行截断（保留尾部）、显式值
    生效、0 关闭行数限制、非法值回退默认，并回报 total_lines /
    returned_lines / dropped_lines。
@@ -19,7 +21,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import sys
 
 from src.tools import bash_opt as bash_opt_module
 from src.tools.bash_opt import BashOptFunc
@@ -254,33 +255,13 @@ async def test_stdin_gbk_encoding_writes_gbk_bytes():
     assert "gbk" in result
 
 
-async def test_stdin_default_uses_system_ansi_codepage(monkeypatch):
-    """Windows 默认按系统 ANSI 代码页编码（中文系统 936 → gbk）。
+async def test_stdin_default_is_utf8_matching_bash_stdio():
+    """默认编码跟随 bash 工具的 stdio 约定（UTF-8），与系统 ANSI 代码页无关。
 
-    实测：``cmd /c sort`` 用 UTF-8 写入中文时输出 ``涓�鏂囪�?``（UTF-8
-    字节被按 936 解码），默认改用 GBK 后输出正常。
-
-    ★ Cygwin / MSYS2 的交互 shell 是 POSIX bash，命令多为 Cygwin 程序，
-    默认仍为 utf-8（原生程序请显式传 ``encoding='gbk'``）。
+    实测（Windows 11 原生）：bash 包装脚本把子进程 ``Console.InputEncoding``
+    设为 UTF-8 并设置 ``PYTHONUTF8=1``，Python 等按 UTF-8 读 stdin；旧默认
+    按 ACP=936 写 GBK，中文直接 ``UnicodeDecodeError``（0xd6 非法 UTF-8）。
     """
-    monkeypatch.setattr(bash_opt_module, "_windows_ansi_codepage", lambda: 936)
-    stdin = _FakeStdin()
-    rec = _record(stdin_writer=stdin)
-    agent = _FakeAgent({"bg-1": rec})
-
-    result = await _call(agent, op="stdin", text="中文")
-
-    if (sys.platform or "").startswith(("cygwin", "msys")):
-        assert stdin.written == ["中文".encode("utf-8") + b"\n"]
-        assert "utf-8" in result
-    else:
-        assert stdin.written == ["中文".encode("gbk") + b"\n"]
-        assert "gbk" in result
-
-
-async def test_stdin_default_is_utf8_without_ansi_codepage(monkeypatch):
-    """非 Windows（或取不到 ANSI 代码页）→ 默认仍为 utf-8。"""
-    monkeypatch.setattr(bash_opt_module, "_windows_ansi_codepage", lambda: None)
     stdin = _FakeStdin()
     rec = _record(stdin_writer=stdin)
     agent = _FakeAgent({"bg-1": rec})
@@ -291,29 +272,24 @@ async def test_stdin_default_is_utf8_without_ansi_codepage(monkeypatch):
     assert "utf-8" in result
 
 
-async def test_stdin_default_utf8_when_codepage_is_utf8(monkeypatch):
-    """系统代码页本身就是 65001（UTF-8）时默认 utf-8。"""
-    monkeypatch.setattr(bash_opt_module, "_windows_ansi_codepage", lambda: 65001)
+def test_default_stdin_encoding_follows_child_stdio_convention():
+    """默认值必须等于 bash 工具给子进程设置的 stdio 编码（单一事实来源）。"""
+    from src.tools._process_output import CHILD_STDIO_ENCODING
+
+    assert bash_opt_module.default_stdin_encoding() == CHILD_STDIO_ENCODING
+    assert CHILD_STDIO_ENCODING == "utf-8"
+
+
+async def test_stdin_explicit_encoding_overrides_default():
+    """显式 encoding 始终优先（GBK 原生控制台程序 / 指定编码的脚本）。"""
     stdin = _FakeStdin()
     rec = _record(stdin_writer=stdin)
     agent = _FakeAgent({"bg-1": rec})
 
-    await _call(agent, op="stdin", text="中文")
+    result = await _call(agent, op="stdin", text="中文", encoding="gbk")
 
-    assert stdin.written == ["中文".encode("utf-8") + b"\n"]
-
-
-async def test_stdin_explicit_encoding_overrides_platform_default(monkeypatch):
-    """显式 encoding 始终优先于平台默认（按 UTF-8 读 stdin 的程序）。"""
-    monkeypatch.setattr(bash_opt_module, "_windows_ansi_codepage", lambda: 936)
-    stdin = _FakeStdin()
-    rec = _record(stdin_writer=stdin)
-    agent = _FakeAgent({"bg-1": rec})
-
-    result = await _call(agent, op="stdin", text="中文", encoding="utf-8")
-
-    assert stdin.written == ["中文".encode("utf-8") + b"\n"]
-    assert "utf-8" in result
+    assert stdin.written == ["中文".encode("gbk") + b"\n"]
+    assert "gbk" in result
 
 
 async def test_stdin_encoding_without_newline():

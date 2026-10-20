@@ -122,12 +122,12 @@ def build_bash_opt_schema() -> dict[str, Any]:
                             "轮尝试）；校验时仍存活的残留 PID 会在结果中列出；"
                             "记录的 PID 已被系统复用（创建时间不匹配）时拒绝杀"
                             "\n- stdin：向任务 stdin 发送文本输入（需 text；"
-                            "encoding 指定文本编码，缺省随平台：Windows 原生取"
-                            "系统 ANSI 代码页对应编码（中文 Windows 通常为 "
-                            "gbk / cp936，系统启用 UTF-8 时可能为 utf-8）；"
-                            "Cygwin / MSYS2 固定 utf-8（其 shell 与多数程序按 "
-                            "UTF-8 读 stdin），需 GBK 的原生控制台程序请显式传"
-                            " encoding='gbk'；其它平台 utf-8）"
+                            "encoding 指定文本编码，缺省 utf-8——与 bash 工具为"
+                            "子进程统一设置的 stdio 编码一致（Python / Node / "
+                            "PowerShell 都按 UTF-8 读 stdin）；需要按系统 ANSI "
+                            "代码页（中文 Windows 通常为 gbk / cp936）写入原生"
+                            "控制台程序时显式传 encoding='gbk'；Cygwin / MSYS2 "
+                            "同样默认 utf-8）"
                             "\n- close_stdin：关闭任务 stdin（发送 EOF）。"
                             "依赖输入结束才输出 / 退出的命令（sort / findstr / "
                             "cat / more / cmd 的 set / p 等）用它能正常跑完并"
@@ -270,9 +270,10 @@ def build_bash_opt_schema() -> dict[str, Any]:
                         "description": (
                             "stdin / type 操作的文本内容："
                             "stdin 为发送到后台命令 stdin 的内容（按 encoding "
-                            "指定的编码编码；缺省随平台，Windows 原生为系统 ANSI "
-                            "代码页（中文 Windows 通常 gbk），Cygwin / MSYS2 为 "
-                            "utf-8；不经过 shell 解释）；"
+                            "指定的编码编码；缺省 utf-8，与 bash 工具为子进程"
+                            "统一设置的 stdio 编码一致（Cygwin / MSYS2 相同）；"
+                            "需要 GBK 的原生控制台程序显式传 encoding='gbk'；"
+                            "不经过 shell 解释）；"
                             "type 为注入到 GUI 窗口的文本（逐字符输入，支持任意 "
                             "Unicode，'\\n' 与 '\\t' 转为回车/制表键）。"
                         ),
@@ -290,12 +291,12 @@ def build_bash_opt_schema() -> dict[str, Any]:
                         "type": "string",
                         "description": (
                             "仅 stdin 生效：发送文本使用的编码（Python 编码名）。"
-                            "缺省随平台：Windows 原生取系统 ANSI 代码页对应编码"
-                            "（中文 Windows 通常为 gbk / cp936；系统启用 UTF-8 时"
-                            "可能为 utf-8），Cygwin / MSYS2 固定 utf-8（其 shell 与"
-                            "多数程序按 UTF-8 读 stdin）。原生控制台程序（cmd 内建 / "
-                            "sort / findstr / more）可能按代码页读取管道 stdin，"
-                            "跨平台脚本建议显式传 encoding（'utf-8' / 'gbk'）。"
+                            "缺省 utf-8——与 bash 工具为子进程统一设置的 stdio "
+                            "编码一致（Python / Node / PowerShell 均按 UTF-8 读 "
+                            "stdin；Windows 原生与 Cygwin / MSYS2 相同）。需要按"
+                            "系统 ANSI 代码页（中文 Windows 通常为 gbk / cp936）"
+                            "写入原生控制台程序（cmd 内建 / sort / findstr / more）"
+                            "时显式传 encoding='gbk'。"
                         ),
                     },
                     "max_lines": {

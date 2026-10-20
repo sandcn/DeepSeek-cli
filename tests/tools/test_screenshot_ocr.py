@@ -180,6 +180,35 @@ def test_register_backend_undo(_isolated_registry):
     assert ocr.available() is False
 
 
+# ── Windows OCR 脚本：ocr_lang 的 WinRT 类型加载 ─────────
+
+def test_windows_ocr_script_loads_language_winrt_type():
+    """``ocr_lang`` 必须能构造 ``Windows.Globalization.Language``。
+
+    回归（Windows 11 + Windows PowerShell 5.1 实测）：旧脚本用
+    ``New-Object Windows.Globalization.Language($env:BASHOPT_OCR_LANG)``，
+    但 WinRT 类型从未按 ``ContentType=WindowsRuntime`` 加载——PowerShell 报
+    ``Cannot find type [Windows.Globalization.Language]``
+    （``TypeNotFound,Microsoft.PowerShell.Commands.NewObjectCommand``），
+    于是任何 ``ocr_lang`` 参数（哪怕本机已装该 OCR 语言包）都必然失败：
+    ``locate ... ocr_lang='zh-Hans-CN'`` → ``PowerShell OCR 失败``。
+
+    修复后脚本先加载类型再用 ``::new(...)`` 构造；两者缺一都会重现旧错误。
+    """
+    script = ocr._WINDOWS_OCR_SCRIPT
+    assert ("[Windows.Globalization.Language,Windows.Globalization,"
+            "ContentType=WindowsRuntime]") in script
+    assert "[Windows.Globalization.Language]::new(" in script
+    assert "New-Object Windows.Globalization.Language" not in script
+
+
+def test_windows_ocr_script_passes_language_env_var():
+    """语言标签经环境变量传入（避免命令行转义问题），并交给 TryCreateFromLanguage。"""
+    script = ocr._WINDOWS_OCR_SCRIPT
+    assert "BASHOPT_OCR_LANG" in script
+    assert "TryCreateFromLanguage" in script
+
+
 # ── Windows 路径转换 ────────────────────────────────────
 
 def test_windows_path_returns_usable_string():

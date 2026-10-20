@@ -548,7 +548,12 @@ $stream = Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Wind
 $decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
 $bitmap = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
 if ($env:BASHOPT_OCR_LANG) {
-    $language = New-Object Windows.Globalization.Language($env:BASHOPT_OCR_LANG)
+    # ★ WinRT 类型必须先按「完整类型名 + ContentType=WindowsRuntime」加载，
+    #   否则 New-Object / [type] 都报 TypeNotFound（Windows PowerShell 5.1
+    #   下实测：用 New-Object 直接构造该 WinRT 类型会报
+    #   Cannot find type [Windows.Globalization.Language]）。
+    [Windows.Globalization.Language,Windows.Globalization,ContentType=WindowsRuntime] | Out-Null
+    $language = [Windows.Globalization.Language]::new($env:BASHOPT_OCR_LANG)
     $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($language)
 } else {
     $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()

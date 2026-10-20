@@ -264,6 +264,13 @@ def resolve_window_pids(pid: int) -> set[int]:
     Job 句柄、exe 名提示登记到 ``_task_winpid``——即使 POSIX 进程在 exec
     后消失（GUI / App Execution Alias），仍能从这里找回真实 Windows PID。
 
+    ★ 原生 Windows 同样需要 Job / 按名兜底（2026-10-20 修复）：Store /
+    打包应用（Notepad、Windows Terminal、计算器等）由 App Execution Alias
+    在**别的进程**里激活，父链指向 svchost / explorer，不是任务根进程的
+    后代；只按 ``{pid}`` 展开会完全找不到它们的窗口（``op=wait_window``
+    超时、``op=screenshot`` 报无窗口），与 ``op=kill``（有采样器记录，
+    能杀掉）行为不一致。
+
     ★ 归属分两级（2026-10-20 串窗修复）：
 
       - **可信归属**：任务根 WINPID + Job 成员 → 可以展开 Windows 后代；
@@ -277,14 +284,14 @@ def resolve_window_pids(pid: int) -> set[int]:
     会命中无关窗口）；只有 ``pid`` 确实是当前存活的 Windows 进程时才回退。
     """
     matched: set[int] = set()
-    if winapi.is_cygwin_like():
-        base: set[int] = set()
-        try:
-            from .. import _win_proc, _task_winpid
-        except Exception:  # pragma: no cover - 依赖导入链
-            _win_proc = None
-            _task_winpid = None
+    base: set[int] = set()
+    try:
+        from .. import _win_proc, _task_winpid
+    except Exception:  # pragma: no cover - 依赖导入链
+        _win_proc = None
+        _task_winpid = None
 
+    if winapi.is_cygwin_like():
         for posix_pid in proctree.collect_process_tree(pid):
             win_pid = proctree.read_winpid(posix_pid)
             if not win_pid and _task_winpid is not None:
@@ -292,44 +299,54 @@ def resolve_window_pids(pid: int) -> set[int]:
             if win_pid:
                 if _win_proc is None or _win_proc.is_process_alive(win_pid):
                     base.add(win_pid)
-
-        if _task_winpid is not None:
-            # Job 成员：覆盖 Toolhelp32 父子链断开的原生子进程
-            job = _task_winpid.job_for(pid)
-            if job:
-                base.update(_task_winpid.job_processes(job))
-            # App Execution Alias / explorer 启动的 Store 应用：按 exe 名 +
-            # 任务启动时间兜底（真实进程可能不是任务根进程的后代）
-            hint = _task_winpid.hint_for(pid)
-            start_time = _task_winpid.start_time_for(pid)
-            if hint:
-                try:
-                    hint_pids = _win_proc.find_processes_by_name(hint) if _win_proc else []
-                except Exception:  # pragma: no cover - 依赖系统调用
-                    hint_pids = []
-                for candidate in hint_pids:
-                    create_time = None
-                    try:
-                        create_time = _win_proc.process_create_time(candidate) if _win_proc else None
-                    except Exception:  # pragma: no cover - 依赖系统调用
-                        create_time = None
-                    if (start_time and create_time is not None
-                            and int(create_time) + 10_000_000 < int(start_time)):
-                        continue
-                    # ★ 只取兜底进程自身，不展开它的 Windows 后代
-                    #   （Cygwin 的 fork 会让无关进程的父链指向别的
-                    #   bash.exe，展开即串窗）
-                    matched.add(int(candidate))
-
-        if not base and not matched:
-            # 只有 pid 确实是存活的 Windows 进程时才按 Windows PID 处理
-            try:
-                if any(item[0] == pid for item in winapi.list_processes()):
-                    base = {pid}
-            except OSError:  # pragma: no cover - 依赖系统调用
-                pass
     else:
+        # 原生 Windows：任务 pid 就是 Windows pid（后代由下面的展开补全）
         base = {pid}
+
+    # ★ Job 成员 + 按 exe 名兜底：两个平台都要做。
+    #   App Execution Alias / explorer 启动的 Store 应用（Notepad、Windows
+    #   Terminal、计算器等）在**原生 Windows** 上同样不是任务根进程的后代：
+    #   别名激活出的进程父链指向 svchost / explorer，PPID 链断裂后
+    #   Toolhelp32 展开找不到它——修复前 native 分支直接返回 {pid}，导致
+    #   ``op=windows`` / ``screenshot`` / ``op=click`` 全部报「没有可见窗口」，
+    #   而 ``op=kill`` 却因为采样器记录过它而能杀掉（行为不一致）。
+    if _task_winpid is not None:
+        # Job 成员：覆盖 Toolhelp32 父子链断开的原生子进程
+        job = _task_winpid.job_for(pid)
+        if job:
+            base.update(_task_winpid.job_processes(job))
+        # App Execution Alias / explorer 启动的 Store 应用：按 exe 名 +
+        # 任务启动时间兜底（真实进程可能不是任务根进程的后代）
+        hint = _task_winpid.hint_for(pid)
+        start_time = _task_winpid.start_time_for(pid)
+        if hint:
+            try:
+                hint_pids = _win_proc.find_processes_by_name(hint) if _win_proc else []
+            except Exception:  # pragma: no cover - 依赖系统调用
+                hint_pids = []
+            for candidate in hint_pids:
+                create_time = None
+                try:
+                    create_time = _win_proc.process_create_time(candidate) if _win_proc else None
+                except Exception:  # pragma: no cover - 依赖系统调用
+                    create_time = None
+                if (start_time and create_time is not None
+                        and int(create_time) + 10_000_000 < int(start_time)):
+                    continue
+                # ★ 只取兜底进程自身，不展开它的 Windows 后代
+                #   （Cygwin 的 fork 会让无关进程的父链指向别的
+                #   bash.exe，展开即串窗）
+                matched.add(int(candidate))
+
+    if not base and not matched:
+        # Cygwin 映射不到时：只有 pid 确实是存活的 Windows 进程才按 Windows
+        # PID 处理（两套编号可能撞车，会命中无关窗口）。
+        # 原生 Windows 不会走到这里（base 此时至少含 pid）。
+        try:
+            if any(item[0] == pid for item in winapi.list_processes()):
+                base = {pid}
+        except OSError:  # pragma: no cover - 依赖系统调用
+            pass
     if not base and not matched:
         return set()
     # 可信归属（根 WINPID / Job 成员）才展开 Windows 后代；按名兜底的

@@ -38,11 +38,24 @@ import sys
 from .._text_width import codepoint_width
 
 __all__ = [
+    "CHILD_STDIO_ENCODING",
     "OutputLineDecoder",
     "decode_output",
     "default_output_encodings",
     "windows_ansi_codepage",
 ]
+
+
+#: bash 工具为**子进程**统一设置的 stdio 编码：包装脚本把
+#: ``[Console]::InputEncoding`` / ``[Console]::OutputEncoding`` / ``$OutputEncoding``
+#: 设为无 BOM UTF-8，并设置 ``PYTHONIOENCODING=utf-8`` / ``PYTHONUTF8=1``
+#: （见 ``bash._powershell_encoding_line``）；POSIX 下同样是 UTF-8。
+#:
+#: ``bash_opt op=stdin`` 的默认文本编码必须与之一致：后台任务里的 Python /
+#: Node / PowerShell 都按 UTF-8 读 stdin，按系统 ANSI 代码页（中文 Windows
+#: = cp936）写入的中文会被当成非法字节（实测 Python 3.11：
+#: ``UnicodeDecodeError: 'utf-8' codec can't decode byte 0xd6``）。
+CHILD_STDIO_ENCODING = "utf-8"
 
 
 # ── 本机候选编码 ──────────────────────────────────────

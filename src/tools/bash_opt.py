@@ -12,9 +12,11 @@ bash_opt — 按 task_id 操作后台 bash 任务
             **校验**进程是否真正退出（僵尸视为已终止）；仍有存活则**自动
             补杀**（最多 3 轮尝试），返回信息报告校验结论与残留 PID
 - op=stdin  向后台命令的 stdin 发送文本输入（text 参数，newline 可选是否追加换行，
-            encoding 指定文本编码；缺省随平台：Windows 取系统 ANSI 代码页
-            （中文系统即 gbk——原生控制台程序按该代码页读管道 stdin），其它平台
-            utf-8；按 UTF-8 读 stdin 的程序请显式传 encoding='utf-8'）
+            encoding 指定文本编码；缺省 **utf-8**——与 bash 工具为子进程统一设置
+            的 stdio 编码一致（包装脚本设置 Console Input/OutputEncoding 与
+            PYTHONIOENCODING / PYTHONUTF8，Python / Node / PowerShell 均按 UTF-8
+            读 stdin）。需要按系统 ANSI 代码页（中文 Windows = gbk）写入原生
+            控制台程序时显式传 encoding='gbk'）
 - op=close_stdin  关闭后台命令的 stdin（发送 EOF）：pipe 模式关闭 stdin
             写端——依赖输入结束才输出 / 退出的命令（sort / findstr / cat /
             more / cmd 的 set /p 等）可以正常跑完并给出结果，不必 kill
@@ -202,7 +204,6 @@ master 或 stdin 管道写入后台进程，不依赖平台特定 API。键名�
 from __future__ import annotations
 
 import asyncio
-import codecs
 import json
 import logging
 import math
@@ -215,6 +216,7 @@ from contextlib import asynccontextmanager
 from .base import Func
 from .bash import READ_BUFFER_DROPPED_KEY, kill_process_tree
 from ._bash_opt_schema import build_bash_opt_schema
+from ._process_output import CHILD_STDIO_ENCODING
 from .file_ops import normalize_user_path, validate_path_security
 from ._screenshot import (
     CropError,
@@ -329,76 +331,26 @@ logger = logging.getLogger(__name__)
 #: 参数「未显式传入」的哨兵（与显式 None / 空值区分，供内部方法复用参数）
 _UNSET: object = object()
 
-#: 代码页 → Python 编码名（未登记的按 ``cp<代码页>`` 交给 codecs 探测）
-_CODEPAGE_ENCODINGS: dict = {
-    65001: "utf-8",
-    936: "gbk",
-    54936: "gb18030",
-    950: "cp950",
-    932: "cp932",
-    949: "cp949",
-    1252: "cp1252",
-}
-
-
-def _windows_ansi_codepage():
-    """系统 ANSI 代码页（Windows ``GetACP``；非 Windows / 取不到返回 ``None``）。
-
-    ★ 不用 ``GetConsoleCP``：本机终端可被 ``chcp 65001`` 改成 UTF-8（实测
-    Windows Terminal 为 65001），而原生控制台程序从**管道**读 stdin 时按
-    系统 ANSI 代码页（中文 Windows = 936）解码——按控制台代码页取会得到
-    UTF-8，中文仍然乱码。
-
-    ★ Cygwin / MSYS2 的 ``os.name`` 是 ``posix``，没有 ``ctypes.windll``；
-    统一走 ``_process_output.windows_ansi_codepage()``（ctypes.CDLL +
-    ``kernel32.GetACP``），让该函数在 Cygwin 下也能返回真实代码页。
-    """
-    if os.name != "nt" and not (sys.platform or "").startswith(("cygwin", "msys")):
-        return None
-    try:
-        from ._process_output import windows_ansi_codepage
-
-        value = int(windows_ansi_codepage())
-        return value if value > 0 else None
-    except (AttributeError, OSError, ValueError):  # pragma: no cover - 平台相关
-        return None
-
-
-def _codepage_to_encoding(codepage) -> str:
-    """代码页 → Python 编码名（未知 / UTF-8 代码页均返回 ``utf-8``）。"""
-    if not codepage or int(codepage) == 65001:
-        return "utf-8"
-    known = _CODEPAGE_ENCODINGS.get(int(codepage))
-    if known:
-        return known
-    name = f"cp{int(codepage)}"
-    try:
-        codecs.lookup(name)
-    except LookupError:
-        return "utf-8"
-    return name
-
-
 def default_stdin_encoding() -> str:
-    """``op=stdin`` 的默认文本编码（随平台 / 系统代码页）。
+    """``op=stdin`` 的默认文本编码：跟随 bash 工具的 stdio 约定（``utf-8``）。
 
-    Windows 原生控制台程序（``cmd`` 内建命令 / ``sort`` / ``findstr`` /
-    ``more`` 等）从管道读 stdin 时按**系统 ANSI 代码页**解码（中文 Windows
-    = 936）；写入 UTF-8 会显示成乱码（实测 ``cmd /c sort`` 收到 UTF-8 中文，
-    输出 ``涓�鏂囪�?``）。因此 Windows 上默认取 ``GetACP()`` 对应编码
-    （中文系统即 GBK / cp936），非 Windows 或取不到时用 ``utf-8``。
+    为什么不再按系统 ANSI 代码页（``GetACP``，中文 Windows = cp936）取默认：
 
-    确实按 UTF-8 读 stdin 的程序（Python / PowerShell 脚本等）请显式传
-    ``encoding='utf-8'``。
+      - bash 工具启动**每个**后台任务时，包装脚本都会把子进程 stdio 统一为
+        无 BOM UTF-8——``[Console]::InputEncoding`` / ``OutputEncoding`` /
+        ``$OutputEncoding`` 与 ``PYTHONIOENCODING`` / ``PYTHONUTF8``（见
+        ``bash._powershell_encoding_line``）；
+      - 于是 Python / Node / PowerShell 等程序都按 UTF-8 读 stdin：按 GBK
+        写入的中文会被当成非法字节直接抛错（实测 Python 3.11：
+        ``UnicodeDecodeError: 'utf-8' codec can't decode byte 0xd6``）；
+      - 原生控制台程序（``cmd /c sort`` / ``findstr``）在包装脚本设置
+        ``Console.InputEncoding = UTF-8`` 后同样按 UTF-8 解码，实测中文
+        输入 / 输出均正常——旧的 ``gbk`` 默认反而是少数派。
 
-    ★ Cygwin / MSYS2 的默认值仍是 ``utf-8``：该平台的交互 shell 是 POSIX
-    bash，命令多为 Cygwin 程序（cat / python / 自编译工具），它们按 UTF-8
-    读取 stdin；原生 Windows 控制台程序需要 GBK 时请显式传
-    ``encoding='gbk'``（并优先用 ``pty=true``，见 ``op=stdin`` 的说明）。
+    需要按系统 ANSI 代码页（中文 Windows = GBK）写入旧式程序时显式传
+    ``encoding='gbk'``。Cygwin / MSYS2 与原生 Windows 一致返回 ``utf-8``。
     """
-    if (sys.platform or "").startswith(("cygwin", "msys")):
-        return "utf-8"
-    return _codepage_to_encoding(_windows_ansi_codepage())
+    return CHILD_STDIO_ENCODING
 
 
 #: PTY master 写入的总超时（秒）——子进程长时间不读取输入时，写缓冲区会持续
@@ -601,11 +553,10 @@ class BashOptFunc(Func):
     _READ_MAX_LINES_DEFAULT: int = 1000
     #: op=close_stdin 关闭写端时的等待上限（秒）——管道对端不响应时不无限挂住
     _STDIN_CLOSE_TIMEOUT: float = 3.0
-    #: 非 Windows 平台的 stdin 默认文本编码。Windows 的默认值按系统 ANSI
-    #: 代码页动态取（见模块级 :func:`default_stdin_encoding`）：中文 Windows
-    #: 即 ``gbk``，避免原生控制台程序（sort / findstr / cmd 内建）读管道
-    #: stdin 时按 936 解码把 UTF-8 字节显示成乱码。
-    _DEFAULT_STDIN_ENCODING: str = "utf-8"
+    #: stdin 的默认文本编码：跟随 bash 工具为子进程统一设置的 stdio 编码
+    #: （见 :func:`default_stdin_encoding` 与
+    #: ``_process_output.CHILD_STDIO_ENCODING``）。
+    _DEFAULT_STDIN_ENCODING: str = CHILD_STDIO_ENCODING
     #: 由 bash_opt **接管生命周期**的 op：这些操作要么输入交互（stdin /
     #: close_stdin / keys / 窗口输入）、要么显式终止任务（kill）、要么是批量
     #: 操作（sequence / replay），任务不再由对话轮次自动等待与回灌结果。
@@ -889,9 +840,9 @@ class BashOptFunc(Func):
         self.text = text
         # newline 三态：None = 未指定（stdin 默认追加换行、type 默认原样）
         self.newline = None if newline is None else bool(newline)
-        # stdin 文本编码（缺省随平台：Windows 取系统 ANSI 代码页，中文系统即
-        # gbk——cmd 内建 / findstr / sort 等原生控制台程序按该代码页读管道
-        # stdin，写 UTF-8 会乱码；其它平台 utf-8）。显式 encoding 始终优先。
+        # stdin 文本编码（缺省 utf-8——与 bash 工具为子进程统一设置的 stdio
+        # 编码一致，Python / Node / PowerShell 都按 UTF-8 读 stdin）。
+        # 显式 encoding 始终优先（GBK 原生控制台程序传 'gbk'）。
         self.encoding = self._normalize_encoding(encoding)
         # read 的行数上限（默认 1000 行，与 bash 工具的 MAX_LINES 对齐）：
         # None = 默认；0 / 负数 = 不按行截断；非法值回退默认。
@@ -1001,10 +952,11 @@ class BashOptFunc(Func):
 
     @classmethod
     def _normalize_encoding(cls, encoding) -> str:
-        """归一化 stdin 文本编码名（缺省 / 空串 → 平台默认编码）。
+        """归一化 stdin 文本编码名（缺省 / 空串 → 默认编码 ``utf-8``）。
 
-        默认值见 :func:`default_stdin_encoding`：Windows 取系统 ANSI 代码页
-        （中文系统 → ``gbk``），其它平台 → ``utf-8``。
+        默认值见 :func:`default_stdin_encoding`：跟随 bash 工具为子进程
+        统一设置的 stdio 编码（UTF-8）；需要 GBK 的原生控制台程序显式传
+        ``encoding='gbk'``。
 
         不在构造期校验编码名是否合法：非法编码名在真正写入时由
         :meth:`_op_stdin` 返回可读错误（``encoding='utf8x'`` 这类笔误能直接
@@ -1469,11 +1421,12 @@ class BashOptFunc(Func):
     async def _op_stdin(self, rec: dict) -> str:
         """向后台任务 stdin 发送文本输入（按 :attr:`encoding` 编码）。
 
-        默认编码随平台：Windows 取系统 ANSI 代码页（中文系统 → ``gbk``），
-        因为原生控制台程序（cmd 内建 / sort / findstr / more）按该代码页
-        解码管道 stdin，用 UTF-8 会乱码（实测 ``cmd /c sort`` 输出
-        ``涓�鏂囪�?``）；其它平台 ``utf-8``。按 UTF-8 读 stdin 的程序
-        （Python / PowerShell 脚本）可显式传 ``encoding='utf-8'``。
+        默认编码 ``utf-8``：bash 工具的包装脚本把每个后台任务的子进程 stdio
+        统一为 UTF-8（Console Input/OutputEncoding 与 ``PYTHONIOENCODING`` /
+        ``PYTHONUTF8``），Python / Node / PowerShell 都按 UTF-8 读 stdin——
+        按系统 ANSI 代码页（中文 Windows = GBK）写入会直接被判非法字节
+        （实测 Python 3.11 抛 ``UnicodeDecodeError``）。需要 GBK 的旧式原生
+        控制台程序显式传 ``encoding='gbk'``。
         ``newline`` 未指定或为 true 时按同一编码追加换行。
 
         ★ PTY 任务（``bash background=true pty=true``）的「回车」是 **CR**
