@@ -3,8 +3,16 @@
 渲染为一行：渐变分隔线 + 内嵌状态文本（模型名/工具计数/耗时/token/速度）。
 数据源：AppModel.status + api 快照（_get_snapshot）。
 
-PERF-3/PERF-5：内部用 ``use_memo`` 缓存 ``_build_status_runs`` 结果
-（deps = 状态关键字段快照 + 时间桶），组件树重建时对未变更 live 区短路。
+窄屏溢出（2026-10-21 用户需求）：终端过窄、状态项放不下时，**不截断**状态项
+——能完整放下的项留在状态行，放不下的项（含只差一点点就放不下的）整体上移到
+**顶部分隔线（最顶那条 ``━``）的最右侧**显示（左侧分隔线按剩余宽度填充）。
+即：状态行只出现「显示完整」的项，显示不完整的项一律去分隔线右侧；
+溢出内容本身仍超宽时才截断（尾部 ``…``），并保留至少
+``_STATUS_OVERFLOW_MIN_FILL`` 列分隔线以维持「分隔线」观感。
+
+PERF-3/PERF-5：内部用 ``use_memo`` 缓存 ``_build_status_items`` / 宽度布局
+结果（deps = 状态关键字段快照 + 时间桶；布局 deps = 项引用 + width），组件树
+重建时对未变更 live 区短路。
 
 「一切皆插件」：状态栏各信息段（模型名 / 工具计数 / 耗时 / token / 速度）由
 ``src.tui.app._status_segments`` 注册表驱动——每个段一个清单插件条目
@@ -29,6 +37,7 @@ from __future__ import annotations
 
 import threading
 import time
+from typing import NamedTuple
 from weakref import WeakKeyDictionary
 
 from src.tui.core.style import Style
@@ -51,6 +60,17 @@ _S_WORKSPACE_PATH = Style(fg=242)
 # 多模态读图能力徽标（模型名旁的「图」）：青绿加粗，和模型名的青蓝主色区分开，
 # 又不抢眼——只有模型档案开启「多模态读图」时才出现。
 _S_MULTIMODAL = Style(fg=141, bold=True)
+
+# ── 窄屏溢出（状态项上移到顶部分隔线右侧）────────────────────────
+#: 段间分隔文本（非模型段之间）。
+_STATUS_ITEM_SEP = " \u00b7 "
+#: 模型段与后续段之间的间距（沿用原有「双空格」视觉，不加分隔符）。
+_STATUS_MODEL_GAP = "  "
+#: 状态行行首缩进宽度（``_build_status_line`` 的 ``"  "`` 前缀）。
+_STATUS_LINE_INDENT = 2
+#: 溢出内容移到分隔线右侧时，左侧至少保留的分隔线列数——保证那一行仍然
+#: 看得出是分隔线（仅在终端宽于该值时生效；更窄时用满整行）。
+_STATUS_OVERFLOW_MIN_FILL = 2
 
 # BEAUTY-7：streaming braille spinner 帧序列（与 _subagent_render 共用语义）
 # ★ 方向4：唯一真源 _fx.SPINNER_FRAMES——本模块保留别名（兼容既有 patch 路径；
@@ -435,12 +455,51 @@ def _workspace_segment(ctx: StatusContext) -> list:
     return runs
 
 
-def _build_status_runs(model, dot_elapsed: float = 0.0,
-                       spinner_char: str = "\u00b7",
-                       reasoning_effort: str | None = None,
-                       multimodal: bool = False,
-                       thinking_enabled: bool = True) -> list[StyledRun]:
-    """构建状态文本 runs（段注册表驱动：模型名/工具计数/耗时/token/速度）。
+class StatusItems(NamedTuple):
+    """状态栏「项」列表（每项一个段，段内多 run 为一个整体）。
+
+    Attributes:
+        items: 段 runs 列表（按显示顺序；``model`` 段存在时恒为第 0 项）。
+        model_first: 第 0 项是否为模型名段（决定模型段后使用双空格间距而非
+            `` · `` 分隔符）。
+    """
+
+    items: list[list[StyledRun]]
+    model_first: bool
+
+
+class StatusLayout(NamedTuple):
+    """状态栏宽度布局结果（窄屏时状态项分流到两行）。
+
+    Attributes:
+        line_runs: 状态行（分隔线下方那行）要显示的 runs——只含**能完整
+            放下**的项。
+        overflow_runs: 放不下的项（连续后缀）的 runs——显示在顶部分隔线
+            最右侧（见 ``StatusBar``）。
+    """
+
+    line_runs: list[StyledRun]
+    overflow_runs: list[StyledRun]
+
+
+def _build_status_items(model, dot_elapsed: float = 0.0,
+                        spinner_char: str = "\u00b7",
+                        reasoning_effort: str | None = None,
+                        multimodal: bool = False,
+                        thinking_enabled: bool = True) -> StatusItems:
+    """构建状态栏「项」列表（段注册表驱动：模型名/工具计数/耗时/token/速度）。
+
+    每项是一个段的 runs（段内多 run 为整体）；项与项之间**不**预置分隔符，
+    由 ``_join_status_items`` / ``_layout_status_items`` 按显示位置统一插入
+    （窄屏时项可能被分流到分隔线右侧，分隔符必须随实际相邻关系变化）。
+
+    段由 ``src.tui.app._status_segments`` 注册表提供（每个段一个清单条目）：
+    ``model`` 段为模型名部分（不与其它段用 `` · `` 连接），其余段（tools/
+    elapsed/messages/tokens/speed）按声明顺序用 `` · `` 连接。各段自行门控
+    可见性：tools/elapsed 仅活跃期渲染；tokens/speed 在活跃期或压缩中/压缩
+    结束宽限期内渲染（``_tokens_visible``，压缩摘要是静默后台流式调用，空闲期
+    ``/compact`` 产生的 token 也要看得到）；messages 为常驻段（空闲也显示
+    ——2026-10-07 状态栏信息增强）。
 
     Args:
         model: AppModel 实例。
@@ -455,13 +514,8 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
         thinking_enabled: 全局思考模式开关（Ctrl+T；false 时模型名后显示
             ``[off]`` 替代思考级别标签）。
 
-    段由 ``src.tui.app._status_segments`` 注册表提供（每个段一个清单条目）：
-    ``model`` 段为模型名部分（不与其它段用分隔符连接），其余段（tools/
-    elapsed/messages/tokens/speed）按声明顺序用 `` · `` 连接。各段自行门控
-    可见性：tools/elapsed 仅活跃期渲染；tokens/speed 在活跃期或压缩中/压缩
-    结束宽限期内渲染（``_tokens_visible``，压缩摘要是静默后台流式调用，空闲期
-    ``/compact`` 产生的 token 也要看得到）；messages 为常驻段（空闲也显示
-    ——2026-10-07 状态栏信息增强）。
+    Returns:
+        ``StatusItems``（项列表 + 首项是否为模型名段）。
     """
     from ._status_segments import active_segment_ids, resolve_segment
 
@@ -525,17 +579,136 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
     # ★ 2026-10-07（状态栏信息增强）：不再在非活跃状态提前返回——各段实现
     #   自行门控（tools/elapsed/tokens/speed 非活跃返回 []），而 messages 段
     #   **空闲也显示**（信息常驻）。
-    if not segment_runs:
-        return model_part
-    sep = StyledRun(" \u00b7 ", _S_DIM)
-    joined: list[StyledRun] = []
-    for i, runs in enumerate(segment_runs):
-        if i > 0:
-            joined.append(sep)
-        joined.extend(runs)
+    items: list[list[StyledRun]] = []
     if model_part:
-        return model_part + [StyledRun("  ", None)] + joined
-    return joined
+        items.append(model_part)
+    items.extend(segment_runs)
+    return StatusItems(items, bool(model_part))
+
+
+def _item_separator(index: int, model_first: bool) -> StyledRun:
+    """第 ``index`` 项**之前**的分隔 run（``index == 0`` 时为空串 run）。
+
+    模型名段之后用双空格（沿用原视觉、不加分隔符），其余项之间用 `` · ``。
+    """
+    if index <= 0:
+        return StyledRun("", None)
+    if model_first and index == 1:
+        return StyledRun(_STATUS_MODEL_GAP, None)
+    return StyledRun(_STATUS_ITEM_SEP, _S_DIM)
+
+
+def _join_status_items(items, model_first: bool = False,
+                       start_index: int = 0) -> list[StyledRun]:
+    """把一段项列表按分隔符连接为 runs。
+
+    ``start_index`` 为片段在完整项列表中的起点——分隔符按项的**绝对位置**
+    决定（模型段后为双空格、其余为 `` · ``），但片段**首项前不插分隔符**
+    （片段可能从状态行中间或分隔线右侧开始，行首不应出现悬空分隔符）。
+
+    Args:
+        items: 项 runs 列表（片段）。
+        model_first: 第 0 项是否为模型名段。
+        start_index: 片段首项在完整列表中的下标。
+
+    Returns:
+        连接后的 runs。
+    """
+    runs: list[StyledRun] = []
+    for offset, item in enumerate(items):
+        index = start_index + offset
+        if offset > 0:
+            runs.append(_item_separator(index, model_first))
+        runs.extend(item)
+    return runs
+
+
+def _layout_status_items(items, width, model_first: bool = False) -> StatusLayout:
+    """按终端宽度把状态项分流到「状态行」与「顶部分隔线右侧」。
+
+    规则（2026-10-21 用户需求）：从第一项开始按顺序尝试放入状态行（行首
+    ``_STATUS_LINE_INDENT`` 缩进 + 项间分隔）；**整项**放不下即停——该项及其
+    后所有项整体成为溢出片段，显示在顶部分隔线最右侧。因此状态行上的每一项
+    都是完整显示的（不再出现被截断的半个项）。
+
+    Args:
+        items: ``StatusItems.items``（段 runs 列表）。
+        width: 状态栏可用总宽（终端列宽，含行首缩进）。
+        model_first: 第 0 项是否为模型名段。
+
+    Returns:
+        ``StatusLayout``（状态行 runs + 溢出项 runs；无溢出时后者为空列表）。
+    """
+    items = list(items or ())
+    if not items:
+        return StatusLayout([], [])
+    try:
+        width = int(width)
+    except (TypeError, ValueError, OverflowError):
+        width = 0
+    if width <= 0:
+        # 无宽度上下文：状态行放不下任何内容（与旧宽度截断语义一致）
+        return StatusLayout([], _join_status_items(items, model_first))
+    from src.tui.ink.helpers import _runs_total_width
+
+    used = _STATUS_LINE_INDENT
+    split_at = len(items)
+    for index, item in enumerate(items):
+        item_width = _runs_total_width(item)
+        sep_width = 0
+        if index > 0:
+            sep_width = _runs_total_width([_item_separator(index, model_first)])
+        if used + sep_width + item_width > width:
+            split_at = index
+            break
+        used += sep_width + item_width
+    return StatusLayout(
+        _join_status_items(items[:split_at], model_first, 0),
+        _join_status_items(items[split_at:], model_first, split_at),
+    )
+
+
+def _overflow_trailing_runs(overflow_runs, width) -> list[StyledRun]:
+    """顶部分隔线右侧的溢出内容（行首留一格与 ``━`` 分隔；超宽时截断）。
+
+    分隔线左侧至少保留 ``_STATUS_OVERFLOW_MIN_FILL`` 列（终端过窄时以整行
+    为预算）。溢出内容本身仍超宽时按 ``…`` 截断（保持「还有更多信息」的
+    视觉提示，不静默丢弃）。
+    """
+    runs = list(overflow_runs or ())
+    if not runs:
+        return []
+    try:
+        width = int(width)
+    except (TypeError, ValueError, OverflowError):
+        width = 0
+    if width <= 0:
+        return []
+    budget = width
+    if width > _STATUS_OVERFLOW_MIN_FILL:
+        budget = width - _STATUS_OVERFLOW_MIN_FILL
+    from src.tui.ink.helpers import truncate_runs_ellipsis
+
+    return truncate_runs_ellipsis([StyledRun(" ", None)] + runs, budget)
+
+
+def _build_status_runs(model, dot_elapsed: float = 0.0,
+                       spinner_char: str = "\u00b7",
+                       reasoning_effort: str | None = None,
+                       multimodal: bool = False,
+                       thinking_enabled: bool = True) -> list[StyledRun]:
+    """构建状态文本 runs（段级连接后的扁平单行序列）。
+
+    参数语义同 ``_build_status_items``。本函数是**不考虑宽度**的完整状态行
+    （供自省 / 测试与不需要分流的调用方使用）；``StatusBar`` 渲染走
+    ``_build_status_items`` + ``_layout_status_items``（窄屏时项会上移到顶部
+    分隔线）。
+    """
+    built = _build_status_items(
+        model, dot_elapsed, spinner_char, reasoning_effort,
+        multimodal, thinking_enabled,
+    )
+    return _join_status_items(built.items, built.model_first)
 
 
 def _glow(lo: int, hi: int, period: float) -> int:
@@ -546,10 +719,15 @@ def _glow(lo: int, hi: int, period: float) -> int:
 def StatusBar(props) -> object:
     """StatusBar 组件：分割线一行在上，状态文本一行在下。
 
-    PERF-3：``use_memo`` 缓存 ``_build_status_runs(model)`` 结果——
+    PERF-3：``use_memo`` 缓存 ``_build_status_items(model)`` 结果——
     deps = 状态关键字段快照 + 时间桶（BEAUTY-1：渐显窗口内 0.1s 桶，
     结束后 1s 桶）。字段快照须显式列出（不能传整个 model/status 对象，
     否则恒变 → 缓存失效）。
+
+    窄屏溢出（2026-10-21 用户需求）：``_layout_status_items`` 按 width 把
+    状态项分流——状态行只保留能**完整**显示的项，放不下的项整体显示在顶部
+    分隔线最右侧（``Divider`` 的 ``trailing``）；状态行因此不再出现被截断的
+    半个项。
     """
     model = props["model"]
     width = props.get("width", 80)
@@ -606,8 +784,8 @@ def StatusBar(props) -> object:
     # ★ 思考模式开关（Ctrl+T）：关闭时模型名后显示 [off]；短 TTL 缓存，
     #   切换后 ≤0.5s 自动刷新（作为 use_memo deps 变化触发重建）。
     thinking_enabled = _cached_thinking_enabled()
-    status_runs = use_memo(
-        lambda: _build_status_runs(
+    status_items = use_memo(
+        lambda: _build_status_items(
             model, dot_elapsed, spinner_char, reasoning_effort, multimodal,
             thinking_enabled,
         ),
@@ -653,25 +831,43 @@ def StatusBar(props) -> object:
     # ★ 方向5：分隔线样式统一经 _theme.sep_style。
     # ★ 全面控件化（方案B）：分隔线经标准控件 ``Divider`` 渲染。
     sep_style = _theme_sep_style(st_active)
-    # 状态行（下面）
-    # ★ 性能（PERF-10）：状态行 Line **缓存**（use_memo 键 status_runs 引用）
-    status_line = use_memo(
-        lambda: _build_status_line(status_runs),
-        (status_runs,),
+    # ★ 2026-10-21（用户需求：终端过窄时显示不完整的项去最顶分隔线最右侧）：
+    #   按 width 把状态项分流——状态行只保留**完整**放得下的项，其余项整体
+    #   上移到顶部分隔线右侧（deps = items 引用 + width；width 变化即重排）。
+    layout = use_memo(
+        lambda: _layout_status_items(
+            status_items.items, width, status_items.model_first,
+        ),
+        (status_items, width),
     )
-    # ★ 方向4（状态行溢出截断）：超长状态 runs 截断至 width
-    if status_line.width > width:
+    # 状态行（下面）
+    # ★ 性能（PERF-10）：状态行 Line **缓存**（use_memo 键 layout 引用）
+    status_line = use_memo(
+        lambda: _build_status_line(layout.line_runs),
+        (layout,),
+    )
+    # ★ 方向4（状态行溢出截断）：防御性兜底——分流后正常不超宽；仅当宽度
+    #   上下文异常（如 CJK 簇测宽差异）时截断，保持行宽不变量。
+    if width > 0 and status_line.width > width:
         from src.tui.ink.helpers import truncate_line
         status_line = truncate_line(status_line, width)
-    # ★ 方向4（空状态压缩）：无模型名且无统计（status_runs 空）时只渲染分隔线
-    #   一行。
+    # 顶部分隔线右侧的溢出内容（行首留一格；仍超宽时 ``…`` 截断）。
+    trailing_runs = use_memo(
+        lambda: _overflow_trailing_runs(layout.overflow_runs, width),
+        (layout, width),
+    )
     from src.tui.ink.widgets.display import Divider
-    if not status_runs:
-        return h(Column, None, [
-            h(Divider, {"width": width, "char": "\u2501", "style": sep_style}),
-        ])
+    divider_props = {"width": width, "char": "\u2501", "style": sep_style}
+    if trailing_runs:
+        # 右侧溢出项（Divider 按「左侧填充 + 右侧内容」布局，行宽恒 = width）
+        divider_props["trailing"] = trailing_runs
+    divider = h(Divider, divider_props)
+    # ★ 方向4（空状态压缩 / 极窄屏全溢出）：状态行无完整项可显示时只渲染
+    #   分隔线一行（溢出内容仍在分隔线右侧）。
+    if not layout.line_runs:
+        return h(Column, None, [divider])
     return h(Column, None, [
-        h(Divider, {"width": width, "char": "\u2501", "style": sep_style}),
+        divider,
         h(TEXT, {"styled": status_line.runs, "height": 1}),
     ])
 
