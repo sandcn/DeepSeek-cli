@@ -119,47 +119,66 @@ def _ranked(items: list[str], prefix: str) -> list[str]:
     return exact + [t[0] for t in prefix_matches] + [t[0] for t in substring_matches]
 
 
+def _session_mtime_ns(session: dict) -> int:
+    """会话文件的修改时间（纳秒；``/load`` 补全排序键）。
+
+    优先取 ``chat_msgs`` 会话摘要的 ``mtime_ns``（``stat.st_mtime_ns``）；
+    外部/测试数据源只提供 ``mtime``（秒）时换算；均缺失回退 0——排序键
+    退化为「全部相同」，由 sid 兜底保证顺序确定、可复现。
+    """
+    value = session.get("mtime_ns")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    seconds = session.get("mtime")
+    if isinstance(seconds, bool):
+        return 0
+    if isinstance(seconds, (int, float)):
+        return int(seconds * 1_000_000_000)
+    return 0
+
+
 def _ranked_sessions(
-    matched: list[tuple[str, str]], prefix: str,
+    sessions: list[dict], prefix: str,
 ) -> list[tuple[str, str]]:
-    """/load 会话候选语义排序（P1-1 回归修复）。
+    """/load 会话候选过滤 + 排序（按会话文件修改时间降序，最新在前）。
 
-    /load 支持 sid 与 title 双重匹配（``sid.startswith(prefix) or
-    title.startswith(prefix)``），但候选须按 **多键加权** 排序而非二次过滤
-    （修复前 ``_ranked([sid for sid, _t in matched], prefix)`` 仅保留 sid
-    匹配项，title 匹配但 sid 不匹配的会话被丢弃返回空）。
+    用户需求（2026-10）：``/load`` 补全的候选项按**会话文件修改时间**排序，
+    最近修改的会话排在最前。``prefix`` 只做过滤（sid/title 前缀或子串命中，
+    与 ``_complete_param`` 的匹配口径一致），**不改变顺序**。
 
-    排序权重（低值优先）：
-      0  sid 精确 > 1 sid 前缀 > 2 title 前缀 > 3 sid 子串 > 4 title 子串
-    同级按 sid 长度升序 + 字母序（稳定排序保持输入序为最终次级）。
-    空前缀（``/load`` 无参数）→ 保持注册表顺序（全部候选）。
+    ★ 修复（2026-10）：修复前按「sid 精确 > sid 前缀 > title 前缀 >
+    sid 子串 > title 子串」语义分组排序——输入前缀（甚至无前缀时依赖
+    ``iter_sessions`` 的读取 / ``saved_at`` 顺序）后候选项不按文件修改
+    时间排列，最近使用的会话可能被挤到列表末尾。
+
+    同一修改时间按 sid 升序（结果稳定）；缺少 mtime 的条目（外部注入的
+    数据源）排序键为 0、排在最后，同级同样按 sid 升序。
 
     Args:
-        matched: 已按 sid/title 前缀过滤的 ``(sid, title)`` 对列表。
-        prefix: 参数最后词（``/load`` 后的匹配前缀）。
+        sessions: 会话摘要列表（``chat_msgs.iter_sessions`` 产出，含
+            ``mtime_ns``）。
+        prefix: 参数最后词（``/load`` 后的匹配前缀；空串=全部候选）。
 
     Returns:
         排序后的 ``(sid, title)`` 对列表。
     """
-    if not prefix:
-        return matched
-    categories: list[tuple[int, str, str]] = []
-    for sid, title in matched:
-        if sid == prefix:
-            cat = 0
-        elif sid.startswith(prefix):
-            cat = 1
-        elif title.startswith(prefix):
-            cat = 2
-        elif prefix in sid:
-            cat = 3
-        elif prefix in title:
-            cat = 4
-        else:
-            continue  # 已过滤，防御性跳过
-        categories.append((cat, sid, title))
-    categories.sort(key=lambda t: (t[0], len(t[1]), t[1].lower()))
-    return [(sid, title) for _cat, sid, title in categories]
+    entries: list[tuple[int, str, str]] = []
+    for session in sessions:
+        if not isinstance(session, dict):
+            continue
+        sid = str(session.get("id", "") or "")
+        title = str(session.get("title", "") or "")
+        if prefix and not (
+            sid.startswith(prefix) or title.startswith(prefix)
+            or prefix in sid or prefix in title
+        ):
+            continue
+        entries.append((_session_mtime_ns(session), sid, title))
+    # 修改时间降序（最新在前）；同级按 sid 升序保证稳定可复现。
+    entries.sort(key=lambda t: (-t[0], t[1]))
+    return [(sid, title) for _mtime, sid, title in entries]
 
 
 # ── 补全引擎 ────────────────────────────────────────────
@@ -579,21 +598,10 @@ class CompletionEngine:
             #   （补全菜单弹出）时触发后台流式加载，界面先显示「加载中…」占位，
             #   数据就绪后经 _CmplHandler 监听器动态刷新候选。
             sessions = self._cached("sessions", [])
-            matched_pairs: list[tuple[str, str]] = []
-            for s in sessions:
-                sid: str = s.get("id", "")
-                title: str = s.get("title", "")
-                # 前缀 + 子串双匹配：与 _ranked_sessions 的 cat 0-4 对齐——
-                # 仅前缀过滤会丢弃 title/sid 子串命中（cat 3/4 成为死代码）。
-                if (
-                    sid.startswith(param_last) or title.startswith(param_last)
-                    or param_last in sid or param_last in title
-                ):
-                    matched_pairs.append((sid, title))
-            # P1-1 回归修复：多键加权排序（sid 精确 > sid 前缀 > title 前缀 >
-            # sid 子串 > title 子串）替代二次 sid 过滤——title 匹配但 sid 不匹配
-            # 的会话不再被丢弃。
-            ranked_sessions = _ranked_sessions(matched_pairs, param_last)
+            # ★ 2026-10（用户需求）：候选按**会话文件修改时间**降序（最新
+            #   在前）；prefix 只做过滤（sid/title 前缀或子串），不改变顺序
+            #   ——替代旧的多键语义分组排序（见 ``_ranked_sessions``）。
+            ranked_sessions = _ranked_sessions(sessions, param_last)
             result: list[CompletionItem] = []
             for sid, title in ranked_sessions:
                 # 方向F·步骤15（渲染错误修复）：title 可能含换行符（多行用户

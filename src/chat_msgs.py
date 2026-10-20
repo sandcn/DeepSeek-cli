@@ -654,14 +654,26 @@ def _load_session_summary(filepath: Path) -> dict | None:
 
 
 # ── 列出所有保存的会话 ────────────────────────────────────
-def _session_summary_entry(data: dict, filepath: Path) -> dict[str, Any]:
-    """会话数据 → 摘要条目（id/title/model/saved_at/message_count）。
+def _session_summary_entry(
+    data: dict, filepath: Path, mtime_ns: int | None = None,
+) -> dict[str, Any]:
+    """会话数据 → 摘要条目（id/title/model/saved_at/message_count/mtime_ns）。
+
+    ``mtime_ns`` 为会话文件 ``st_mtime_ns``（文件修改时间）：``/load`` 补全
+    候选按它降序排列（用户需求：补全对应的文件按修改时间排序）。调用方
+    已有 ``stat`` 结果时直接传入，避免重复 stat；未传时本函数自行读取，
+    读取失败回退 0（排序退化为稳定顺序，不影响列表可用性）。
 
     ★ 修复（2026-10）：标题清洗孤立 UTF-16 代理项——旧会话文件里的代理对
     转义经头部扫描后可能残留孤立代理项（如 ``"坏\\ud83d"``），该码点无法以
     UTF-8 编码：直接渲染到终端 / 写入 ``.session_index.json`` 都会抛
     ``UnicodeEncodeError``，使会话列表读取失败。
     """
+    if mtime_ns is None:
+        try:
+            mtime_ns = filepath.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = 0
     title = sanitize_surrogates(normalize_title(data.get("title") or ""))
     # 兼容旧会话：没有 title 字段则从首条 user 消息提取
     if not title:
@@ -684,6 +696,7 @@ def _session_summary_entry(data: dict, filepath: Path) -> dict[str, Any]:
         "model": data.get("model", "?"),
         "saved_at": data.get("saved_at", "?"),
         "message_count": count,
+        "mtime_ns": int(mtime_ns),
     }
 
 
@@ -694,6 +707,10 @@ def iter_sessions():
     未命中时逐文件解析，**每解析出一条即 yield**（调用方可即时显示一条），
     全部结束后写回缓存（``saved_at`` 降序）。调用方提前中断（不耗尽生成器）
     时不写缓存——下次重新读取。
+
+    每条摘要含 ``mtime_ns``（会话文件修改时间，``/load`` 补全排序键）；
+    旧版磁盘索引条目缺少该字段时用扫描到的 ``stat.st_mtime_ns`` 补齐
+    （索引按 ``(size, mtime_ns)`` 校验命中，二者一致），写回索引后持久化。
 
     性能（2026-10）：
       - 头部标量字段快速读取（``_parse_session_head``）——新格式文件无需
@@ -749,7 +766,11 @@ def iter_sessions():
             data = _load_session_summary(f)
             if data is None:
                 continue
-            entry = _session_summary_entry(data, f)
+            entry = _session_summary_entry(data, f, stat.st_mtime_ns)
+        elif "mtime_ns" not in entry:
+            # 升级前的索引条目没有 mtime_ns——用本轮扫描的 stat 补齐
+            # （sig 就是 (size, mtime_ns)，索引命中即与文件现状一致）。
+            entry = {**entry, "mtime_ns": int(stat.st_mtime_ns)}
         fresh_index[f.name] = {"sig": sig, "entry": entry}
         sessions.append(entry)
         yield entry
@@ -765,7 +786,8 @@ def iter_sessions():
 def list_sessions() -> list[dict[str, Any]]:
     """列出 .chat/msg_list/ 下所有保存的会话摘要
 
-    返回按保存时间降序排列的列表，每项含 id/title/model/saved_at/message_count。
+    返回按保存时间降序排列的列表，每项含
+    id/title/model/saved_at/message_count/mtime_ns。
     流式逐条读取见 ``iter_sessions``（同源同缓存；流式产出顺序为读取顺序，
     本函数在收集后统一按 ``saved_at`` 降序排列）。
      """

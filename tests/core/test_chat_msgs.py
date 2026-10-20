@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -288,6 +289,34 @@ def test_list_sessions_cache(msgs_dir):
     cm._session_cache_mtime = 0.0
     sessions3 = list_sessions()
     assert len(sessions3) == 2
+
+
+def test_list_sessions_reports_file_mtime_ns(msgs_dir):
+    """摘要携带会话文件 ``st_mtime_ns``（``/load`` 补全按它排序）。"""
+    _write_session(msgs_dir, "a")
+    _write_session(msgs_dir, "b")
+    old_ns = 1_700_000_000_000_000_000
+    new_ns = 1_700_000_100_000_000_000
+    os.utime(msgs_dir / "a.json", ns=(old_ns, old_ns))
+    os.utime(msgs_dir / "b.json", ns=(new_ns, new_ns))
+    by_id = {s["id"]: s for s in list_sessions()}
+    assert by_id["a"]["mtime_ns"] == old_ns
+    assert by_id["b"]["mtime_ns"] == new_ns
+
+
+def test_list_sessions_backfills_mtime_for_legacy_index(msgs_dir):
+    """升级前的索引条目无 ``mtime_ns`` → 用 stat 补齐（不必重新解析文件）。"""
+    _write_session(msgs_dir, "a")
+    expected = (msgs_dir / "a.json").stat().st_mtime_ns
+    list_sessions()
+    index = json.loads(cm._index_path().read_text(encoding="utf-8"))
+    for item in index["files"].values():
+        item["entry"].pop("mtime_ns", None)
+    cm._index_path().write_text(json.dumps(index), encoding="utf-8")
+    cm._invalidate_session_cache()
+    cm._session_cache_mtime = 0.0
+    sessions = list_sessions()
+    assert sessions[0]["mtime_ns"] == expected
 
 
 # ── delete_session / rename_session ──────────────────────
