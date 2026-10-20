@@ -18,10 +18,9 @@
 模式下错误按主机文本格式写 stderr，不会出现 ``#< CLIXML`` 序列化块）。
 
 同一问题的第二处加固：``_read_loop`` 读取输出流时，非 EIO 的读错误
-（Windows 上的 ``ERROR_BROKEN_PIPE`` / 连接重置等）此前会向上抛给
-``_run_pipe`` 的 ``asyncio.gather(return_exceptions=True)``，那里只记一条
-warning 就返回**部分**输出——模型无法区分「命令只输出这么多」与「读流出错
-丢了尾部」。现统一按「流结束」处理：已读到的输出完整返回。
+（Windows 上的 ``ERROR_BROKEN_PIPE`` / 连接重置等）此前会向上抛给读取循环的
+调用方，那里只记一条 warning 就返回**部分**输出——模型无法区分「命令只输出
+这么多」与「读流出错丢了尾部」。现统一按「流结束」处理：已读到的输出完整返回。
 """
 
 from __future__ import annotations
@@ -58,11 +57,12 @@ async def test_merged_stderr_does_not_abort_command(monkeypatch):
         'cmd /c "(echo o1& echo e1 1>&2& echo o2)" 2>&1; Write-Output "AFTER"',
     )
     assert result["returncode"] == 0
-    # 修复前：NativeCommandError 中断脚本 → stdout 只有 o1/o2、AFTER 丢失
-    assert result["stdout"].splitlines() == ["o1", "o2", "AFTER"]
-    # stderr 内容仍然保留（纯文本，不是 CLIXML 序列化块）
-    assert "e1" in result["stderr"]
-    assert "CLIXML" not in result["stderr"]
+    # PTY 合并输出：o1 / o2 / AFTER 都必须出现（修复前 NativeCommandError
+    # 中断脚本 → AFTER 丢失）；e1 也完整保留（纯文本，不是 CLIXML 块）
+    text = result["stdout"] + result["stderr"]
+    for token in ("o1", "o2", "AFTER", "e1"):
+        assert token in text
+    assert "CLIXML" not in text
 
 
 @_requires_powershell
@@ -74,7 +74,7 @@ async def test_stderr_file_redirect_does_not_abort_command(monkeypatch, tmp_path
         f'cmd /c "echo e1 1>&2" 2> "{target}"; Write-Output "AFTER"',
     )
     assert result["returncode"] == 0
-    assert result["stdout"].splitlines() == ["AFTER"]
+    assert "AFTER" in result["stdout"]
 
 
 @_requires_powershell
@@ -85,8 +85,9 @@ async def test_native_exit_code_survives_merged_stderr(monkeypatch):
         'cmd /c "echo e1 1>&2& exit 5" 2>&1',
     )
     assert result["returncode"] == 5
-    assert "e1" in result["stderr"]
-    assert "CLIXML" not in result["stderr"]
+    text = result["stdout"] + result["stderr"]
+    assert "e1" in text
+    assert "CLIXML" not in text
 
 
 # ── 2. cmdlet 报错：不中断后续语句（bash ``;`` 语义） ─────
@@ -98,10 +99,11 @@ async def test_cmdlet_error_does_not_abort_following_statements(monkeypatch):
         monkeypatch,
         'Get-Item "definitely-not-exist-dsh"; Write-Output "AFTER"',
     )
-    assert result["stdout"].splitlines() == ["AFTER"]
+    text = result["stdout"] + result["stderr"]
+    assert "AFTER" in text
     assert result["returncode"] == 0  # bash 语义：取最后一条语句的状态
-    assert "Cannot find path" in result["stderr"] or "找不到路径" in result["stderr"]
-    assert "CLIXML" not in result["stderr"]
+    assert "Cannot find path" in text or "找不到路径" in text
+    assert "CLIXML" not in text
 
 
 @_requires_powershell
@@ -110,9 +112,9 @@ async def test_cmdlet_error_alone_is_nonzero(monkeypatch):
     result = await _execute_powershell(
         monkeypatch, 'Get-Item "definitely-not-exist-dsh"')
     assert result["returncode"] == 1
-    assert result["stdout"] == ""
-    assert "Cannot find path" in result["stderr"] or "找不到路径" in result["stderr"]
-    assert "CLIXML" not in result["stderr"]
+    text = result["stdout"] + result["stderr"]
+    assert "Cannot find path" in text or "找不到路径" in text
+    assert "CLIXML" not in text
 
 
 # ── 3. 端到端（bash 工具整条链路） ───────────────────────
@@ -125,8 +127,12 @@ async def test_execute_keeps_full_output_with_stderr_redirect(monkeypatch):
         'cmd /c "(echo a& echo b 1>&2& echo c)" 2>&1; Write-Output "AFTER"',
     )
     assert result["returncode"] == 0
-    assert result["stdout"].splitlines() == ["a", "c", "AFTER"]
-    assert "b" in result["stderr"]
+    text = result["stdout"] + result["stderr"]
+    lines = [line.strip() for line in text.splitlines()]
+    assert "a" in lines
+    assert "c" in lines
+    assert "AFTER" in lines
+    assert "b" in text
 
 
 @_requires_powershell
@@ -143,7 +149,7 @@ async def test_pipeline_with_merged_stderr_keeps_all_objects(monkeypatch):
     lines = [line.strip() for line in result["stdout"].splitlines()]
     assert "got: p1" in lines
     assert "got: p2" in lines
-    assert "CLIXML" not in result["stderr"]
+    assert "CLIXML" not in (result["stdout"] + result["stderr"])
 
 
 # ── 3b. 输出编码：合并进来的原生命令中文不得乱码 ──────────

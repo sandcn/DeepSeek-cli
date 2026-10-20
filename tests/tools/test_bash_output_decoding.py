@@ -209,11 +209,11 @@ async def test_read_loop_strips_ansi_and_resolves_carriage_return():
     assert lines == ["20%\n"]
 
 
-async def test_interactive_background_path_works_without_pty():
-    """后台执行路径（``_run_interactive_async``）在无 PTY 平台回退 PIPE 正常。
+async def test_interactive_background_path_uses_pty():
+    """后台执行路径（``_run_interactive_async``）与前台一样统一走 PTY。
 
-    Windows 上 ``pty.py`` 存在但 ``fcntl`` 缺失——修复前会误走 PTY 分支抛
-    ``ModuleNotFoundError``；修复后按 PIPE 执行并返回三元 JSON。
+    修复前 Windows 上 ``pty.py`` 存在但 ``fcntl`` 缺失会误走 PTY 分支；
+    现在原生 Windows 走 ConPTY、POSIX 走 openpty，后台任务同样获得真终端。
     """
     result = json.loads(await BashFunc(command="echo hello")._run_interactive_async())
     assert result["returncode"] == 0
@@ -259,10 +259,10 @@ async def test_windows_bash_chinese_output_has_no_replacement_char():
 
 @pytest.mark.skipif(os.name != "nt", reason="仅原生 Windows 存在 pty.py 误导判定")
 def test_pty_not_available_on_native_windows():
-    """Windows 版 CPython 自带 ``pty.py``，但 PTY 不可用（``fcntl`` 缺失）。
+    """Windows 版 CPython 自带 ``pty.py``，但 POSIX PTY 不可用（``fcntl`` 缺失）。
 
-    修复前 ``_HAS_PTY`` 仅按模块存在性判定 → 后台任务误走 PTY 分支并抛
-    ``ModuleNotFoundError: fcntl``（bash_opt wait 得到 returncode=-1）。
+    原生 Windows 的 PTY 由 ConPTY 承担（``_pty_supported``），
+    ``_is_pty_available`` 只反映 POSIX 分支的设备可用性。
     """
     assert BashFunc._is_pty_available() is False
 

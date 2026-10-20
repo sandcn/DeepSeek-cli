@@ -1061,7 +1061,7 @@ class BaseAgent:
         _wait_background_tasks 中断检查，均在事件循环线程中执行，
         task.cancel() 线程安全）：
           1. bash 表（_background_tasks）：取消运行中的 asyncio task
-             （_run_pty/_run_pipe 的 CancelledError 分支会杀进程树），
+             （_run_pty 的 CancelledError 分支会杀进程树），
              对已记录 pid 且进程仍存活的记录兜底杀进程树（pid 复用
              安全红线：仅当进程仍可能存活时执行）；
           2. subagent 表（_subagent_tasks）：取消运行中的 asyncio task

@@ -17,15 +17,12 @@ bash_opt — 按 task_id 操作后台 bash 任务
             PYTHONIOENCODING / PYTHONUTF8，Python / Node / PowerShell 均按 UTF-8
             读 stdin）。需要按系统 ANSI 代码页（中文 Windows = gbk）写入原生
             控制台程序时显式传 encoding='gbk'）
-- op=close_stdin  关闭后台命令的 stdin（发送 EOF）：pipe 模式关闭 stdin
-            写端——依赖输入结束才输出 / 退出的命令（sort / findstr / cat /
-            more / cmd 的 set /p 等）可以正常跑完并给出结果，不必 kill
-            丢掉输出。PTY（pty=true）**没有真正的 EOF**：只是写入 EOT
-            （ConPTY 为 \\x1a / POSIX 为 \\x04）模拟按键，程序不一定会退出
-            （实测 python REPL 收到 EOT 后继续运行）——依赖 EOF 的命令请用
-            非 PTY 任务，需要结束 PTY 任务请用 op=kill。**PTY 的 stdin 通道
-            不会因此关闭**（EOT 只是一次按键），之后仍可继续 op=stdin /
-            op=keys；pipe 模式关闭后写入会明确提示「stdin 已关闭」
+- op=close_stdin  关闭后台命令的 stdin（发送 EOF）：bash 任务统一在 PTY 中
+            运行，**没有真正的 EOF**——只是写入 EOT（ConPTY 为 \\x1a /
+            POSIX 为 \\x04）模拟按键，程序不一定会退出（实测 python REPL
+            收到 EOT 后继续运行）。依赖 stdin EOF 的命令请用 op=kill 结束
+            任务。**PTY 的 stdin 通道不会因此关闭**（EOT 只是一次按键），
+            之后仍可继续 op=stdin / op=keys
 - op=keys   向后台命令发送光标/键盘消息（自动路由：目标进程有 GUI 窗口时
             作为窗口级键盘消息注入该窗口，否则回退写入终端——跨平台
             ANSI/VT100 转义序列；支持 ctrl+c 等修饰键组合、esc/pageup 等
@@ -1472,10 +1469,10 @@ class BashOptFunc(Func):
         控制台程序显式传 ``encoding='gbk'``。
         ``newline`` 未指定或为 true 时按同一编码追加换行。
 
-        ★ PTY 任务（``bash background=true pty=true``）的「回车」是 **CR**
+        ★ PTY 任务的「回车」是 **CR**
         （``\\r``）而不是 ``\\n``：终端里 ``\\n`` 只是下移一行、不会提交输入
-        行（实测 ConPTY / POSIX PTY 均如此，交互式程序会一直等下去）。因此
-        PTY 模式下换行自动用 ``\\r``，与真实键盘回车一致。
+        行（实测 ConPTY / POSIX PTY 均如此，交互式程序会一直等下去）。bash
+        任务统一在 PTY 中运行，因此换行自动用 ``\\r``，与真实键盘回车一致。
         """
         if self.text is None:
             return "(stdin 操作需要 text 参数指定要发送的文本)"
@@ -1521,8 +1518,8 @@ class BashOptFunc(Func):
         - ``mode='pty'``：PTY **没有真正的 EOF 语义**，只能写入 EOT
           （``0x04``，Windows ConPTY 为 ``0x1a``）模拟 Ctrl+D / Ctrl+Z 按键。
           程序不一定会因此退出（实测 ``python -i -q`` 收到 EOT 后仍在运行），
-          返回文本会如实说明；依赖 EOF 的命令请改用非 PTY 任务，需要结束
-          PTY 任务请用 ``op=kill``（PTY master 关闭会同时断开输出读取，
+          返回文本会如实说明；依赖 EOF 的命令请用 ``op=kill`` 结束任务
+          （PTY master 关闭会同时断开输出读取，
           因此这里不能直接关闭 PTY）。**PTY 的 stdin 通道不会因此关闭**：
           EOT 只是一次按键，之后仍可继续 ``op=stdin`` / ``op=keys``。
         """
@@ -1572,8 +1569,8 @@ class BashOptFunc(Func):
                     f"（ConPTY 为 Ctrl+Z、POSIX 为 Ctrl+D）；注意 PTY 没有真正的"
                     f" EOF：这只是模拟按键，程序不一定会退出（实测 python REPL "
                     f"收到 EOT 后仍在运行）。依赖 stdin EOF 才输出 / 退出的命令"
-                    f"请改用非 PTY 任务（pty=false）再 close_stdin；需要结束该"
-                    f"任务请用 op=kill。stdin 通道仍可用——需要继续交互可直接"
+                    f"请用 op=kill 结束该"
+                    f"任务。stdin 通道仍可用——需要继续交互可直接"
                     f" op=stdin / op=keys 继续写入)")
 
         if mode != "pipe":

@@ -1,7 +1,7 @@
 """bash 工具三元 JSON 返回结构测试（2026-08-18）。
 
 返回给大模型的结构改为：{"stdout": ..., "stderr": ..., "returncode": N}
-  - stdout / stderr 分离收集（前台统一 PIPE 分离模式）
+  - 命令统一在 PTY 中执行，stdout / stderr 物理合并（输出归 stdout）
   - returncode 是命令的退出码（bash $? 语义：被信号杀死为 128+sig）
   - 工具级错误（拒绝/取消/异常）→ stdout 空、stderr 放说明、returncode -1
 
@@ -40,11 +40,11 @@ def _loads(result: str) -> dict:
 # ── 1. 前台执行：三元 JSON 结构 ────────────────────────
 
 @_posix_shell_only
-async def test_stdout_stderr_separated():
-    """stdout 与 stderr 分离收集，不再合并。"""
+async def test_stdout_stderr_merged_in_pty():
+    """PTY 只有一条输出流：stdout 与 stderr 合并到 stdout，stderr 为空。"""
     r = _loads(await BashFunc(command="echo out; echo err 1>&2").execute())
-    assert r["stdout"] == "out"
-    assert r["stderr"] == "err"
+    assert r["stdout"] == "out\nerr"
+    assert r["stderr"] == ""
     assert r["returncode"] == 0
 
 
@@ -80,19 +80,19 @@ async def test_no_output_empty_strings_not_placeholder():
 
 
 @_posix_shell_only
-async def test_multiline_output_split_by_stream():
-    """多行输出按流分别保留完整内容。"""
+async def test_multiline_output_merged_in_pty():
+    """多行输出按写入顺序保留在同一输出流中。"""
     r = _loads(await BashFunc(
         command="printf 'a\\nb\\n'; printf 'e1\\ne2\\n' 1>&2").execute())
-    assert r["stdout"] == "a\nb"
-    assert r["stderr"] == "e1\ne2"
+    assert r["stdout"] == "a\nb\ne1\ne2"
+    assert r["stderr"] == ""
 
 
 @_posix_shell_only
 async def test_display_path_returns_same_json():
-    """display 路径（实时输出到终端）返回同结构三元 JSON。"""
+    """display 路径（实时输出到终端）返回同结构三元 JSON（PTY 合并输出）。"""
     r = _loads(await BashFunc(command="printf 'a'; printf 'b' 1>&2").display())
-    assert r == {"stdout": "a", "stderr": "b", "returncode": 0}
+    assert r == {"stdout": "ab", "stderr": "", "returncode": 0}
 
 
 # ── 2. 工具级错误路径：三元 JSON（stderr 说明 + -1） ────
@@ -106,13 +106,11 @@ async def test_dangerous_command_rejected_as_json():
 
 
 def test_schema_has_no_cwd_param():
-    """bash 工具不暴露 cwd 参数：命令始终在进程当前工作目录执行。
-
-    ``pty`` 是 2026-10-20 新增的可选参数（伪终端执行），不属于 cwd 类参数。
-    """
+    """bash 工具不暴露 cwd / pty 参数：命令在当前工作目录的 PTY 中执行。"""
     props = BashFunc.to_tool_schema()["function"]["parameters"]["properties"]
     assert "cwd" not in props
-    assert set(props) == {"command", "background", "pty"}
+    assert "pty" not in props
+    assert set(props) == {"command", "background"}
 
 
 def test_cwd_argument_ignored_by_from_args():
@@ -125,21 +123,18 @@ def test_cwd_argument_ignored_by_from_args():
 # ── 3. 截断：stdout / stderr 各自独立截断 ──────────────
 
 @_posix_shell_only
-async def test_truncate_applies_per_stream():
-    """stdout 与 stderr 各自独立截断（超 MAX_LINES 保留尾部）。"""
+async def test_truncate_applies_to_merged_output():
+    """stdout（含合并进来的 stderr）超 MAX_LINES 时保留尾部。"""
     n = BashFunc.MAX_LINES + 50
     r = _loads(await BashFunc(
         command=f"seq 1 {n}; seq 1 {n} 1>&2; echo TAIL").execute())
     assert "输出已截断" in r["stdout"]
-    assert "输出已截断" in r["stderr"]
+    assert r["stderr"] == ""
     # 截断标记为末行，其后无内容
-    assert r["stdout"].rstrip("\n").endswith(
-        f"…(输出已截断：超过 {BashFunc.MAX_LINES} 行，"
-        f"仅展示最后 {BashFunc.MAX_LINES} 行)") or "(输出已截断" in r["stdout"].splitlines()[-1]
+    assert "(输出已截断" in r["stdout"].splitlines()[-1]
     # 尾部保留最新内容：stdout 截断后末段包含 TAIL（echo 在 seq 之后）与最大序号
     assert "TAIL" in r["stdout"]
     assert str(n) in r["stdout"]
-    assert str(n) in r["stderr"]
     assert r["returncode"] == 0
 
 

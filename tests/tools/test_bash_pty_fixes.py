@@ -212,7 +212,7 @@ async def _run_interactive(command: str, writes: list[tuple[bytes, float]]):
 async def test_pty_child_has_no_extra_slave_fd():
     """子进程（及后代）不得继承额外的 PTY slave fd（pass_fds 已移除）。"""
     result = json.loads(
-        await BashFunc("ls -l /proc/self/fd", pty=True).execute())
+        await BashFunc("ls -l /proc/self/fd").execute())
     assert result["returncode"] == 0, result
     tty_targets = re.findall(r"-> /dev/(?:pty\d+|pts/\d+)", result["stdout"])
     # 0 / 1 / 2 三个标准 fd 指向 slave；多出来的都是 pass_fds 泄漏

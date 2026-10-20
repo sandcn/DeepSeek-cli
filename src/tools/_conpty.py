@@ -1,12 +1,11 @@
-"""Windows ConPTY（伪终端）封装 —— bash 工具 ``pty=true`` 执行路径。
+"""Windows ConPTY（伪终端）封装 —— bash 工具在 Windows 上的 PTY 执行路径。
 
-为什么需要：Windows 上 bash 工具默认走 PIPE（stdout/stderr 各自独立收集），
-子进程的 stdout 不是终端——C 运行时按全缓冲输出（日志/进度条不实时）、
-交互式程序（python REPL、git 交互、``less`` / ``vim`` 等 TUI）检测不到 TTY、
-``Ctrl+C`` 只是写进管道的普通字节、不会变成信号。``pty=true`` 改用
-Windows 10 1809+ 的 ConPTY（``CreatePseudoConsole``），让子进程获得一个
-真正的伪终端：行缓冲、彩色输出、进度条、stdin 按终端语义解析
-（交互式程序可读、TUI 可用）。
+为什么需要：bash 工具统一在伪终端（PTY）中执行。Windows 上通过 Windows 10
+1809+ 的 ConPTY（``CreatePseudoConsole``）让子进程获得一个真正的伪终端：
+行缓冲、彩色输出、进度条、stdin 按终端语义解析（交互式程序可读、TUI 可用）。
+如果只用普通管道，C 运行时按全缓冲输出（日志/进度条不实时）、交互式程序
+（python REPL、git 交互、``less`` / ``vim`` 等 TUI）检测不到 TTY、
+``Ctrl+C`` 只是写进管道的普通字节、不会变成信号。
 
 已知平台限制（2026-10-20 在 Windows 11 26220 的 ConPTY 上复测，结论与旧版
 描述不同）：向输入管道写入 ``\\x03`` 时，**部分程序会收到 Ctrl+C**——实测
@@ -18,13 +17,12 @@ Windows 10 1809+ 的 ConPTY（``CreatePseudoConsole``），让子进程获得一
 
 另外，PTY **没有真正的 EOF 语义**：``bash_opt op=close_stdin`` 在 PTY 上只是
 写入 EOT（ConPTY 为 ``\\x1a`` / POSIX 为 ``\\x04``）模拟按键，程序不一定会退出
-（实测 ``python -i -q`` 收到 EOT 后仍继续运行）。依赖 stdin EOF 才输出 / 退出
-的命令请用默认 PIPE 模式（``pty=false``）启动任务再 ``close_stdin``；需要结束
-PTY 任务请用 ``op=kill``。
+（实测 ``python -i -q`` 收到 EOT 后仍继续运行）。bash 任务没有非 PTY 模式：
+依赖 stdin EOF 才输出 / 退出的命令请用 ``op=kill`` 结束任务。
 
 代价（由调用方在工具文档中说明）：PTY 只有一个输出流，stdout/stderr
 **物理合并**（``stderr`` 恒为空）——这是终端的固有语义，无法在 ConPTY 层
-分开；需要分离双流的命令应使用默认的 PIPE 模式。
+分开；bash 工具不再提供双流分离模式。
 
 另外两点行为约定（调用方需知）：
 
@@ -34,7 +32,7 @@ PTY 任务请用 ``op=kill``。
     ``bash._read_loop`` 的 ``echo_filter``），但无法保证完全去除。
   - **TUI 输出不可用于模型**：``vim`` / ``top`` 这类全屏程序会持续输出光标
     定位 / 清屏序列，``bash`` 工具剥离 ANSI 后只剩互相覆盖的文本，对判断
-    命令结果没有价值；需要可读输出时请用默认 PIPE 模式。
+    命令结果没有价值——需要可读输出时不要用这类全屏程序。
 
 实现要点：
 
@@ -55,7 +53,8 @@ PTY 任务请用 ``op=kill``。
     不能在事件循环线程直接 ``os.write`` 大量数据。
 
 平台边界：只服务**原生 Windows**。非 Windows 或系统没有 ConPTY API
-（Windows 10 1809 之前）时 :func:`is_available` 返回 False，调用方回退 PIPE。
+（Windows 10 1809 之前）时 :func:`is_available` 返回 False，``bash`` 工具
+返回明确的「平台不支持 PTY」工具级错误（不再有 PIPE 回退分支）。
 """
 
 from __future__ import annotations

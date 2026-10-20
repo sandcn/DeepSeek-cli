@@ -189,7 +189,7 @@ async def test_close_stdin_pty_reports_no_real_eof(monkeypatch):
 
     assert "没有真正的 EOF" in result
     assert "op=kill" in result
-    assert "非 PTY" in result
+    assert "依赖 stdin EOF" in result
 
 
 async def test_stdin_pty_uses_carriage_return(monkeypatch):

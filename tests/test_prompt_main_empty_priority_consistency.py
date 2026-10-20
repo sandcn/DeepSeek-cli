@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from tests._prompt_semantics import assert_contains, prompt_bullets, read_prompt
+from tests._prompt_semantics import assert_contains, read_prompt
 
 
 def test_priority_ladder_is_unique_and_ordered():

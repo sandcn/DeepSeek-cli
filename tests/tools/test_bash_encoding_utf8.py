@@ -82,6 +82,16 @@ def test_format_result_appends_powershell_separator_hint():
     assert "不是此版本中的有效语句分隔符" in payload["stderr"]
 
 
+def test_format_result_appends_hint_to_stdout_when_merged():
+    """PTY 合并输出：语法错误文本落在 stdout 时，提示也附加到 stdout。"""
+    error_text = "标记“&&”不是此版本中的有效语句分隔符。"
+    payload = json.loads(BashFunc._format_result(
+        {"stdout": error_text, "stderr": "", "returncode": 1}))
+    assert "环境提示" in payload["stdout"]
+    assert "PowerShell 5.1" in payload["stdout"]
+    assert payload["stderr"] == ""
+
+
 def test_format_result_keeps_normal_stderr_untouched():
     """普通错误（不含分隔符错误）不追加提示，避免误导。"""
     payload = json.loads(BashFunc._format_result(
@@ -222,8 +232,9 @@ async def test_incomplete_chain_still_reports_syntax_hint(monkeypatch):
     """残缺的链式命令（``a &&``）不改写，仍由 PowerShell 报错并附环境提示。"""
     result = await _run(monkeypatch, 'Write-Output "a" &&')
     assert result["returncode"] != 0
-    assert "环境提示" in result["stderr"]
-    assert "PowerShell 5.1" in result["stderr"]
+    text = result["stdout"] + result["stderr"]
+    assert "环境提示" in text
+    assert "PowerShell 5.1" in text
 
 
 @requires_powershell

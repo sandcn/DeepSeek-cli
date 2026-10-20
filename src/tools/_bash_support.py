@@ -58,7 +58,7 @@ def _has_dangerous_command(command: str) -> str | None:
 
 
 # ── 中断检查间隔 ─────────────────────────────────
-# _run_pty / _run_pipe 读取循环中每隔 N 秒检查一次 ESC 中断信号
+# _read_loop 读取循环中每隔 N 秒检查一次 ESC 中断信号
 # （is_interrupted）。200ms 平衡响应速度与 CPU 开销。
 _INTERRUPT_CHECK_INTERVAL = 0.2
 

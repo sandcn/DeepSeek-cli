@@ -1,10 +1,10 @@
-"""bash 工具 ``pty=true``（Windows ConPTY / POSIX PTY）测试。
+"""bash 工具统一 PTY 执行（Windows ConPTY / POSIX PTY）测试。
 
 覆盖：
   - ``_conpty`` 能力探测与真实启动（输出可读、退出码正确、获得 TTY）；
-  - ``Ctrl+C``（``\\x03``）在 ConPTY 中变成中断信号（这是 PIPE 模式做不到的）；
-  - ``bash`` 工具的 ``pty`` 选项：schema 暴露、默认仍走 PIPE、true 时走 PTY 路径；
-  - 端到端：``pty=true`` 下 ``sys.stdout.isatty()`` 为真（默认 PIPE 为假）。
+  - ``Ctrl+C``（``\\x03``）在 ConPTY 中变成中断信号；
+  - ``bash`` 工具：**不再暴露 pty 参数**，所有执行都走 PTY 路径；
+  - 端到端：前台 / 后台执行下 ``sys.stdout.isatty()`` 均为真。
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ async def test_conpty_reports_nonzero_exit_code():
 
 @pytest.mark.asyncio
 async def test_conpty_child_sees_a_tty():
-    """子进程必须看到真 TTY（``isatty()`` 为真）——PIPE 模式恒为假。"""
+    """子进程必须看到真 TTY（``isatty()`` 为真）——普通管道恒为假。"""
     process = _conpty.spawn(
         [sys.executable, "-c", "import sys; print('isatty=', sys.stdout.isatty())"])
     try:
@@ -102,73 +102,61 @@ async def test_conpty_write_fd_delivers_input():
     assert "GOT: hello-conpty" in _clean(data)
 
 
-# ── 工具层 pty 选项 ──────────────────────────────────────
+# ── 工具层：所有执行统一走 PTY ───────────────────────────
 
-def test_schema_exposes_pty_option():
+def test_schema_has_no_pty_option():
+    """pty 参数已删除：所有平台统一在 PTY 中执行。"""
     schema = BashFunc.to_tool_schema()
     properties = schema["function"]["parameters"]["properties"]
-    assert "pty" in properties
-    assert "PTY" in properties["pty"]["description"]
+    assert "pty" not in properties
+    assert set(properties) == {"command", "background"}
+    assert "伪终端" in schema["function"]["description"]
 
 
-def test_pty_defaults_to_false():
-    assert BashFunc("echo hi").pty is False
-    assert BashFunc("echo hi", pty=True).pty is True
+def test_bash_func_has_no_pty_attribute():
+    """构造参数与实例属性都不再有 pty（接口删除，不是默认 False）。"""
+    func = BashFunc("echo hi")
+    assert not hasattr(func, "pty")
+    args = BashFunc.to_tool_schema()["function"]["parameters"]["properties"]
+    assert "pty" not in args
 
 
 @pytest.mark.asyncio
-async def test_pty_option_routes_to_pty_path(monkeypatch):
+async def test_execute_routes_to_pty_path(monkeypatch):
+    """前台执行（含默认参数）必须走 _run_pty，不再有 PIPE 分支。"""
     called: dict = {}
 
     async def _fake_pty(self, **kwargs):
         called["pty"] = True
         return {"stdout": "pty-out", "stderr": "", "returncode": 0}
 
-    async def _fake_pipe(self, **kwargs):
-        called["pipe"] = True
-        return {"stdout": "pipe-out", "stderr": "", "returncode": 0}
-
     monkeypatch.setattr(BashFunc, "_run_pty", _fake_pty)
-    monkeypatch.setattr(BashFunc, "_run_pipe", _fake_pipe)
-    result = json.loads(await BashFunc("echo hi", pty=True).execute())
+    result = json.loads(await BashFunc("echo hi").execute())
     assert called == {"pty": True}
     assert result["stdout"] == "pty-out"
 
 
 @pytest.mark.asyncio
-async def test_default_execution_still_uses_pipe(monkeypatch):
-    called: dict = {}
-
-    async def _fake_pty(self, **kwargs):  # pragma: no cover - 不应被调用
-        called["pty"] = True
-        return {"stdout": "", "stderr": "", "returncode": 0}
-
-    async def _fake_pipe(self, **kwargs):
-        called["pipe"] = True
-        return {"stdout": "pipe-out", "stderr": "", "returncode": 0}
-
-    monkeypatch.setattr(BashFunc, "_run_pty", _fake_pty)
-    monkeypatch.setattr(BashFunc, "_run_pipe", _fake_pipe)
-    result = json.loads(await BashFunc("echo hi").execute())
-    assert called == {"pipe": True}
-    assert result["stdout"] == "pipe-out"
-
-
-@pytest.mark.asyncio
-@pytest.mark.skipif(os.name != "nt", reason="仅 Windows 有 ConPTY")
-async def test_end_to_end_pty_true_gives_tty(monkeypatch):
-    """端到端：``pty=true`` 时子进程拿到 TTY（默认 PIPE 模式拿不到）。"""
+@pytest.mark.skipif(
+    not _conpty.is_available(), reason="需要 Windows ConPTY（Windows 10 1809+）",
+)
+async def test_end_to_end_gives_tty(monkeypatch):
+    """端到端：前台执行时子进程拿到 TTY（pty 参数已删除，始终为真）。"""
     monkeypatch.setattr(bash_mod, "detect_shell", lambda: "powershell")
     command = f"& '{sys.executable}' -c 'import sys;print(sys.stdout.isatty())'"
-    result = json.loads(await BashFunc(command, pty=True).execute())
+    result = json.loads(await BashFunc(command).execute())
     assert result["returncode"] == 0, result
     assert result["stdout"].strip() == "True"
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(os.name != "nt", reason="仅 Windows 有 ConPTY")
-async def test_end_to_end_pipe_still_not_a_tty(monkeypatch):
+@pytest.mark.skipif(
+    not _conpty.is_available(), reason="需要 Windows ConPTY（Windows 10 1809+）",
+)
+async def test_end_to_end_background_gives_tty(monkeypatch):
+    """端到端：后台执行同样拿到 TTY（后台路径也统一走 PTY）。"""
     monkeypatch.setattr(bash_mod, "detect_shell", lambda: "powershell")
     command = f"& '{sys.executable}' -c 'import sys;print(sys.stdout.isatty())'"
-    result = json.loads(await BashFunc(command).execute())
-    assert result["stdout"].strip() == "False"
+    result = json.loads(await BashFunc(command)._run_interactive_async())
+    assert result["returncode"] == 0, result
+    assert result["stdout"].strip() == "True"

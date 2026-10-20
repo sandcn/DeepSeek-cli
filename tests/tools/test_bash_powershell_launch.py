@@ -7,7 +7,7 @@
   - ``-EncodedCommand`` 的 UTF-16LE + base64 编码（回退路径）；
   - ``_resolve_shell_launch``：PowerShell（各平台）/ cmd / 找不到可执行文件；
   - ``_get_subprocess_env`` 注入真实交互 shell 标记；
-  - ``_run_pipe`` 把解析结果（argv 列表 + shell=False）传给进程创建接缝；
+  - ``_run_pty``（POSIX）把解析结果（argv 列表 + shell=False）传给进程创建接缝；
   - Windows 上真实调用 PowerShell 执行脚本（含非零退出码）。
 """
 
@@ -253,10 +253,14 @@ def test_get_subprocess_env_without_shell_keeps_env_clean(monkeypatch):
     assert bash_mod.SHELL_ENV_MARKER not in env
 
 
-# ── _run_pipe 使用解析结果 ───────────────────────────────
+# ── _run_pty（POSIX）使用解析结果 ───────────────────────
 
 @pytest.mark.asyncio
-async def test_run_pipe_uses_resolved_launch(monkeypatch):
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="原生 Windows 走 ConPTY，不经 kernel_runtime.spawn_process",
+)
+async def test_run_pty_uses_resolved_launch(monkeypatch):
     from src.core.adapters import kernel_runtime
 
     captured: dict = {}
@@ -274,7 +278,7 @@ async def test_run_pipe_uses_resolved_launch(monkeypatch):
         lambda command: (launch, False, "powershell"),
     )
 
-    result = await BashFunc("ignored")._run_pipe()
+    result = await BashFunc("ignored")._run_pty()
     assert result["returncode"] == 0
     assert result["stdout"].strip() == "ok-from-launch"
     assert captured["command"] == launch
@@ -286,7 +290,7 @@ async def test_run_pipe_uses_resolved_launch(monkeypatch):
     os.name != "nt" or bash_mod._find_powershell_executable() is None,
     reason="需要 Windows PowerShell / pwsh",
 )
-async def test_run_pipe_removes_script_file(monkeypatch):
+async def test_execute_removes_script_file(monkeypatch):
     """``-File`` 模式的临时包装脚本在命令执行后删除（不残留临时文件）。"""
     monkeypatch.setattr(bash_mod, "detect_shell", lambda: "powershell")
     created: list = []
