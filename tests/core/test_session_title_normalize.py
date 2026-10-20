@@ -53,16 +53,17 @@ def test_normalize_title_handles_empty():
 # ── save_session ────────────────────────────────────────
 
 def test_save_session_normalizes_multiline_title(msgs_dir):
+    """多行标题归一化；中文按 CJK 字符上限（默认 12 字）截断并加省略号。"""
     sid = save_session(
         [{"role": "user", "content": "实现我的世界原版所有东西\n不能操作git"}], "m",
     )
     data = json.loads((msgs_dir / f"{sid}.json").read_text(encoding="utf-8"))
     assert "\n" not in data["title"]
-    assert data["title"] == "实现我的世界原版所有东西 不能操作git"
+    assert data["title"] == "实现我的世界原版所有东西…"
 
 
 def test_save_session_multiline_title_truncated_without_newline(msgs_dir):
-    content = "行一\n" + "x" * 60
+    content = "行一\n" + "x" * 200
     sid = save_session([{"role": "user", "content": content}], "m")
     data = json.loads((msgs_dir / f"{sid}.json").read_text(encoding="utf-8"))
     assert "\n" not in data["title"]

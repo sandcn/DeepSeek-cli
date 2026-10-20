@@ -29,7 +29,8 @@ class _FakePersistence:
         self.saved = []
         self.loaded = []
 
-    def save_session(self, messages, model, session_id=None, subagents=None, session_log=None):
+    def save_session(self, messages, model, session_id=None, subagents=None,
+                     session_log=None, title_snapshot=None):
         self.saved.append((messages, model, session_id))
         return "fake-id"
 

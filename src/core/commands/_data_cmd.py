@@ -204,6 +204,23 @@ def _load_session_by_id(ctx, session_id: str) -> bool:
     model = data.get("model", ctx.state.get("model", MODEL))
     ctx.state["model"] = model
 
+    # ★ 2026-10（会话标题一致性）：``/load`` 是「切换到另一个会话」——必须
+    #   同步会话 id（否则后续自动保存会写回旧会话文件）、标题服务状态与终端
+    #   窗口标题，否则旧会话的标题会被当成当前标题继续使用 / 写盘。
+    if ctx.session is not None:
+        try:
+            ctx.session.session_id = str(arg)
+        except Exception:
+            _logger.debug("切换会话 id 失败", exc_info=True)
+        title_service = getattr(ctx.session, "title_service", None)
+        if title_service is not None:
+            try:
+                title_service.cancel()
+                title_service.restore_from_data(data)
+                title_service.notify_current()
+            except Exception:
+                _logger.debug("恢复加载会话的标题状态失败", exc_info=True)
+
     title = data.get("title", "")
     title_info = f"「{title}」 " if title else ""
     _out.write(f"{GREEN}  + 已加载会话 {title_info}{arg} ({len(loaded_msgs)} 条消息, 模型: {model}){RESET}", level="raw", source="cmd")

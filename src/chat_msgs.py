@@ -12,19 +12,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import threading
 import time
 from datetime import datetime
-from typing import Any
 from pathlib import Path
+from typing import Any
 
-import logging
-
+from ._unicode_text import sanitize_surrogates, sanitize_surrogates_deep
+from .core.session_title.normalize import derive_fallback_title, sanitize_title
 from .core.stats import get_token_stats
 from .paths import CHAT_MSGS_DIR, ensure_chat_msgs_dir
-from ._unicode_text import sanitize_surrogates, sanitize_surrogates_deep
 
 _logger = logging.getLogger(__name__)
 
@@ -92,21 +92,30 @@ def _validate_session_id(session_id: str) -> str | None:
 
 
 # ── 标题归一化 ────────────────────────────────────────────
-#: 标题中的折行/制表等空白（含 Unicode 行分隔符）——压成单个空格。
-_TITLE_WS_RE = re.compile(r"[\r\n\t\v\f\u0085\u2028\u2029]+")
+#: 会话文件写入锁：``save_session`` / ``rename_session`` /
+#: ``update_session_title`` 都是「读整文件 → 改字段 → 原子替换」的
+#: read-modify-write，必须串行化——否则后台的标题落盘（标题生成完成）与
+#: 30 秒周期自动保存并发时，后写者会用旧快照覆盖对方的修改（丢标题或丢消息）。
+#: 用 ``RLock``：同一线程内的嵌套调用（保存路径读 existing 标题）不会自锁。
+_session_file_lock = threading.RLock()
 
 
 def normalize_title(text: str) -> str:
-    """会话标题归一化：折行/制表等空白压成单空格并去首尾空白。
+    """会话标题归一化：清洗控制序列/不可见符，空白压成单空格并去首尾空白。
 
     ★ 修复（2026-10）：标题取自首条用户消息前 40 字符（仅 ``strip()``），
     多行输入会把 ``\\n`` 原样写入会话文件——TUI 会话浏览器左栏与
     ``chat.py session list`` 按行渲染时被拆行，列表格式被破坏（实测 304 个
     会话中 86 个标题含换行）。保存 / 重命名 / 摘要读取统一走本函数。
+
+    ★ 2026-10（dsh 标题子系统）：实际清洗委托 ``core.session_title.normalize``
+    （单一真源）——在空白压缩之外再剥离 ANSI 控制序列、方向性/不可见控制符
+    与残余 C0/C1 控制符（粘贴的模型输出里常见，会让标题「看起来一样、实际
+    不相等」），最后清洗孤立 UTF-16 代理项。
     """
     if not text:
         return ""
-    return _TITLE_WS_RE.sub(" ", str(text)).strip()
+    return sanitize_title(str(text))
 
 
 # ── 会话摘要头部快速解析 ──────────────────────────────────
@@ -490,9 +499,59 @@ def _sync_terminal_title(title: str) -> None:
         _logger.debug("同步终端窗口标题失败（非关键）", exc_info=True)
 
 
+# ── 会话标题配置（dsh session-title 子系统） ──────────────
+def _session_title_config() -> dict:
+    """读取标题配置节（``session_title``；缺字段回退内置默认）。
+
+    配置真源是 ``config.defaults.DEFAULTS["session_title"]``——RC 文件里的
+    同名字段逐键覆盖（未知键忽略）。读不到配置（导入期/异常）时用默认值，
+    标题生成永不因配置不可得而失败。
+    """
+    try:
+        from .config.defaults import DEFAULTS
+
+        base = dict(DEFAULTS.get("session_title") or {})
+    except Exception:
+        base = {}
+    try:
+        from .config import get_rc
+
+        raw = get_rc().get("session_title")
+    except Exception:
+        raw = None
+    if isinstance(raw, dict):
+        for key in base:
+            if key in raw:
+                base[key] = raw[key]
+    return base
+
+
+def _title_seqs(value) -> list[int]:
+    """把标题归属的消息序号列表规范化为 ``list[int]``（坏值丢弃）。"""
+    seqs: list[int] = []
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            if isinstance(item, bool):
+                continue
+            try:
+                seqs.append(int(item))
+            except (TypeError, ValueError):
+                continue
+    return seqs
+
+
+def _title_updated_at(value) -> float:
+    """把标题更新时间规范化为 ``float``（坏值返回 0.0）。"""
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 # ── 保存对话 ──────────────────────────────────────────────
 def save_session(messages: list[dict], model: str, session_id: str | None = None,
-                 subagents: list | None = None, session_log: list | None = None) -> str:
+                 subagents: list | None = None, session_log: list | None = None,
+                 title_snapshot: dict | None = None) -> str:
     """保存对话到 .chat/msg_list/<id>.json
 
     自动过滤 system 角色消息，仅保留 user/assistant/tool 对话消息。
@@ -508,6 +567,10 @@ def save_session(messages: list[dict], model: str, session_id: str | None = None
         session_log: 会话事件日志快照（仅追加事实源）。定时自动保存 / 退出
             保存路径均传入当前日志快照；None 时不写入该字段（兼容旧调用方），
             显式传入时持久化，加载时据此重建日志，实现 fork / 回放 / 一致性校验。
+        title_snapshot: 当前标题快照（``SessionTitleService.snapshot().to_dict()``
+            的形态：``{"title","source","model","message_seqs","updated_at"}``）。
+            传入时直接采用（并连同来源落盘）；None 时按「已有文件标题优先 →
+            确定性回退」决定，保持旧调用方行为。
 
     Returns:
         保存的会话 ID
@@ -528,69 +591,104 @@ def save_session(messages: list[dict], model: str, session_id: str | None = None
     except Exception:
         _logger.exception("获取 token 统计失败，使用空统计")
         stats = {"input": 0, "output": 0, "total": 0}
-    # ── 标题策略 ───────────────────────────────────────────
-    # 1) 已有会话文件且已有标题（用户重命名）→ 保留，不覆盖
-    # 2) 否则从首条 user 消息截断生成（即时 fallback）
-    title = ""
-    if session_id:
-        existing = load_session(session_id)
-        if existing and existing.get("title"):
-            title = existing["title"]
-    if not title:
-        # 基于 filtered 提取标题（跳过 system 消息），保持与保存内容一致
-        for m in filtered:
-            if m.get("role") == "user":
-                # content 可能为 list（多模态 content blocks）——提取文本部分；
-                # ★ 修复（2026-10）：折行/制表符归一化为空格——多行首条消息
-                #   曾把 \n 原样写进标题，破坏会话列表与 CLI 输出格式。
-                content = normalize_title(_content_to_text(m.get("content")))
-                title = content[:40]
-                if len(content) > 40:
-                    title += "…"
-                break
-    # 用户重命名 / 旧文件残留的标题同样归一化（列表渲染防御）
-    title = normalize_title(title)
-    # ★ 修复（2026-10）：标题可能来自含孤立代理项的旧内容——写入 OSC 窗口
-    #   标题 / 会话文件前先清洗（无法以 UTF-8 编码的码点替换为 U+FFFD）。
-    title = sanitize_surrogates(title)
+    # ── 标题策略（dsh session-title 语义：三路来源，最新者胜） ──
+    # 1) 调用方传入标题快照（SessionTitleService 当前接受值）→ 直接采用；
+    # 2) 已有会话文件带标题（用户重命名 / 历史自动标题）→ 保留，不覆盖；
+    # 3) 否则按确定性回退从首条合格 user 消息派生（词数 + 汉字数 + 字节上限）。
+    # 来源（fallback / provider / user）一并落盘：加载时据此判断标题是否被
+    # 用户钉住（钉住后不再自动重命名）。
+    cfg = _session_title_config()
+    snapshot = title_snapshot if isinstance(title_snapshot, dict) else {}
+    title = normalize_title(snapshot.get("title") or "")
+    title_source = str(snapshot.get("source") or "")
+    title_model = str(snapshot.get("model") or "")
+    title_seqs = _title_seqs(snapshot.get("message_seqs"))
+    title_updated_at = _title_updated_at(snapshot.get("updated_at"))
 
+    with _session_file_lock:
+        existing = load_session(session_id) if session_id else None
+        if not title and existing and existing.get("title"):
+            title = normalize_title(existing["title"])
+            title_source = str(existing.get("title_source") or "")
+            title_model = str(existing.get("title_model") or "")
+            title_seqs = _title_seqs(existing.get("title_message_seqs"))
+            title_updated_at = _title_updated_at(existing.get("title_updated_at"))
+        if not title:
+            # 基于 filtered 提取标题（跳过 system 消息），保持与保存内容一致
+            for m in filtered:
+                if m.get("role") != "user":
+                    continue
+                # content 可能为 list（多模态 content blocks）——提取文本部分；
+                # 折行/制表符归一化为空格（多行首条消息曾把 \n 原样写进标题，
+                # 破坏会话列表与 CLI 输出格式）。
+                content = normalize_title(_content_to_text(m.get("content")))
+                if not content:
+                    continue
+                title = derive_fallback_title(
+                    content,
+                    max_words=int(cfg.get("fallback_max_words", 8)),
+                    cjk_characters=int(cfg.get("fallback_cjk_characters", 12)),
+                    max_bytes=int(cfg.get("fallback_max_bytes", 96)),
+                )
+                if title:
+                    title_source = "fallback"
+                    title_updated_at = time.time()
+                break
+        # 用户重命名 / 旧文件残留 / 回退派生的标题统一清洗（列表渲染防御）：
+        # 可能含孤立代理项（无法以 UTF-8 编码）——写入会话文件前替换为 U+FFFD。
+        title = sanitize_surrogates(title)
+        if title and not title_source:
+            # 已有会话文件却缺来源标记（旧版本写入的标题）：按「用户重命名，
+            # 已钉住」处理——历史标题可能是用户手动改的，宁可不再自动改名，
+            # 也不擅自覆盖用户数据。新会话的确定性回退标记为 fallback。
+            title_source = "user" if existing else "fallback"
+
+        data = {
+            "id": sid,
+            "title": title,
+            "model": model,
+            "saved_at": datetime.now().isoformat(),
+            # ★ 修复（2026-10）：消息数前置为**标量字段**（位于 token_stats /
+            #   messages 复合字段之前）——会话列表可只读文件头部标量字段构建
+            #   摘要（见 ``_parse_session_head``），避免为拿 message_count 而
+            #   全量解析整个会话文件（实测 2.8GB / 20s+）。
+            "message_count": len(filtered),
+            "token_stats": dict(stats),
+            "messages": filtered,
+            "subagents": list(subagents) if subagents else [],
+        }
+        # 标题来源元数据（仅在有标题时写入；旧会话文件没有这些字段 → 加载端
+        # 视为「历史标题，已钉住」，不擅自覆盖用户数据）。
+        if title:
+            data["title_source"] = title_source
+            if title_model:
+                data["title_model"] = title_model
+            if title_seqs:
+                data["title_message_seqs"] = title_seqs
+            if title_updated_at:
+                data["title_updated_at"] = title_updated_at
+        # 传入日志快照时写入 session_log 字段（定时自动保存 / 退出保存均传入）；
+        #   未传（None，兼容旧调用方）时不写该字段，加载端统一归一化为空列表。
+        if session_log is not None:
+            data["session_log"] = list(session_log)
+
+        # ★ 修复（2026-10，用户报障）：自动保存曾报
+        #   ``UnicodeEncodeError: 'utf-8' codec can't encode character '\ud83d'
+        #   ...: surrogates not allowed``——消息/日志/子代理记录里一旦出现
+        #   **孤立代理项**（模型流把 emoji 的 UTF-16 代理对拆到两帧、上游损坏
+        #   转义等），``json.dumps(ensure_ascii=False)`` 会原样带出该码点，
+        #   随后 ``write_text(encoding="utf-8")`` 必然抛异常、整次落盘失败。
+        #   落盘前统一清洗：相邻代理对还原为完整 emoji，其余孤立代理项替换为
+        #   U+FFFD（可安全编码），保存不再因文本内容失败。
+        data = sanitize_surrogates_deep(data)
+
+        try:
+            _atomic_write_text(filepath, json.dumps(data, ensure_ascii=False, indent=2))
+        except (OSError, UnicodeError) as exc:
+            _logger.error("保存会话文件失败: path=%s, sid=%s, error=%s", filepath, sid, exc)
+            raise
     # ★ 起完标题后同步终端窗口标题（OSC 序列，无 TTY 静默失败）
     _sync_terminal_title(title)
-
-    data = {
-        "id": sid,
-        "title": title,
-        "model": model,
-        "saved_at": datetime.now().isoformat(),
-        # ★ 修复（2026-10）：消息数前置为**标量字段**（位于 token_stats /
-        #   messages 复合字段之前）——会话列表可只读文件头部标量字段构建
-        #   摘要（见 ``_parse_session_head``），避免为拿 message_count 而
-        #   全量解析整个会话文件（实测 2.8GB / 20s+）。
-        "message_count": len(filtered),
-        "token_stats": dict(stats),
-        "messages": filtered,
-        "subagents": list(subagents) if subagents else [],
-    }
-    # 传入日志快照时写入 session_log 字段（定时自动保存 / 退出保存均传入）；
-    #   未传（None，兼容旧调用方）时不写该字段，加载端统一归一化为空列表。
-    if session_log is not None:
-        data["session_log"] = list(session_log)
-
-    # ★ 修复（2026-10，用户报障）：自动保存曾报
-    #   ``UnicodeEncodeError: 'utf-8' codec can't encode character '\ud83d'
-    #   ...: surrogates not allowed``——消息/日志/子代理记录里一旦出现
-    #   **孤立代理项**（模型流把 emoji 的 UTF-16 代理对拆到两帧、上游损坏
-    #   转义等），``json.dumps(ensure_ascii=False)`` 会原样带出该码点，
-    #   随后 ``write_text(encoding="utf-8")`` 必然抛异常、整次落盘失败。
-    #   落盘前统一清洗：相邻代理对还原为完整 emoji，其余孤立代理项替换为
-    #   U+FFFD（可安全编码），保存不再因文本内容失败。
-    data = sanitize_surrogates_deep(data)
-
-    try:
-        _atomic_write_text(filepath, json.dumps(data, ensure_ascii=False, indent=2))
-    except (OSError, UnicodeError) as exc:
-        _logger.error("保存会话文件失败: path=%s, sid=%s, error=%s", filepath, sid, exc)
-        raise
     _invalidate_session_cache()
     return sid
 
@@ -818,7 +916,7 @@ def get_recover_cmd(session_id: str, script: str = "chat.py") -> str:
 
 # ── 重命名会话 ────────────────────────────────────────────
 def rename_session(session_id: str, new_title: str) -> bool:
-    """重命名指定会话的标题。
+    """重命名指定会话的标题（用户来源 → 钉住标题，停止自动重命名）。
 
     Args:
         session_id: 会话 ID
@@ -826,6 +924,11 @@ def rename_session(session_id: str, new_title: str) -> bool:
 
     Returns:
         是否成功
+
+    ★ 2026-10（dsh 标题子系统）：重命名写入 ``title_source="user"``——会话
+    标题服务据此把标题「钉住」（后续用户消息不再安排自动修订，只有显式
+    ``/title refresh`` 才解钉）；同时更新 ``title_updated_at`` 并立即同步
+    终端窗口标题（若这是当前会话）。
     """
     sid = _validate_session_id(session_id)
     if sid is None:
@@ -834,20 +937,90 @@ def rename_session(session_id: str, new_title: str) -> bool:
     if not filepath.exists():
         return False
     try:
-        data = json.loads(filepath.read_text(encoding="utf-8"))
-        # ★ 修复（2026-10）：重命名同样归一化折行/制表符（标题按行渲染）
-        data["title"] = normalize_title(new_title)
-        # ★ 修复（2026-10）：会话数据里的消息/子代理记录可能含孤立代理项
-        #   （模型流拆开 emoji 代理对等），整文件重写前统一清洗——否则
-        #   ``write_text(encoding="utf-8")`` 抛 UnicodeEncodeError，重命名失败。
-        data = sanitize_surrogates_deep(data)
-        _atomic_write_text(
-            filepath, json.dumps(data, ensure_ascii=False, indent=2),
-        )
+        with _session_file_lock:
+            data = json.loads(filepath.read_text(encoding="utf-8"))
+            # ★ 修复（2026-10）：重命名同样归一化折行/制表符（标题按行渲染）
+            clean = normalize_title(new_title)
+            data["title"] = clean
+            data["title_source"] = "user"
+            data["title_updated_at"] = time.time()
+            # 用户标题不再归属任何自动生成的源消息。
+            data.pop("title_message_seqs", None)
+            # ★ 修复（2026-10）：会话数据里的消息/子代理记录可能含孤立代理项
+            #   （模型流拆开 emoji 代理对等），整文件重写前统一清洗——否则
+            #   ``write_text(encoding="utf-8")`` 抛 UnicodeEncodeError，重命名失败。
+            data = sanitize_surrogates_deep(data)
+            _atomic_write_text(
+                filepath, json.dumps(data, ensure_ascii=False, indent=2),
+            )
         _invalidate_session_cache()
         return True
-    except (json.JSONDecodeError, OSError, UnicodeError):
+    except (json.JSONDecodeError, OSError, UnicodeError, ValueError):
         return False
+
+
+# ── 更新会话标题（标题生成完成后即时落盘） ────────────────
+def update_session_title(
+    session_id: str,
+    *,
+    title: str,
+    source: str = "",
+    model: str = "",
+    message_seqs: list[int] | None = None,
+    updated_at: float | None = None,
+) -> bool:
+    """只更新会话文件的标题字段（标题生成完成后调用，不等周期保存）。
+
+    与 ``save_session`` 共用模块级文件锁——避免与 30 秒周期自动保存并发时
+    「后写者用旧快照覆盖对方修改」（丢标题或丢消息）。
+
+    Args:
+        session_id: 会话 ID
+        title: 新标题（内部清洗 / 规范化）
+        source: 标题来源（``fallback`` / ``provider`` / ``user``）
+        model: 生成标题的模型（辅助请求路由）
+        message_seqs: 参与生成的消息序号（来源归因）
+        updated_at: 接受时间戳（缺省取当前时间）
+
+    Returns:
+        True = 已写盘；False = 会话不存在 / 读取失败 / 标题为空。
+        会话尚未保存过（文件不存在）时返回 False——首次保存会带上内存快照。
+    """
+    sid = _validate_session_id(session_id)
+    if sid is None:
+        return False
+    clean = normalize_title(title)
+    if not clean:
+        return False
+    filepath = CHAT_MSGS_DIR / f"{sid}.json"
+    if not filepath.exists():
+        return False
+    try:
+        with _session_file_lock:
+            data = json.loads(filepath.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return False
+            data["title"] = clean
+            if source:
+                data["title_source"] = str(source)
+            if model:
+                data["title_model"] = str(model)
+            seqs = _title_seqs(message_seqs)
+            if seqs:
+                data["title_message_seqs"] = seqs
+            else:
+                data.pop("title_message_seqs", None)
+            data["title_updated_at"] = _title_updated_at(
+                time.time() if updated_at is None else updated_at
+            )
+            data = sanitize_surrogates_deep(data)
+            _atomic_write_text(
+                filepath, json.dumps(data, ensure_ascii=False, indent=2),
+            )
+    except (json.JSONDecodeError, OSError, UnicodeError, ValueError):
+        return False
+    _invalidate_session_cache()
+    return True
 
 
 # ── 导出会话 ────────────────────────────────────────────

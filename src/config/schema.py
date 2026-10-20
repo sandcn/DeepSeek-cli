@@ -29,6 +29,69 @@ _BOOL_FIELDS = _derive_rc_fields(bool)
 _REASONING_EFFORT_LEVELS = frozenset(REASONING_EFFORT_LEVELS)
 
 
+#: 会话标题配置字段规格：``键 → (类型, 最小值, 最大值)``（``bool`` 无区间）。
+#: 未知键被丢弃（配置真源 = ``DEFAULTS["session_title"]``）。
+_SESSION_TITLE_FIELDS: dict = {
+    "enabled": (bool, None, None),
+    "target_words": (int, 1, 64),
+    "target_cjk_characters": (int, 1, 64),
+    "fallback_max_words": (int, 1, 64),
+    "fallback_cjk_characters": (int, 1, 64),
+    "fallback_max_bytes": (int, 8, 4096),
+    "max_title_bytes": (int, 8, 4096),
+    "max_input_bytes": (int, 256, 10_000_000),
+    "timeout_ms": (int, 500, 600_000),
+    "sync_terminal_title": (bool, None, None),
+}
+
+#: 文本形式的布尔真值（手工编辑 RC 常见写法）。
+_TRUE_TEXT = frozenset({"true", "1", "yes", "on", "y", "t"})
+
+
+def _clean_session_title(raw) -> dict:
+    """清洗 ``session_title`` 配置节：缺字段回退默认、数值夹到合法区间。
+
+    非法值（类型不符 / 无法解析）保留默认值而不是报错——与其它配置节一致：
+    配置加载永不失败，坏值最多回退默认行为。
+
+    Args:
+        raw: RC 文件中的 ``session_title`` 值（任意类型）。
+
+    Returns:
+        完整配置字典（键集合 = ``DEFAULTS["session_title"]`` 的键）。
+    """
+    base = dict(DEFAULTS.get("session_title") or {})
+    if not isinstance(raw, dict):
+        return base
+    for key, (kind, low, high) in _SESSION_TITLE_FIELDS.items():
+        if key not in raw:
+            continue
+        value = raw[key]
+        if kind is bool:
+            if isinstance(value, bool):
+                base[key] = value
+            elif isinstance(value, (int, float)):
+                base[key] = bool(value)
+            elif isinstance(value, str):
+                base[key] = value.strip().lower() in _TRUE_TEXT
+            continue
+        if isinstance(value, bool):
+            continue  # bool 是 int 子类：True/False 不是合法数值配置
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+        if low is not None and number < low:
+            number = low
+        if high is not None and number > high:
+            number = high
+        base[key] = number
+    # dsh 约束：回退标题字节上限不得超过「接受任何来源标题」的总上限。
+    if int(base.get("fallback_max_bytes", 0)) > int(base.get("max_title_bytes", 0)):
+        base["fallback_max_bytes"] = int(base["max_title_bytes"])
+    return base
+
+
 def _validate_rc(rc):
     """校验配置值类型，无效值回退到默认值
 
@@ -180,6 +243,10 @@ def _validate_rc(rc):
                     except (ValueError, TypeError):
                         continue
             rc["token_prices"] = cleaned
+
+    # 会话标题配置：手工编辑 RC 的坏值在此收敛（缺字段回退默认、数值夹到
+    # 合法区间、回退字节上限不得超过标题总上限——dsh 同一约束）。
+    rc["session_title"] = _clean_session_title(rc.get("session_title"))
 
     if rc.get("max_retries", 1) < 0:
         rc["max_retries"] = DEFAULTS["max_retries"]

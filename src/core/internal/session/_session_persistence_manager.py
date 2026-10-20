@@ -79,6 +79,7 @@ class SessionPersistenceManager:
         subagents_setter=None,
         log_getter=None,
         log_setter=None,
+        title_service=None,
     ):
         """初始化持久化管理器
 
@@ -110,6 +111,9 @@ class SessionPersistenceManager:
         self._set_subagents = subagents_setter
         self._get_log = log_getter
         self._set_log = log_setter
+        #: 会话标题服务（可选）——保存时提供当前标题快照，加载时恢复标题状态
+        #: （来源 / 是否被用户钉住 / 参与生成的消息序号）。
+        self._title_service = title_service
 
         # ── 定时自动保存（30s，仅内容变化时异步落盘） ──────
         self._autosave_task: asyncio.Task | None = None
@@ -198,17 +202,48 @@ class SessionPersistenceManager:
     def _save_payload(self, messages: list[dict], model: str,
                       session_id: str | None, subagents: list,
                       session_log: list[dict] | None) -> str:
-        """写入会话文件（线程安全；含会话日志快照）。"""
+        """写入会话文件（线程安全；含会话日志快照与标题快照）。"""
         with self._save_lock:
-            return self._persistence.save_session(
-                messages=messages,
-                model=model,
-                session_id=session_id,
-                subagents=subagents,
-                # 会话日志 = 仅追加事实源：定时自动保存 / 退出保存一并落盘，
-                # 加载时优先由日志重建消息视图。
-                session_log=session_log,
-            )
+            snapshot = self._title_snapshot()
+            try:
+                return self._persistence.save_session(
+                    messages=messages,
+                    model=model,
+                    session_id=session_id,
+                    subagents=subagents,
+                    # 会话日志 = 仅追加事实源：定时自动保存 / 退出保存一并落盘，
+                    # 加载时优先由日志重建消息视图。
+                    session_log=session_log,
+                    # 标题快照（标题服务的当前接受值）：三路来源与来源元数据一起
+                    # 落盘；None（服务未接入 / 自定义 Agent）时由存储层按
+                    # 「已有标题优先 → 确定性回退」决定，保持旧行为。
+                    title_snapshot=snapshot,
+                )
+            except TypeError as exc:
+                # 旧的自定义持久化 provider 只接受 5 个参数：仅在报错确实来自
+                # 新增关键字时回退（不掩盖 provider 内部的 TypeError）。
+                if "title_snapshot" not in str(exc):
+                    raise
+                _logger.debug("持久化 provider 不支持标题快照，回退旧签名")
+                return self._persistence.save_session(
+                    messages=messages,
+                    model=model,
+                    session_id=session_id,
+                    subagents=subagents,
+                    session_log=session_log,
+                )
+
+    def _title_snapshot(self) -> dict | None:
+        """当前标题快照（无标题服务 / 尚无标题时 None）。"""
+        service = self._title_service
+        if service is None:
+            return None
+        try:
+            snapshot = service.snapshot
+            return snapshot.to_dict() if snapshot is not None else None
+        except Exception:
+            _logger.debug("读取会话标题快照失败", exc_info=True)
+            return None
 
     def _content_signature(self) -> tuple | None:
         """计算对话内容变更签名（用于判定是否需要落盘）。
@@ -290,6 +325,12 @@ class SessionPersistenceManager:
         #   套，无第二份实现；非 TUI 环境零成本跳过）。
         self._restore_trace_archive(data.get("subagents") or [])
 
+        # ── 标题状态恢复（dsh session-title 语义） ──
+        # 先按会话文件字段恢复（标题 / 来源 / 是否被用户钉住），再按日志折叠
+        # 覆盖——会话日志是标题的持久事实源（session/title 事件），恢复 / 回放
+        # 后标题与来源与保存时一致。
+        self._restore_title_state(data)
+
         self._set_model(data.get("model", self._get_model()))
         self._set_session_id(session_id)
         # 加载即视为已保存基线：内容未再变化时不会触发定时自动保存。
@@ -302,7 +343,6 @@ class SessionPersistenceManager:
     def list_sessions(self) -> list[dict]:
         """列出所有保存的会话。"""
         return self._persistence.list_sessions()
-
     def get_session_ids(self) -> list[str]:
         """列出所有保存的会话 ID。"""
         return [s["id"] for s in self._persistence.list_sessions()]
@@ -507,6 +547,31 @@ class SessionPersistenceManager:
         self._observability.gauge("session.messages", len(messages))
         self._emit("checkpoint_restored", info=info)
         return True
+
+    # ── 标题状态恢复 ────────────────────────────────────
+
+    def _restore_title_state(self, data: dict) -> None:
+        """恢复标题状态：先按会话文件字段，再按日志事件折叠覆盖。
+
+        - 会话文件字段（``title`` / ``title_source`` / ``title_model`` / ...）
+          给出标题与来源；旧文件没有 ``title_source`` 时按「历史标题，已钉住」
+          处理（不擅自覆盖用户可能手动改过的标题）；
+        - 会话日志的 ``session/title`` 事件是持久事实源：有事件时以最新一条
+          为准（回放 / 恢复后标题、来源、参与消息与保存时一致）。
+        """
+        service = self._title_service
+        if service is None:
+            return
+        try:
+            service.restore_from_data(data)
+        except Exception:
+            _logger.debug("从会话文件恢复标题失败", exc_info=True)
+        try:
+            log = self._get_log() if self._get_log is not None else None
+            if log is not None:
+                service.restore_from_log(log)
+        except Exception:
+            _logger.debug("从会话日志恢复标题失败", exc_info=True)
 
     # ── 状态机辅助 ──────────────────────────────────────
 

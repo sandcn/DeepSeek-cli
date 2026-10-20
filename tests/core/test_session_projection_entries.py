@@ -78,7 +78,8 @@ async def test_overlay_disable_turn_boundary():
     try:
         projections = kernel.resolve_service("session_projections")
         assert projections.has("turnBoundary") is False
-        assert projections.names() == []
+        # 只断言被禁用的投影缺席；其它内置投影（如会话标题 ``title``）仍在。
+        assert projections.has("title") is True
     finally:
         await kernel.dispose()
 

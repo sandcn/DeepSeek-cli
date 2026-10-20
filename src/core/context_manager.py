@@ -27,7 +27,9 @@ import threading
 from typing import Optional
 
 _logger = logging.getLogger(__name__)
-from .constants import YELLOW, DIM, RESET, STREAM_LABEL_SUMMARIZE, audit_log as _log
+from .constants import (
+    DIM, RESET, STREAM_LABEL_SUMMARIZE, STREAM_LABEL_TITLE, YELLOW, audit_log as _log,
+)
 from . import context_selector as selector
 from .context_selector import MessageStatsCache
 from .tokens import estimate_tokens
@@ -156,8 +158,8 @@ def get_streaming_extra_tokens() -> int:
 
 #: 内部（非主 Agent / 非 SubAgent 对话）流式调用标签集合：其输出不进入主对话
 #: 上下文，不得计入 ``main · N%`` 上下文使用率的实时增量。
-#: 单一真源见 ``core.constants.STREAM_LABEL_SUMMARIZE``（上下文压缩摘要）。
-_INTERNAL_STREAM_LABELS = frozenset({STREAM_LABEL_SUMMARIZE})
+#: 单一真源见 ``core.constants``（上下文压缩摘要 / 会话标题生成）。
+_INTERNAL_STREAM_LABELS = frozenset({STREAM_LABEL_SUMMARIZE, STREAM_LABEL_TITLE})
 
 
 def _is_subagent_stream_label(label: Optional[str]) -> bool:

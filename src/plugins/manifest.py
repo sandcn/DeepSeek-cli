@@ -300,6 +300,7 @@ BUNDLES = [
             {"id": "session_log", "plugin": "src.plugins.session_log"},
             {"id": "session_projections", "plugin": "src.plugins.session_projections"},
             {"id": "session_projection_turn_boundary", "plugin": "src.plugins.session_projection_entries:apply_projection", "config": {"name": "turnBoundary"}},
+            {"id": "session_projection_title", "plugin": "src.plugins.session_projection_entries:apply_projection", "config": {"name": "title"}},
             {"id": "tools", "plugin": "src.plugins.tools"},
             {"id": "tools_builtin", "plugin": "src.plugins.tools_builtin"},
             {"id": "context", "plugin": "src.plugins.context"},

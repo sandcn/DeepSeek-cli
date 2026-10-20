@@ -138,7 +138,7 @@ _EVENT_TYPE_DISPLAY_NAMES = (
 _EVENT_TYPE_SESSION_NAMES = (
     "TURN_START", "TURN_END", "STEP_START", "STEP_END",
     "SYSTEM_MESSAGE", "USER_MESSAGE", "ASSISTANT_MESSAGE", "ASSISTANT_ATTEMPT",
-    "TOOL_RESULT", "REQUEST_HEADER", "REQUEST_CONTEXT",
+    "TOOL_RESULT", "REQUEST_HEADER", "REQUEST_CONTEXT", "TITLE",
     "INSERT", "REPLACE", "DELETE", "TRUNCATE", "RESET",
     "EMIT",
 )
@@ -236,6 +236,8 @@ COMMAND_PLUGIN_ENTRIES = [
      "config": {"command": "src.core.commands._session_cmd.RetryCommand", "name": "retry"}},
     {"id": "cmd_sessions", "plugin": "src.plugins.command_plugin",
      "config": {"command": "src.core.commands._data_cmd.SessionsCommand", "name": "sessions"}},
+    {"id": "cmd_title", "plugin": "src.plugins.command_plugin",
+     "config": {"command": "src.core.commands._title_cmd.TitleCommand", "name": "title"}},
     {"id": "cmd_theme", "plugin": "src.plugins.command_plugin",
      "config": {"command": "src.core.commands._config_cmd.ThemeCommand", "name": "theme"}},
     {"id": "cmd_undo", "plugin": "src.plugins.command_plugin",
@@ -710,6 +712,8 @@ SKILL_SOURCE_ENTRIES = [
 SESSION_PROJECTION_ENTRIES = [
     {"id": "session_projection_turn_boundary", "plugin": "src.plugins.session_projection_entries:apply_projection",
      "config": {"name": "turnBoundary"}},
+    {"id": "session_projection_title", "plugin": "src.plugins.session_projection_entries:apply_projection",
+     "config": {"name": "title"}},
 ]
 
 __all__ = [

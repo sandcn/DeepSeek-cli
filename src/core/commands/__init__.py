@@ -61,6 +61,12 @@ from ._data_cmd import (
     HelpCommand,
 )
 
+from ._title_cmd import (
+    _cmd_title,
+    # 插件子类
+    TitleCommand,
+)
+
 from ._export_cmd import (
     _cmd_export,
     build_markdown,
@@ -113,6 +119,7 @@ __all__ = [
     "_cmd_config",
     "_cmd_load",
     "_cmd_sessions",
+    "_cmd_title",
     "_cmd_export",
     "build_markdown",
     # 插件子类（兼容面）
@@ -129,5 +136,6 @@ __all__ = [
     "LoadCommand",
     "SessionsCommand",
     "HelpCommand",
+    "TitleCommand",
     "ExportCommand",
 ]

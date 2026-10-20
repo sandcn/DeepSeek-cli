@@ -48,6 +48,7 @@ from .internal.session._session_compression import _validate_compress_preconditi
 from .internal.session._session_persistence_manager import SessionPersistenceManager
 from .internal.session._session_messaging_manager import SessionMessagingManager
 from .internal.session import _session_lifecycle
+from .session_title import SessionTitleService
 
 _logger = logging.getLogger(__name__)
 
@@ -140,6 +141,18 @@ class ChatSession:
         self._metrics = get_default_collector()
         self._tracer = get_default_tracer()
 
+        # ── 会话标题服务（dsh session-title 语义：日志标题 + 异步重命名） ──
+        # 每条新用户提示词后异步发起一次辅助请求重新评估标题；标题写入会话
+        # 日志（session/title 事件）与会话文件顶层字段，绝不进入模型输入。
+        self._title_service = SessionTitleService(
+            messages_getter=lambda: self._agent.messages,
+            session_id_getter=lambda: self._state.session_id,
+            model_getter=lambda: self._model,
+            persistence=self._persistence_port,
+            log_getter=lambda: self.session_log,
+            emit=self._emit,
+        )
+
         # ── 持久化管理器 ─────────────────────────────────
         self._persistence_mgr = SessionPersistenceManager(
             messages_getter=lambda: self._agent.messages,
@@ -157,6 +170,7 @@ class ChatSession:
             subagents_setter=lambda v: setattr(self._agent, "_subagent_records", list(v or [])),
             log_getter=lambda: self.session_log,
             log_setter=lambda log: self._rebind_log(log),
+            title_service=self._title_service,
         )
 
         # ── 消息管理器（延迟初始化，等待 messages 和 ctx_mgr 就绪） ──
@@ -261,6 +275,17 @@ class ChatSession:
     def session_log(self):
         """会话事实源日志（消息视图由它驱动；非日志视图时返回 None）。"""
         return getattr(self._agent.messages, "log", None)
+
+    @property
+    def title_service(self) -> SessionTitleService:
+        """会话标题服务（来源仲裁 / 异步生成 / 钉住 / 标题事件）。"""
+        return self._title_service
+
+    @property
+    def title(self) -> str:
+        """当前标题（无标题时为空串）。"""
+        snapshot = self._title_service.snapshot
+        return snapshot.title if snapshot is not None else ""
 
     def _rebind_log(self, log) -> None:
         """切换消息视图的事实源（会话恢复 / 回放 / fork）。"""
@@ -372,6 +397,8 @@ class ChatSession:
             cost_update     — 有 token 消耗可显示
             saved           — 会话已保存
             loaded          — 会话已加载
+            title_updated   — 会话标题被接受（含异步生成完成；UI 据此更新
+                              终端窗口标题与列表）
             checkpoint_saved    — 断点已保存
             checkpoint_cleared  — 断点已清除
             messages_changed    — 消息列表被外部修改
@@ -604,12 +631,22 @@ class ChatSession:
         self._persistence_mgr.start_autosave()
 
     def stop_autosave(self) -> None:
-        """停止定时自动保存（退出路径调用）。"""
+        """停止定时自动保存（退出路径调用，同时中止在途标题生成）。"""
         self._persistence_mgr.stop_autosave()
+        try:
+            # 标题生成是辅助任务：退出时取消并把已接受的标题落盘（避免
+            # 「Task was destroyed but it is pending」与标题丢失）。
+            self._title_service.cancel()
+        except Exception:
+            _logger.debug("取消会话标题任务失败", exc_info=True)
 
     async def stop_autosave_async(self) -> None:
         """停止并等待定时自动保存任务退出。"""
         await self._persistence_mgr.stop_autosave_async()
+        try:
+            self._title_service.cancel()
+        except Exception:
+            _logger.debug("取消会话标题任务失败", exc_info=True)
 
     def load(self, session_id: str) -> dict | None:
         """加载历史会话。"""

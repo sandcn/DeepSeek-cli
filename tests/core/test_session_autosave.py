@@ -18,7 +18,7 @@ class _FakePersistence:
         self.calls: list[dict] = []
 
     def save_session(self, messages, model, session_id=None,
-                     subagents=None, session_log=None):
+                     subagents=None, session_log=None, title_snapshot=None):
         self.calls.append({
             "messages": messages,
             "model": model,

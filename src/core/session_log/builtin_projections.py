@@ -36,9 +36,44 @@ def _turn_boundary_folder(state: Dict[str, Any], event: Any) -> Dict[str, Any]:
     return state
 
 
+#: 会话标题投影（对应 dsh 的 ``foldSessionTitle``）：折叠最新的
+#: ``session/title`` 事件，给出客户端可见标题与来源归因。标题事件只写入日志，
+#: 不参与 ``derive_messages``（模型输入），因此该投影只服务展示层与会话列表。
+def _title_initial() -> Dict[str, Any]:
+    return {
+        "title": None,
+        "source": None,
+        "model": "",
+        "message_seqs": (),
+        "updated_at": 0.0,
+    }
+
+
+def _title_folder(state: Dict[str, Any], event: Any) -> Dict[str, Any]:
+    if event.type != SessionEventType.TITLE:
+        return state
+    data = event.data or {}
+    title = str(data.get("title") or "").strip()
+    if not title:
+        return state
+    try:
+        updated_at = float(data.get("updated_at") or event.timestamp or 0.0)
+    except (TypeError, ValueError):
+        updated_at = 0.0
+    seqs = data.get("message_seqs") or ()
+    return {
+        "title": title,
+        "source": str(data.get("source") or "fallback"),
+        "model": str(data.get("model") or ""),
+        "message_seqs": tuple(seqs) if isinstance(seqs, (list, tuple)) else (),
+        "updated_at": updated_at,
+    }
+
+
 #: 内置投影声明（name → (initial, folder)）——每项由清单中的独立插件条目注册。
 BUILTIN_PROJECTIONS: Dict[str, Tuple[InitialFn, FolderFn]] = {
     "turnBoundary": (_turn_boundary_initial, _turn_boundary_folder),
+    "title": (_title_initial, _title_folder),
 }
 
 

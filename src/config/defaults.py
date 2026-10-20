@@ -253,6 +253,31 @@ DEFAULTS = {
         "catalog_description_max_length": 500,
         "auto_load": [],
     },
+    # ── 会话标题（对齐 dsh 的 session-title 子系统）──
+    # 每条新用户提示词后**异步**发起一次辅助 LLM 请求重新评估标题：旧标题仍
+    # 能描述主要主题或任务时逐字保留（同主题追问 / 补充细节 / 致谢 / 「继续」
+    # 都不构成改名理由）。标题写入会话日志（``session/title`` 事件）与会话文件
+    # 顶层字段，**绝不进入模型输入**；生成在独立任务里跑，不阻塞主对话、不渲染，
+    # 自动失败保留当前标题（/title refresh 是显式重试）。
+    "session_title": {
+        # 总开关（关闭后只保留确定性回退：首条用户消息开头若干词）
+        "enabled": True,
+        # 生成目标长度：中文按汉字数，其它语言按词数
+        "target_words": 6,
+        "target_cjk_characters": 12,
+        # 确定性回退长度：词数 / 汉字数 / UTF-8 字节上限
+        "fallback_max_words": 8,
+        "fallback_cjk_characters": 12,
+        "fallback_max_bytes": 96,
+        # 接受任何来源标题（回退 / LLM / 用户重命名）的 UTF-8 字节上限
+        "max_title_bytes": 120,
+        # 标题请求输入字节上限：超出直接失败并保留旧标题（不截断历史）
+        "max_input_bytes": 4096,
+        # 标题请求超时（毫秒）
+        "timeout_ms": 10000,
+        # 标题被接受后是否写入终端窗口标题（OSC 序列）
+        "sync_terminal_title": True,
+    },
 }
 
 # ============================================================
@@ -395,6 +420,13 @@ CONFIG_KEYS = {
         "rc_path": ("compaction",),
         "type": dict,
         "default": DEFAULTS["compaction"],
+        "cacheable": True,
+    },
+    # ---- 会话标题（dsh 同款 session-title 子系统） ----
+    "SESSION_TITLE": {
+        "rc_path": ("session_title",),
+        "type": dict,
+        "default": DEFAULTS["session_title"],
         "cacheable": True,
     },
     # ---- 布尔配置 ----

@@ -21,6 +21,7 @@ class PersistencePort(ABC):
         session_id: str | None = None,
         subagents: list | None = None,
         session_log: list | None = None,
+        title_snapshot: dict | None = None,
     ) -> str:
         """保存对话并返回会话 ID。
 
@@ -30,7 +31,29 @@ class PersistencePort(ABC):
             session_id: 指定 ID，None 时自动生成
             subagents: SubAgent 任务记录列表（含完整聊天信息），可选
             session_log: 会话事件日志快照（仅追加事实源），可选
+            title_snapshot: 当前标题快照（标题服务当前接受值），可选——
+                传入时直接采用并连同来源落盘；None 时按「已有文件标题优先 →
+                确定性回退」决定（旧调用方行为）。
         """
+
+    def update_session_title(
+        self,
+        session_id: str,
+        *,
+        title: str,
+        source: str = "",
+        model: str = "",
+        message_seqs: list[int] | None = None,
+        updated_at: float | None = None,
+    ) -> bool:
+        """只更新会话文件的标题字段（可选能力，默认不支持返回 False）。
+
+        标题生成完成后即时落盘使用：会话可能还没到 30 秒周期保存，标题却已经
+        生成完毕——写入 ``title`` / ``title_source`` / ``title_model`` 等字段，
+        并保持消息内容不变。实现方须与 ``save_session`` 串行化同一会话文件的
+        写入（避免 read-modify-write 互相覆盖）。
+        """
+        return False
 
     @abstractmethod
     def load_session(self, session_id: str) -> dict | None:

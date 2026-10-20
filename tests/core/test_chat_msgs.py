@@ -125,11 +125,23 @@ def test_save_session_auto_title_from_first_user(msgs_dir):
     assert data["title"] == "帮我写个测试"
 
 
-def test_save_session_title_truncated_40(msgs_dir):
-    content = "x" * 60
+def test_save_session_title_truncated_by_fallback_bytes(msgs_dir):
+    """回退标题按 dsh 规则截断：UTF-8 字节上限（默认 96）并追加省略号。"""
+    content = "x" * 200
     sid = save_session([{"role": "user", "content": content}], "m")
     data = json.loads((msgs_dir / f"{sid}.json").read_text(encoding="utf-8"))
-    assert data["title"] == "x" * 40 + "…"
+    title = data["title"]
+    assert title.endswith("…")
+    assert len(title.encode("utf-8")) <= 96
+    assert title == "x" * 93 + "…"
+
+
+def test_save_session_title_truncated_by_fallback_words(msgs_dir):
+    """回退标题按词数上限（默认 8 词）截断。"""
+    content = "one two three four five six seven eight nine ten"
+    sid = save_session([{"role": "user", "content": content}], "m")
+    data = json.loads((msgs_dir / f"{sid}.json").read_text(encoding="utf-8"))
+    assert data["title"] == "one two three four five six seven eight…"
 
 
 def test_save_session_preserves_existing_title(msgs_dir):

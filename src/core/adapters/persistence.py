@@ -17,9 +17,33 @@ class JsonFilePersistence(PersistencePort):
         session_id: str | None = None,
         subagents: list | None = None,
         session_log: list | None = None,
+        title_snapshot: dict | None = None,
     ) -> str:
         from ...chat_msgs import save_session as _save
-        return _save(messages, model, session_id, subagents, session_log)
+        return _save(
+            messages, model, session_id, subagents, session_log, title_snapshot,
+        )
+
+    def update_session_title(
+        self,
+        session_id: str,
+        *,
+        title: str,
+        source: str = "",
+        model: str = "",
+        message_seqs: list[int] | None = None,
+        updated_at: float | None = None,
+    ) -> bool:
+        """只更新会话标题字段（标题生成完成后的即时落盘）。"""
+        from ...chat_msgs import update_session_title as _update
+        return _update(
+            session_id,
+            title=title,
+            source=source,
+            model=model,
+            message_seqs=message_seqs,
+            updated_at=updated_at,
+        )
 
     def load_session(self, session_id: str) -> dict | None:
         from ...chat_msgs import load_session as _load

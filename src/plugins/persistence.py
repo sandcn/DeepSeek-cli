@@ -52,10 +52,23 @@ class PersistenceService(Service):
 
     # ── 便捷转发 ─────────────────────────────────────────
 
-    def save_session(self, messages, model, session_id=None, subagents=None, session_log=None):
+    def save_session(self, messages, model, session_id=None, subagents=None,
+                     session_log=None, title_snapshot=None):
         return self._provider.save_session(
-            messages, model, session_id, subagents, session_log
+            messages=messages,
+            model=model,
+            session_id=session_id,
+            subagents=subagents,
+            session_log=session_log,
+            title_snapshot=title_snapshot,
         )
+
+    def update_session_title(self, session_id, **kwargs) -> bool:
+        """只更新会话标题字段（端口可选能力；不支持时返回 False）。"""
+        updater = getattr(self._provider, "update_session_title", None)
+        if not callable(updater):
+            return False
+        return bool(updater(session_id, **kwargs))
 
     def load_session(self, session_id: str):
         return self._provider.load_session(session_id)

@@ -47,6 +47,9 @@ _SESSION_EVENT_TYPES: dict = {
     "TOOL_RESULT": "tool/result",
     "REQUEST_HEADER": "request/header",
     "REQUEST_CONTEXT": "request/context",
+    #: 会话标题修订（仅写入日志，**绝不进入模型输入**）：``derive_messages``
+    #: 只认消息类与结构变更事件，标题事件因此天然被排除在上下文之外。
+    "TITLE": "session/title",
     # ── 结构变更（也是仅追加事实，回放时在对应位置生效） ──
     "INSERT": "session/insert",
     "REPLACE": "session/replace",

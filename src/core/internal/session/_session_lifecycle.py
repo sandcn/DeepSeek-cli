@@ -413,7 +413,12 @@ async def _finalize_round(session, interrupted: bool,
         session_id = None
 
     # 发射事件并返回
-    return _emit_round_events(session, interrupted, session_id, delta)
+    result = _emit_round_events(session, interrupted, session_id, delta)
+    # ★ 2026-10（dsh session-title 语义）：本轮结束后安排一次标题修订。
+    #   放在 round_end 事件之后——本轮 token delta 已结算，辅助请求不会混入
+    #   本轮消耗统计；生成在独立任务里跑，绝不阻塞对话。
+    _schedule_title_revision(session)
+    return result
 
 
 async def _execute_round(session) -> dict:
@@ -423,6 +428,21 @@ async def _execute_round(session) -> dict:
     session._emit("round_start")
     interrupted: bool = await session._agent.run()
     return await _finalize_round(session, interrupted, prev_stats)
+
+
+def _schedule_title_revision(session) -> None:
+    """一轮结束后安排会话标题修订（all-prompts 节奏）。
+
+    用户钉住标题、标题功能关闭、无运行中事件循环时由服务内部静默跳过；
+    任何异常都不得影响对话结果（标题是增强能力，不是主链路）。
+    """
+    service = getattr(session, "_title_service", None)
+    if service is None:
+        return
+    try:
+        service.on_round_end()
+    except Exception:
+        _logger.debug("安排会话标题修订失败（不影响对话）", exc_info=True)
 
 
 def _compute_token_delta(session, prev_stats: tuple[int, int, int]) -> dict:

@@ -42,6 +42,27 @@ def _notify_chat_completed(messages, elapsed) -> None:
 
 # ── 会话状态 ──
 
+def _terminal_title_sync_enabled() -> bool:
+    """标题被接受后是否同步终端窗口标题（``session_title.sync_terminal_title``）。"""
+    try:
+        from ..config import get_rc
+        from ..config.defaults import DEFAULTS
+
+        default = bool((DEFAULTS.get("session_title") or {}).get("sync_terminal_title", True))
+        raw = get_rc().get("session_title")
+    except Exception:
+        return True
+    if isinstance(raw, dict) and "sync_terminal_title" in raw:
+        value = raw["sync_terminal_title"]
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "1", "yes", "on", "y", "t")
+        if isinstance(value, (int, float)):
+            return bool(value)
+    return default
+
+
 @dataclass(slots=True)
 class SessionState:
     """会话状态 — 替代 TypedDict，提供运行时类型安全"""
@@ -169,7 +190,27 @@ def _make_round_callbacks(
         if captured:
             session.captured_prefill = captured
 
-    return {"on_start": _on_round_start, "on_end": _on_round_end}
+    def _on_title_updated(title="", source="", **kw):
+        """标题被接受（含异步生成完成）→ 立即写入终端窗口标题。
+
+        dsh 的标题是异步生成的：主对话可能早已开始回答，标题晚到；这里让
+        终端窗口标签在标题就绪的**当下**更新，而不是等 30 秒周期保存。
+        """
+        text = str(title or "").strip()
+        if not text or not _terminal_title_sync_enabled():
+            return
+        try:
+            from ..tui._screen import set_window_title
+
+            set_window_title(text)
+        except Exception:
+            _logger.debug("更新终端窗口标题失败（非关键）", exc_info=True)
+
+    return {
+        "on_start": _on_round_start,
+        "on_end": _on_round_end,
+        "on_title": _on_title_updated,
+    }
 
 
 def _register_session_handlers(
@@ -283,6 +324,8 @@ def _register_session_handlers(
     if old_callbacks is not None:
         session.off("round_start", old_callbacks["on_start"])
         session.off("round_end", old_callbacks["on_end"])
+        session.off("title_updated", old_callbacks["on_title"])
     loop_state["_registered_callbacks"] = callbacks
     session.on("round_start", callbacks["on_start"])
     session.on("round_end", callbacks["on_end"])
+    session.on("title_updated", callbacks["on_title"])
