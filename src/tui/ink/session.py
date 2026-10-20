@@ -390,6 +390,11 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._idle_frame_predicate: Callable[[], bool] | None = None
         #: 本拍「无变更」标记（``_should_render`` 写入；空闲帧复用的前置条件）
         self._idle_ok: bool = False
+        #: 上一帧是否在「静态态」下构建（``_render_frame_impl`` 写入）——空闲帧
+        #: 复用的前置条件：静态预测只描述当前状态，离开活跃态（如全屏视图
+        #: 关闭）的第一拍预测刚翻真，上一帧仍是活跃态内容，直接复用会让已关闭
+        #: 的视图残留在屏幕上（见 ``_should_reuse_idle_frame``）。
+        self._last_frame_idle_static: bool = False
 
     # ── 注入 ─────────────────────────────────────────
 

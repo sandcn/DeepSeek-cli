@@ -117,6 +117,8 @@ class _SessionFrameMixin:
     _cmd_queue: Any
     #: 最近一帧（空闲帧复用直接重放；None = 尚未渲染过任何帧）
     _last_frame: "Frame | None"
+    #: 最近一帧是否在「静态态」下构建（False = 该帧仍含活跃态内容，禁止复用）
+    _last_frame_idle_static: bool
     #: 最近渲染帧行数（render(debug=True) 统计）
     _last_frame_lines: int
 
@@ -215,23 +217,60 @@ class _SessionFrameMixin:
         except Exception:
             _logger.debug("终端尺寸轮询异常", exc_info=True)
 
-    def _should_reuse_idle_frame(self) -> bool:
+    def _idle_static_now(self) -> bool:
+        """求值宿主「静态状态」预测（未注入/异常 → False＝本帧不静态）。
+
+        与 ``_should_reuse_idle_frame`` 拆开：帧执行器每拍都需要本拍的预测
+        结果来维护 ``_last_frame_idle_static``（见该属性说明），而复用判定
+        还需要额外的前置条件。预测异常按「非静态」处理（宁可多渲染一帧）。
+        """
+        predicate = getattr(self, "_idle_frame_predicate", None)
+        if predicate is None:
+            return False
+        try:
+            return bool(predicate())
+        except Exception:
+            _logger.debug("空闲预测函数异常（本帧不复用）", exc_info=True)
+            return False
+
+    def _should_reuse_idle_frame(self, static_now: bool | None = None) -> bool:
         """本拍是否复用上一帧（空闲帧复用——60Hz 节拍不变，省空转重建开销）。
 
         全部条件满足才复用（任一不满足 → 正常重建，零行为变化）：
           1. 宿主注入空闲预测函数（``set_idle_frame_predicate``）且返回 True
              ——组件树内容在无输入/无命令时是否保持静态由宿主判定（框架无法
              推断宿主的时间驱动动画）；
-          2. 已有上一帧（``_last_frame``）；
+          2. 已有上一帧（``_last_frame``）且该帧**也是在静态态下构建的**
+             （``_last_frame_idle_static``）；
           3. 无待处理命令（``_cmd_queue`` 为空——命令应用会改模型且置脏）；
           4. 非脏（``_dirty``，输入/命令/系统统计等变更标记）；
           5. 无 resize 挂起、无底部重绘请求；
           6. 无激活的 ``useAnimation`` 动画（动画需逐帧推进）。
+
+        ★ 2026-10-21（Ctrl+H 打开轨迹视图后 Esc 关闭界面不刷新修复）：条件 2
+        的「上一帧也是静态态构建」是新增强制条件。静态预测只描述**当前**
+        状态，不能证明上一帧内容与当前状态一致：关闭模态全屏视图（Ctrl+H
+        打开的轨迹视图按 Esc）后 ``model.fullscreen`` 由非空变空，预测在同
+        一拍由 False 翻为 True——修复前本方法只看当前预测，直接复用上一帧
+        （仍是全屏视图内容）→ 屏幕不刷新，且静态态下不再有脏事件，界面会
+        一直停在已关闭的视图上（直到系统统计数值变化等偶发置脏才补渲）。
+        新增条件后，离开活跃态的第一拍强制重建（渲染当前状态的正常界面），
+        下一拍起恢复正常复用——性能优化只在「连续静态」时生效。
+
+        Args:
+            static_now: 本拍预测结果（帧执行器已求值时传入，避免重复求值）；
+                None 时内部调用 ``_idle_static_now``（测试/独立调用兼容）。
         """
         if getattr(self, "_last_frame", None) is None:
             return False
-        predicate = getattr(self, "_idle_frame_predicate", None)
-        if predicate is None:
+        if getattr(self, "_idle_frame_predicate", None) is None:
+            return False
+        if static_now is None:
+            static_now = self._idle_static_now()
+        if not static_now:
+            return False
+        # 上一帧不是静态态内容 → 必须先重建一帧（静态预测可能刚由假翻真）
+        if not getattr(self, "_last_frame_idle_static", False):
             return False
         # 本拍有变更（输入/命令/请求重绘，由 ``_should_render`` 落位）→ 重建
         if not getattr(self, "_idle_ok", False):
@@ -252,11 +291,7 @@ class _SessionFrameMixin:
         except Exception:
             _logger.debug("has_active_animations 探测异常", exc_info=True)
             return False
-        try:
-            return bool(predicate())
-        except Exception:
-            _logger.debug("空闲预测函数异常（本帧不复用）", exc_info=True)
-            return False
+        return True
 
     def _render_frame_impl(self) -> None:
         if self._build_tree is None:
@@ -386,16 +421,23 @@ class _SessionFrameMixin:
         #   状态」（``set_idle_frame_predicate``）下跳过组件树重建/调和/布局/
         #   绘制，直接复用上一帧——**帧号照常推进（对外仍恒定 60Hz）**，仅省
         #   空转 CPU（无变化帧的重建开销 ≈ 1ms/帧）。判定条件全部满足才复用：
-        #   预测函数返回 True + 无待处理命令 + 非脏 + 无 resize + 无重绘请求 +
-        #   无激活动画（``useAnimation``）。未注入预测函数时恒不复用（默认
-        #   行为与既有 60Hz 全量渲染完全一致）。
-        if self._should_reuse_idle_frame() and self._last_frame is not None:
+        #   预测函数返回 True + 上一帧也是静态态构建 + 无待处理命令 + 非脏 +
+        #   无 resize + 无重绘请求 + 无激活动画（``useAnimation``）。未注入
+        #   预测函数时恒不复用（默认行为与既有 60Hz 全量渲染完全一致）。
+        # ★ 本拍静态预测只求值一次：复用判定与「上一帧静态态」标记共用同一
+        #   结果（见 ``_should_reuse_idle_frame`` 的 2026-10-21 修复说明）。
+        #   复用路径保持标记不变（复用帧本身即静态态构建的帧）；重建路径写
+        #   入本拍结果——离开活跃态（视图关闭）时预测刚为 True 而标记仍是
+        #   False → 本拍强制重建，重绘当前状态的界面。
+        static_now = self._idle_static_now()
+        if self._should_reuse_idle_frame(static_now) and self._last_frame is not None:
             frame = self._last_frame
         else:
             element = self._build_tree(self._model, width)
             self._reconciler.render(self._root_fiber, element, width, self._width_cache.get_height())
             frame = _components.render_frame(self._root_fiber, width)
             self._last_frame = frame
+            self._last_frame_idle_static = static_now
         # ★ 输出历史接线（committed 内容行数）：InkRenderer 只回调 committed
         #   区的**新增内容行**（修复前用文档末尾行区间推断 → 状态栏/输入区/
         #   时间线被反复写入输出历史且真正内容行漏记）。committed_lines 为

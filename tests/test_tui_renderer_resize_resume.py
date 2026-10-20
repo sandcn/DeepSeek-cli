@@ -250,6 +250,9 @@ def _make_session(width: int, height: int, monkeypatch, idle: bool = True):
     session._on_render_callback = None
     session._cmd_queue = None
     session._last_frame = old_frame
+    # 上一帧是静态态构建的帧（空闲复用的前置条件——见
+    # ``_should_reuse_idle_frame`` 的 2026-10-21 修复说明）
+    session._last_frame_idle_static = True
     session._last_frame_lines = 1
     session._idle_frame_predicate = lambda: True
     session._bottom_redraw_requested = threading.Event()

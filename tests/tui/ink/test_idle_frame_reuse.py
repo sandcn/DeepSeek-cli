@@ -208,6 +208,111 @@ def test_stale_frame_reuse_regression_guard_without_command():
     assert len(calls) == 1
 
 
+def test_leaving_active_state_rebuilds_frame_before_idle_reuse():
+    """活跃态结束的第一拍必须重建（否则已关闭的视图残留在屏幕上）。
+
+    回归场景：Ctrl+H 打开轨迹视图（``fullscreen = "trace"``——预测函数持续
+    返回 False，逐帧重建）后按 Esc 关闭（``fullscreen = ""``——预测翻为
+    True）。修复前该拍直接复用上一帧（仍是轨迹视图内容）→ 界面不刷新；
+    静态态下又不再产生脏事件，屏幕会一直停在已关闭的视图上。
+    """
+    calls: list = []
+
+    class _Model(_SimpleModel):
+        fullscreen = "trace"
+
+    model = _Model()
+
+    def _build_tree(m, w):
+        calls.append(getattr(m, "fullscreen", ""))
+        return h(TEXT, {"children": getattr(m, "fullscreen", "") or "chat"})
+
+    session = InkSession(
+        model=model,
+        build_tree=_build_tree,
+        stream=io.StringIO(),
+        width_cache=TerminalWidthCache(),
+        config=TuiConfig.defaults(),
+    )
+    session.set_idle_frame_predicate(
+        lambda: not getattr(model, "fullscreen", ""),
+    )
+
+    session._drain_queue()            # 活跃态：轨迹视图帧
+    assert calls == ["trace"]
+    model.fullscreen = ""             # 等价于视图内 Esc（只改模型状态）
+    session._drain_queue()            # 静态态刚成立：必须重建正常界面
+    assert calls == ["trace", ""], "关闭全屏视图后复用了陈旧的轨迹视图帧"
+    # 之后连续静态拍恢复正常复用（优化不被破坏）
+    session._drain_queue()
+    assert calls == ["trace", ""]
+
+
+def test_trace_view_escape_repaints_normal_ui():
+    """Ctrl+H 打开轨迹视图 → Esc 关闭：渲染管线必须重建并重绘正常界面。
+
+    端到端回归（真实 App 组件树 + 真实 trace_view use_input handler + 真实
+    空闲预测）：Esc 只改 ``model.fullscreen``（不请求重绘），修复前空闲帧
+    复用会把上一帧（轨迹视图）重放给终端。
+    """
+    from src.tui._assembly_steps import _make_idle_frame_predicate
+    from src.tui.app.app import build_app_element
+    from src.tui.app.model import AppModel
+    from src.tui.ink.fiber import InputHook
+
+    builds: list = []
+
+    def _build_tree(m, w):
+        builds.append(getattr(m, "fullscreen", ""))
+        return build_app_element(m, w)
+
+    model = AppModel()
+    session = InkSession(
+        model=model,
+        build_tree=_build_tree,
+        stream=io.StringIO(),
+        width_cache=TerminalWidthCache(),
+        config=TuiConfig.defaults(),
+    )
+    session.set_idle_frame_predicate(_make_idle_frame_predicate(model, session))
+    # 屏蔽系统监控采集（测试环境 /proc 可能不可读；与本回归无关）
+    session._last_sys_stats_time = time.monotonic()
+    session._sys_stats_interval = 1000.0
+
+    session._drain_queue()            # 正常界面
+    model.fullscreen = "trace"        # Ctrl+H（回调等价状态变更）
+    session._drain_queue()            # 轨迹视图帧
+
+    def _collect_handlers(fiber, out):
+        if fiber is None:
+            return out
+        for hook in getattr(fiber, "hooks", None) or []:
+            if (
+                isinstance(hook, InputHook)
+                and hook.is_active
+                and hook.handler is not None
+            ):
+                out.append(hook.handler)
+        _collect_handlers(fiber.child, out)
+        _collect_handlers(fiber.sibling, out)
+        return out
+
+    event = type("_Ev", (), {"kind": "escape", "char": ""})()
+    handlers = _collect_handlers(session._root_fiber, [])
+    assert handlers, "轨迹视图打开期间应有激活的 use_input handler"
+    assert any(handler(event) for handler in handlers), "Esc 未被轨迹视图消费"
+    assert model.fullscreen == "", "Esc 未关闭轨迹视图"
+
+    session._drain_queue()            # 关闭后的第一拍：必须重建正常界面
+    text = "\n".join(
+        "".join(run.text for run in line.runs)
+        for line in session._last_frame.lines
+    )
+    assert builds[-1] == "", "Esc 关闭后没有重建组件树（界面不会刷新）"
+    assert "轨迹 Trace" not in text, "Esc 关闭后屏幕仍是轨迹视图内容"
+    assert "DeepSeek CLI" in text, "Esc 关闭后未重绘正常界面"
+
+
 def test_placeholder_fading_detection():
     from src.tui._assembly_steps import _placeholder_fading
 
