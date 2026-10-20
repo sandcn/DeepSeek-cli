@@ -11,10 +11,26 @@ errors='replace')``。Windows 原生环境下 ``asyncio.create_subprocess_shell`
 代码页；PowerShell 7 / Node.js / ripgrep / ``PYTHONUTF8`` 下的 Python 则输出
 UTF-8——因此**同一个终端里不同命令的编码可能不同**，必须逐行自适应。
 
+Cygwin / MSYS2 场景（用户报障「在 Cygwin 下执行 bash 会有机率乱码」）：
+这类环境的 ``os.name`` 是 ``posix``、``sys.platform`` 是 ``cygwin``/``msys``，
+但内核是 Windows——**Cygwin 程序按 ``locale`` 输出 UTF-8，原生 Windows
+程序（``ipconfig`` / ``driverquery`` 等按 ANSI 代码页输出的工具）输出
+cp936**，同一条命令流里两种编码都可能出现。修复前的消歧规则把「落在
+``U+0370–U+07FF`` 的合法 UTF-8 行」一律改判成本地代码页：真 UTF-8 的希腊
+字母（``α`` / ``μ``）、西里尔文（``Привет``）被改成「伪」「袩褉懈胁械褌」；
+反过来落在 ``U+0080–U+036F`` 的 GBK 误读行（``ʲô`` / ``ɸѡ``）又原样留下。
+现改为「误读特征 + 环境主编码」双判据（见 :func:`_ambiguous_local_decode`、
+:func:`prefer_local_output`），Cygwin 下真 UTF-8 不再被改成中文。
+
 修复策略（流式、逐行自适应，不做有状态的全局猜测）：
   1. **UTF-8 优先**：现代工具输出 UTF-8（最常见且无歧义），先严格解码；
-     Windows CJK 代码页下与 GBK 「双重合法」的短行（如「系统」）按
-     :func:`_ambiguous_local_decode` 的规则消解为本地代码页；
+     与 CJK 代码页「双重合法」的行（如 GBK「系统」=``CF B5 CD B3`` 恰好
+     也是合法 UTF-8，解出 ``ϵͳ``）按 :func:`_ambiguous_local_decode` 消解：
+     句内出现「误读特征」（IPA / 修饰符 / 组合符号 / 古体希腊 / 科普特 /
+     古体西里尔等正常输出几乎不会出现的码位，或一行横跨多个书写系统）→
+     判为本机代码页；否则按 :func:`prefer_local_output` 给出的**环境主编码**
+     裁决（Cygwin / MSYS2 / POSIX 跟随 ``locale``，原生 Windows 跟随控制台
+     代码页）；
   2. **本机代码页回退**：UTF-8 失败时依次尝试本机候选编码——Windows 取
      控制台输出代码页（``GetConsoleOutputCP``）、OEM 代码页（``GetOEMCP``）、
      ANSI 代码页（``GetACP``）；POSIX 取 ``locale`` 首选编码；
@@ -45,6 +61,7 @@ __all__ = [
     "OutputLineDecoder",
     "decode_output",
     "default_output_encodings",
+    "prefer_local_output",
     "windows_ansi_codepage",
 ]
 
@@ -155,6 +172,46 @@ def default_output_encodings() -> tuple[str, ...]:
     return tuple(encodings)
 
 
+def prefer_local_output() -> bool:
+    """环境的主输出编码是否「本机代码页」（而非 UTF-8）。
+
+    只用于消解**无法从句内证据判定**的行——即同时满足「UTF-8 严格解码
+    成功」与「本机 CJK 代码页严格解码成功」的「双重合法」行（GBK
+    ``CF B5 CD B3``「系统」按 UTF-8 解出 ``ϵͳ``）。这类行没有字节级证据，
+    只能按环境的主编码裁决：
+
+      - **原生 Windows**：主编码 = 控制台输出代码页（``chcp`` 决定，先取
+        ``GetConsoleOutputCP``，取不到再退 OEM / ANSI）。``cmd`` 内建命令与
+        多数控制台程序按它输出字节，因此非 65001 时返回 ``True``（按本机
+        代码页解释，保持既有行为）；控制台已是 65001 时返回 ``False``
+        （此时原生程序本身就写 UTF-8）；
+      - **Cygwin / MSYS2 / 其它 POSIX**：主编码 = ``locale`` 首选编码。
+        Cygwin 程序按 locale 输出（本项目环境为 ``zh_CN.utf-8`` → UTF-8），
+        原生 Windows 程序的 GBK 字节已经由「UTF-8 严格解码失败 → 本机代码页
+        回退」路径处理；因此 UTF-8 locale 下返回 ``False``——双合法行按
+        UTF-8 解释，不再把真 UTF-8 的希腊 / 西里尔 / 带重音拉丁文本改判成
+        GBK（Cygwin 下「α」曾被改成「伪」）。
+
+    Returns:
+        True 表示双合法行应判为本机代码页输出；False 表示应保留 UTF-8。
+    """
+    if os.name == "nt":
+        code_page = (
+            _windows_code_page("GetConsoleOutputCP")
+            or _windows_code_page("GetOEMCP")
+            or _windows_code_page("GetACP")
+        )
+        encoding = _code_page_encoding(code_page)
+        return not (encoding and _is_utf8_name(encoding))
+    try:
+        preferred = locale.getpreferredencoding(False) or ""
+    except Exception:  # pragma: no cover - locale 查询异常（极端环境）
+        logger.debug("locale 首选编码查询失败", exc_info=True)
+        return True
+    # 取不到 locale 信息（空串）时按「本机代码页」处理，保持既有行为
+    return not (preferred and _is_utf8_name(preferred))
+
+
 # ── 单块字节 → 文本 ──────────────────────────────────
 
 def _utf16_without_bom(raw: bytes) -> "str | None":
@@ -196,11 +253,46 @@ _CJK_CODEPAGE_PREFIXES: tuple[str, ...] = (
     "eucjp", "euckr", "shiftjis", "sjis",
 )
 
-#: GBK 双字节被误读为 UTF-8 双字节序列时落到的码点区间（Greek..NKo）。
-#: 合法 UTF-8 的 Latin-1 / Latin Extended（``café`` / ``naïve``）不在其中
-#: ——避免把正常西欧文本改判成本地代码页。
-_AMBIGUOUS_SCRIPT_MIN = 0x0370
-_AMBIGUOUS_SCRIPT_MAX = 0x07FF
+#: 「本机代码页被按 UTF-8 误读」的特征码位区间——正常输出几乎不会出现：
+#:
+#:   - ``U+0250–U+02FF``：IPA 扩展 + 间距修饰符（``ʲ`` / ``ɸ``）；
+#:   - ``U+0300–U+036F``：组合附加符号（正常文本只跟在字母后，见
+#:     :func:`_embedded_in_ascii_word`，孤立出现即误读）；
+#:   - ``U+0370–U+038F``：古体希腊字母（``ͳ``，现代希腊文不用）；
+#:   - ``U+03D0–U+03FF``：变体希腊 / 科普特衍生（``ϵ``）；
+#:   - ``U+0460–U+052F``：古体西里尔 / 西里尔补充。
+#:
+#: GBK 双字节字符（首字节 ``C2–DF``）按 UTF-8 误读后必然落在
+#: ``U+0080–U+07FF``，其中相当一部分会落进上述区间——命中即判定为本机
+#: 代码页输出。真希腊 / 西里尔 / 带重音拉丁文本用的是现代字母
+#: （``U+0390–U+03CE`` / ``U+0400–U+045F`` / ``U+00C0–U+017F``），不命中。
+_MOJIBAKE_RANGES: tuple[tuple[int, int], ...] = (
+    (0x0250, 0x02FF),
+    (0x0300, 0x036F),
+    (0x0370, 0x038F),
+    (0x03D0, 0x03FF),
+    (0x0460, 0x052F),
+)
+
+#: ``U+0080–U+07FF`` 按书写系统分块（用于「一行横跨多个书写系统 = 误读」
+#: 的判定）。拉丁诸块（Latin-1 补充 + Ext-A + Ext-B）合并为 ``latin``：
+#: 同属拉丁书写系统，西欧 / 中欧文本混用（``café`` / ``Zürich`` / ``ș``）
+#: 是常态，不能算「横跨多个系统」。
+_SCRIPT_BLOCKS: tuple[tuple[int, int, str], ...] = (
+    (0x0080, 0x024F, "latin"),
+    (0x0250, 0x02AF, "ipa"),
+    (0x02B0, 0x02FF, "modifier"),
+    (0x0300, 0x036F, "combining"),
+    (0x0370, 0x03FF, "greek"),
+    (0x0400, 0x052F, "cyrillic"),
+    (0x0530, 0x058F, "armenian"),
+    (0x0590, 0x05FF, "hebrew"),
+    (0x0600, 0x06FF, "arabic"),
+    (0x0700, 0x074F, "syriac"),
+    (0x0750, 0x077F, "arabic-supplement"),
+    (0x0780, 0x07BF, "thaana"),
+    (0x07C0, 0x07FF, "nko"),
+)
 
 
 def _is_cjk_codepage(encoding: str) -> bool:
@@ -214,20 +306,73 @@ def _contains_wide_char(text: str) -> bool:
     return any(codepoint_width(ord(ch)) == 2 for ch in text)
 
 
-def _all_non_ascii_in_ambiguous_scripts(text: str) -> bool:
-    """非 ASCII 字符是否全部落在 U+0370-U+07FF（希腊/西里尔/希伯来/阿拉伯等）。
+def _script_group(char: str) -> str:
+    """返回非 ASCII 字符所属的书写系统块名（未登记区间返回 ``other``）。"""
+    cp = ord(char)
+    for start, end, name in _SCRIPT_BLOCKS:
+        if start <= cp <= end:
+            return name
+    return "other"
 
-    该区间正是「GBK 双字节 → UTF-8 双字节」误读的产物区间（如「系统」
-    ``CF B5 CD B3`` → ``ϵͳ``）。Latin-1 / Latin Extended 与 3 字节以上的
-    码点不在其中，避免误伤合法 UTF-8 文本。
+
+def _embedded_in_ascii_word(text: str, index: int) -> bool:
+    """该位置的非 ASCII 字符是否紧贴 ASCII 字母 / 数字（真实文本特征）。
+
+    ``café`` / ``Zürich`` / ``25 °C`` / ``2μs`` 里的重音字符、符号、希腊
+    字母都嵌在 ASCII 词或数字之间；GBK 被误读时整段是连续非 ASCII（中文
+    没有词间空格），不会紧贴 ASCII。用于把「孤立在 ASCII 词里的非 ASCII
+    字符」排除出误读判定——它们几乎一定是真 UTF-8。
     """
-    for ch in text:
-        cp = ord(ch)
-        if cp < 0x80:
-            continue
-        if not (_AMBIGUOUS_SCRIPT_MIN <= cp <= _AMBIGUOUS_SCRIPT_MAX):
-            return False
-    return True
+    for neighbor in (index - 1, index + 1):
+        if 0 <= neighbor < len(text):
+            char = text[neighbor]
+            if char.isascii() and char.isalnum():
+                return True
+    return False
+
+
+def _suspicious_non_ascii(text: str) -> list[str]:
+    """取出「可能来自本机代码页误读」的非 ASCII 字符（跳过词内重音等）。
+
+    只对**UTF-8 合法、且全部为 2 字节序列**（``U+0080–U+07FF``）的文本有
+    意义——这两个前提由调用方 :func:`_ambiguous_local_decode` 保证。
+    """
+    return [
+        char for index, char in enumerate(text)
+        if ord(char) > 0x7F and not _embedded_in_ascii_word(text, index)
+    ]
+
+
+def _is_mojibake_codepoint(char: str) -> bool:
+    """码位是否落在「本机代码页被误读成 UTF-8」的特征区间。"""
+    cp = ord(char)
+    return any(start <= cp <= end for start, end in _MOJIBAKE_RANGES)
+
+
+def _looks_like_local_mojibake(suspicious: list[str]) -> bool:
+    """这些非 ASCII 字符是否呈现「本机代码页被误读」的特征。
+
+    判定（任一命中即成立）：
+
+      1. 含特征区间的码位（IPA / 修饰符 / 组合符号 / 古体希腊 / 科普特 /
+         古体西里尔）——正常输出几乎不会出现；
+      2. 横跨两个以上书写系统（如「ɸѡ」= IPA + 西里尔、「ʲô」= 修饰符 +
+         拉丁）——真文本极少在一行内混排多种冷门书写系统。
+
+    单书写系统且不含特征码位的行（真希腊文 ``Γειά σου``、GBK「系统」被
+    误读成的 ``ϵͳ``——后者命中特征区间）交给环境主编码裁决，见
+    :func:`_ambiguous_local_decode`。
+    """
+    if not suspicious:
+        return False
+    if any(_is_mojibake_codepoint(char) for char in suspicious):
+        return True
+    return len({_script_group(char) for char in suspicious}) >= 2
+
+
+def _has_non_latin_script(suspicious: list[str]) -> bool:
+    """是否含拉丁书写系统以外的字符（纯拉丁文本一律按真 UTF-8 处理）。"""
+    return any(_script_group(char) != "latin" for char in suspicious)
 
 
 def _utf8_has_wide_sequence(raw: bytes) -> bool:
@@ -254,18 +399,32 @@ def _ambiguous_local_decode(
     raw: bytes,
     utf8_text: str,
     candidates: tuple[str, ...],
+    prefer_local: bool,
 ) -> "str | None":
     """消解「UTF-8 与本地 CJK 代码页双重合法」的歧义（返回本地解码或 None）。
 
-    中文 Windows 上 ``cmd`` 输出的 GBK 短行可能恰好也是合法 UTF-8：例如
-    「系统」= ``CF B5 CD B3`` → UTF-8 解出希腊字母 ``ϵͳ``。此时按以下规则
-    改判本地 CJK 代码页（返回其解码结果），否则返回 None（保留 UTF-8）：
+    CJK 代码页的短行可能恰好也是合法 UTF-8：例如 GBK「系统」=
+    ``CF B5 CD B3`` → UTF-8 解出希腊字母 ``ϵͳ``。这类行没有字节级证据，
+    按以下顺序判定（返回本地解码 → 判为本机代码页；返回 None → 保留 UTF-8）：
 
-      1. UTF-8 文本含宽字符（CJK/全角/emoji）→ 真 UTF-8，不改判；
-      2. UTF-8 字节流含 3/4 字节序列 → 真 UTF-8，不改判；
-      3. UTF-8 的非 ASCII 字符不全是「歧义文字」（Greek..NKo）→ 不改判
-         （保护 ``café`` 等合法西欧文本）；
-      4. 本地 CJK 代码页能严格解码且解出宽字符 → 判为本地代码页输出。
+      1. UTF-8 文本含宽字符（CJK/全角/emoji）→ 真 UTF-8，不改判（GBK 双字节
+         误读不可能产生宽字符）；
+      2. UTF-8 字节流含 3/4 字节序列 → 真 UTF-8，不改判（GBK 双字节误读只
+         产生 2 字节序列）；
+      3. 去掉「嵌在 ASCII 词里的孤立字符」（``café`` / ``25 °C`` / ``2μs``）
+         后无剩余 → 真 UTF-8，不改判；
+      4. 剩余字符呈现误读特征（命中特征码位区间，或横跨多个书写系统）→
+         判为本机代码页（见 :func:`_looks_like_local_mojibake`）；
+      5. 否则按环境主编码裁决：``prefer_local`` 为真且含非拉丁字符 → 判为
+         本机代码页；纯拉丁文本始终按真 UTF-8 处理（保护 ``ÆØÅ`` 等）；
+      6. 判为本机代码页时，只有在本地 CJK 代码页**严格**解码且解出宽字符
+         才接受（否则保留 UTF-8，避免把正常文本换成乱码）。
+
+    Args:
+        raw: 原始字节（已确认可按 UTF-8 严格解码）。
+        utf8_text: ``raw`` 的 UTF-8 解码结果。
+        candidates: 候选编码（本机代码页回退顺序）。
+        prefer_local: 环境主编码是否本机代码页（见 :func:`prefer_local_output`）。
     """
     if utf8_text.isascii():
         return None
@@ -273,7 +432,11 @@ def _ambiguous_local_decode(
         return None
     if _utf8_has_wide_sequence(raw):
         return None
-    if not _all_non_ascii_in_ambiguous_scripts(utf8_text):
+    suspicious = _suspicious_non_ascii(utf8_text)
+    if not suspicious:
+        return None
+    if not (_looks_like_local_mojibake(suspicious)
+            or (prefer_local and _has_non_latin_script(suspicious))):
         return None
     for encoding in candidates:
         if _is_utf8_name(encoding) or not _is_cjk_codepage(encoding):
@@ -329,7 +492,12 @@ def _repair_wide_text(text: str) -> str:
     return stripped.lstrip("\ufffd")
 
 
-def decode_output(raw: bytes, encodings: "tuple[str, ...] | list[str] | None" = None) -> str:
+def decode_output(
+    raw: bytes,
+    encodings: "tuple[str, ...] | list[str] | None" = None,
+    *,
+    prefer_local: "bool | None" = None,
+) -> str:
     """把子进程输出字节解码为文本（编码自适应 + 宽字符误读修复）。
 
     在 :func:`_decode_output` 的自适应解码之上，再修复一类**上游**损坏：
@@ -339,14 +507,21 @@ def decode_output(raw: bytes, encodings: "tuple[str, ...] | list[str] | None" = 
     Args:
         raw: 子进程输出字节（可含多行 / 不完整行）。
         encodings: 候选编码（默认 :func:`default_output_encodings`；测试可注入）。
+        prefer_local: 「双重合法」行的裁决偏好（默认按
+            :func:`prefer_local_output` 判定环境主编码；测试可注入）。
 
     Returns:
         解码后的文本（永不抛 ``UnicodeDecodeError``）。
     """
-    return _repair_wide_text(_decode_output(raw, encodings))
+    return _repair_wide_text(_decode_output(raw, encodings, prefer_local=prefer_local))
 
 
-def _decode_output(raw: bytes, encodings: "tuple[str, ...] | list[str] | None" = None) -> str:
+def _decode_output(
+    raw: bytes,
+    encodings: "tuple[str, ...] | list[str] | None" = None,
+    *,
+    prefer_local: "bool | None" = None,
+) -> str:
     """按编码自适应把字节解码为文本（:func:`decode_output` 的内核）。
 
     解码顺序：
@@ -354,13 +529,15 @@ def _decode_output(raw: bytes, encodings: "tuple[str, ...] | list[str] | None" =
          UTF-16LE 重叠，故先判 UTF-32）；
       2. 无 BOM 但呈 UTF-16 字节分布（``wmic`` 等宽字符输出）；
       3. UTF-8 严格解码（现代工具的主流编码；与本地 CJK 代码页双重合法
-         的短行按 :func:`_ambiguous_local_decode` 消歧）；
+         的行按 :func:`_ambiguous_local_decode` 消歧）；
       4. 依次尝试本机候选编码（见 :func:`default_output_encodings`）；
       5. 仍失败 → 本机编码 ``errors='replace'`` 兜底。
 
     Args:
         raw: 子进程输出字节（可含多行 / 不完整行）。
         encodings: 候选编码（默认 :func:`default_output_encodings`；测试可注入）。
+        prefer_local: 「双重合法」行的裁决偏好（默认按
+            :func:`prefer_local_output` 判定环境主编码；测试可注入）。
 
     Returns:
         解码后的文本（永不抛 ``UnicodeDecodeError``）。
@@ -368,6 +545,8 @@ def _decode_output(raw: bytes, encodings: "tuple[str, ...] | list[str] | None" =
     if not raw:
         return ""
     candidates = tuple(encodings) if encodings else default_output_encodings()
+    if prefer_local is None:
+        prefer_local = prefer_local_output()
 
     # 1) BOM 明确：UTF-32 必须先判（其 LE BOM 以 UTF-16LE BOM 开头）
     if raw.startswith(codecs.BOM_UTF32_LE) or raw.startswith(codecs.BOM_UTF32_BE):
@@ -395,7 +574,8 @@ def _decode_output(raw: bytes, encodings: "tuple[str, ...] | list[str] | None" =
     except UnicodeDecodeError:
         utf8_text = None
     if utf8_text is not None:
-        local_text = _ambiguous_local_decode(raw, utf8_text, candidates)
+        local_text = _ambiguous_local_decode(
+            raw, utf8_text, candidates, prefer_local)
         return local_text if local_text is not None else utf8_text
 
     # 4) 本机代码页（跳过 UTF-8 族——已尝试过）
@@ -442,14 +622,27 @@ class OutputLineDecoder:
     代码页时各自正确）。
     """
 
-    def __init__(self, encodings: "tuple[str, ...] | list[str] | None" = None) -> None:
+    def __init__(
+        self,
+        encodings: "tuple[str, ...] | list[str] | None" = None,
+        *,
+        prefer_local: "bool | None" = None,
+    ) -> None:
         """初始化。
 
         Args:
             encodings: 候选编码（默认 :func:`default_output_encodings`）。
+            prefer_local: 「双重合法」（UTF-8 与本地 CJK 代码页都能严格
+                解码）的行按哪个编码解释（默认按
+                :func:`prefer_local_output` 判定环境主编码）。每条输出流
+                解析一次——原生 Windows 的控制台代码页（``chcp``）可能在
+                会话期间变化，按流采样比进程级缓存更贴近实际输出。
         """
         self._encodings: tuple[str, ...] = (
             tuple(encodings) if encodings else default_output_encodings()
+        )
+        self._prefer_local: bool = (
+            prefer_local_output() if prefer_local is None else bool(prefer_local)
         )
         self._byte_buffer = bytearray()
         self._text_buffer = ""
@@ -461,6 +654,11 @@ class OutputLineDecoder:
     def encodings(self) -> tuple[str, ...]:
         """本解码器使用的候选编码（调试/测试用）。"""
         return self._encodings
+
+    @property
+    def prefer_local(self) -> bool:
+        """「双重合法」行是否按本机代码页解释（调试/测试用）。"""
+        return self._prefer_local
 
     def feed(self, chunk: bytes) -> list[str]:
         """喂入一块字节，返回其中已完整的行（含行尾 ``\\n``，可能为空）。"""
@@ -487,7 +685,9 @@ class OutputLineDecoder:
         if not self._detected:
             # 全程不足 8 字节：按普通字节流解码（UTF-8/本地代码页自适应）
             if self._byte_buffer:
-                lines.append(decode_output(bytes(self._byte_buffer), self._encodings))
+                lines.append(decode_output(
+                    bytes(self._byte_buffer), self._encodings,
+                    prefer_local=self._prefer_local))
                 self._byte_buffer.clear()
             return lines
         if self._wide_encoding is not None:
@@ -501,7 +701,9 @@ class OutputLineDecoder:
                 self._text_buffer = ""
             return lines
         if self._byte_buffer:
-            lines.append(decode_output(bytes(self._byte_buffer), self._encodings))
+            lines.append(decode_output(
+                bytes(self._byte_buffer), self._encodings,
+                prefer_local=self._prefer_local))
             self._byte_buffer.clear()
         return lines
 
@@ -561,7 +763,9 @@ class OutputLineDecoder:
             if newline < 0:
                 break
             lines.append(
-                decode_output(bytes(self._byte_buffer[:newline + 1]), self._encodings)
+                decode_output(
+                    bytes(self._byte_buffer[:newline + 1]), self._encodings,
+                    prefer_local=self._prefer_local)
             )
             del self._byte_buffer[:newline + 1]
         return lines

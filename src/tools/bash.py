@@ -1357,6 +1357,15 @@ class BashFunc(Func):
         代码页回退 → replace 兜底，并支持 UTF-16 宽字符流），详见
         ``src/tools/_process_output.py``。
 
+        ★ Cygwin / MSYS2 乱码修复（2026-10-20）：这类环境里 Cygwin 程序按
+        ``locale`` 输出 UTF-8、原生 Windows 程序（``ipconfig`` /
+        ``driverquery`` 等）按 ANSI 代码页输出 GBK，同一条命令流可能混排。
+        「UTF-8 与 GBK 双重合法」的行（GBK「系统」=``CF B5 CD B3`` 也是合法
+        UTF-8）改由「误读特征 + 环境主编码」判定（``_process_output`` 的
+        ``_ambiguous_local_decode`` / ``prefer_local_output``）：真 UTF-8 的
+        希腊字母（``α``）、西里尔文（``Привет``）不再被改成「伪」「袩褉懈…」，
+        GBK 误读行（``ʲô`` / ``ɸѡ``）仍能还原成中文。
+
         实现说明（★ 超长行修复）：
         不使用 ``StreamReader.readline()``。readline 内部基于 readuntil，
         当某行超过 StreamReader 默认 limit（64KB）时 readuntil 抛
