@@ -318,6 +318,21 @@ class ChatUIConsumer:
     def write_line(self, text: str) -> None:
         self._engine.push_cmd(WriteLineCmd(text=text))
 
+    def set_exit_note(self, text: str) -> None:
+        """登记退出提示（TUI 停止时输出在界面内容下方一行，不清屏）。
+
+        ★ 2026-10-20（用户需求）：退出提示（「再见   恢复: python chat.py
+        --load …」）不能再作为内容行写进 TUI（会随界面一起被收尾覆盖），
+        改由 InkSession 在 ``stop()``（渲染线程结束后）经
+        ``InkRenderer.emit_exit_note`` 输出到全部 TUI 内容的下方一行。
+        旧引擎/测试桩无此能力时回退 ``write_line``（行为等同修复前）。
+        """
+        setter = getattr(self._engine, "set_exit_note", None)
+        if callable(setter):
+            setter(text)
+            return
+        self.write_line(text)
+
     def display_messages(self, messages: list[dict], speed: int = 0) -> None:
         self._engine.push_cmd(DisplayMsgsCmd(messages=messages, speed=speed))
 

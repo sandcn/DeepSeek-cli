@@ -168,9 +168,11 @@ class TuiLifecycle:
                 try:
                     self._engine.flush()
                 finally:
-                    # ★ 退出清理：清当前帧（保留 scrollback），避免底部栏
-                    #   残留与后续 ``Goodbye!`` 输出粘连。prepare_exit 缺失
-                    #   （测试桩/旧引擎）时跳过。
+                    # ★ 退出清理：刷出最后一帧（**保留 TUI 内容，不清屏**）——
+                    #   退出提示由 ``engine.stop()`` 在渲染线程结束后输出到
+                    #   界面内容下方一行（2026-10-20 用户需求：不清屏、
+                    #   「再见 / 恢复」打印在所有 TUI 下面一行）。prepare_exit
+                    #   缺失（测试桩/旧引擎）时跳过。
                     prepare = getattr(self._engine, "prepare_exit", None)
                     if callable(prepare):
                         try:

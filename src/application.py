@@ -130,6 +130,14 @@ class AppMode(ABC):
     内置 bootstrap()/shutdown() 生命周期管理。
     """
 
+    #: 应用退出时是否追加 ``Goodbye!`` 一行（``Application.run`` 收尾输出）。
+    #: ★ 2026-10-20（用户需求：退出时在所有 TUI 下面一行打印「再见 / 恢复」）：
+    #: 交互式 TUI 自行输出该提示（``_save_and_show_recover`` →
+    #: ``InkSession.set_exit_note`` → 界面下方一行），再追加 ``Goodbye!``
+    #: 会多出一行、破坏「TUI 下方一行」的退出版式——``InteractiveMode``
+    #: 置 False；其余模式（单次对话等）保持既有行为。
+    shows_goodbye: bool = True
+
     def __init__(self, ctx: AppContext):
         self._ctx = ctx
 
@@ -215,7 +223,11 @@ class Application:
             self._ctx.output_port.write(f"\n  ❌ 致命错误: {e}", level="error")
         finally:
             await self._mode.shutdown()
-            self._ctx.output_port.write("  Goodbye!", level="raw")
+            # ★ 2026-10-20：交互式 TUI 已自行输出「再见 / 恢复」提示（见
+            #   ``AppMode.shows_goodbye``）——此时不再追加 ``Goodbye!``，避免
+            #   在 TUI 下方多出一行、破坏「TUI 下面一行」的退出版式。
+            if getattr(self._mode, "shows_goodbye", True):
+                self._ctx.output_port.write("  Goodbye!", level="raw")
 
 # ═══════════════════════════════════════════════════════════════
 # InteractiveMode — 交互式对话
@@ -223,6 +235,10 @@ class Application:
 
 class InteractiveMode(AppMode):
     """交互式对话模式 — 经内核 ``ctx.interactive_loop``（内核缺失时回退 app_loop）"""
+
+    #: 退出提示由 TUI 自己输出（``_save_and_show_recover`` → InkSession
+    #: ``set_exit_note`` → 界面内容下方一行），故不再追加 ``Goodbye!``。
+    shows_goodbye = False
 
     async def run(self) -> None:
         from .kernel.runtime import active_service

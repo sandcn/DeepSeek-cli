@@ -105,6 +105,8 @@ class _SessionFrameMixin:
     _last_render_height: int
     _last_size_poll: float
     _resize_pending: bool
+    #: 首帧尺寸基准同步标志（InkSession.__init__ 置 True，首帧渲染后置 False）
+    _first_frame_pending: bool
     _dirty: bool
     _frame_active: bool
     _system_monitor: Any
@@ -324,7 +326,11 @@ class _SessionFrameMixin:
                 except Exception:
                     _logger.debug("InkRenderer set_width 传播异常", exc_info=True)
                 self._last_render_width = width
-                self._resize_pending = True
+                # ★ 2026-10-20：首帧只记录尺寸基准，不当作 resize（否则
+                #   ``reset(full=True)`` 会清屏并关掉起始行锚定——见
+                #   ``InkSession._first_frame_pending`` 注释）。
+                if not getattr(self, "_first_frame_pending", False):
+                    self._resize_pending = True
                 width_changed = True
             # ★ 增量渲染屏幕高度传播（方向1）：高度变化（resize）时更新
             #   InkRenderer.set_height——渲染器按新屏幕高度钳制光标/跳过不可达行。
@@ -338,7 +344,10 @@ class _SessionFrameMixin:
                 self._last_render_height = height
                 # 高度变化与宽度变化共用同一次重置（全量刷新标志由宽度/高度
                 # 分支任一置位，下方消费）。
-                self._resize_pending = True
+                # ★ 2026-10-20：首帧不视为 resize（同上，见
+                #   ``InkSession._first_frame_pending``）。
+                if not getattr(self, "_first_frame_pending", False):
+                    self._resize_pending = True
                 height_changed = True
             size_changed = width_changed or height_changed
             if width_changed or height_changed:
@@ -368,6 +377,11 @@ class _SessionFrameMixin:
             #   脏事件（系统统计 ≤2s）才重建。置 ``_idle_ok=False`` 强制本帧
             #   按新尺寸重建组件树。
             self._idle_ok = False
+        # ★ 2026-10-20：首帧尺寸基准同步完成——本帧是首次渲染，尺寸已记录为
+        #   基准（见上方 width/height 分支），此后尺寸变化按真实 resize 处理
+        #   （``reset(full=True)`` + 清屏重写，resize 残留修复契约不变）。
+        if getattr(self, "_first_frame_pending", False):
+            self._first_frame_pending = False
         # ★ 空闲帧复用（2026-10-07 性能优化，用户需求）：宿主声明的「静态
         #   状态」（``set_idle_frame_predicate``）下跳过组件树重建/调和/布局/
         #   绘制，直接复用上一帧——**帧号照常推进（对外仍恒定 30Hz）**，仅省

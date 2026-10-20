@@ -59,10 +59,28 @@ def test_gradient_ascii_progress_unchanged():
 # 2. InputBufferEditor：Delete 跨代理对删除后的光标位置
 # ═══════════════════════════════════════════════════════════
 
+def _editor_with_surrogate_pair_buffer(suffix: str):
+    """构造「缓冲区内为 UTF-16 代理对」的编辑器（绕过 set_buffer 清洗）。
+
+    ★ 2026-10-20 测试修正（既有失败）：``set_buffer`` 现在会对预填文本做
+    ``sanitize_surrogates``（相邻代理对还原为完整码点——孤立代理项无法
+    UTF-8 编码，会让自动保存/序列化抛 ``UnicodeEncodeError``），因此
+    ``set_buffer("\\ud83d\\ude00abc")`` 得到的是 ``"😀abc"``（4 个字符），
+    「光标落在代理对中间」的前提不复存在，下方两个用例的断言全部失效。
+    代理对删除逻辑仍需覆盖（输入路径可能直接写入未清洗字符）——这里直接
+    写入 ``_buffer`` 构造目标状态，断言语义与原用例一致。
+    """
+    editor = InputBufferEditor(Path("/tmp/tui-bugfix-history"))
+    editor.set_buffer("")
+    with editor._lock:
+        editor._buffer = "\ud83d\ude00" + suffix
+        editor._cursor_pos = 0
+    return editor
+
+
 def test_delete_between_surrogate_pair_moves_cursor_back():
     """光标落在代理对中间按 Delete：删除整个代理对后光标须前移一位。"""
-    editor = InputBufferEditor(Path("/tmp/tui-bugfix-history"))
-    editor.set_buffer("\ud83d\ude00abc")
+    editor = _editor_with_surrogate_pair_buffer("abc")
     with editor._lock:
         editor._cursor_pos = 1  # 高代理与低代理之间
     editor._delete()
@@ -72,8 +90,7 @@ def test_delete_between_surrogate_pair_moves_cursor_back():
 
 def test_delete_after_surrogate_pair_unchanged():
     """光标在代理对之后按 Delete：删除后一个字符，光标不动（零回归）。"""
-    editor = InputBufferEditor(Path("/tmp/tui-bugfix-history"))
-    editor.set_buffer("\ud83d\ude00abc")
+    editor = _editor_with_surrogate_pair_buffer("abc")
     with editor._lock:
         editor._cursor_pos = 2
     editor._delete()

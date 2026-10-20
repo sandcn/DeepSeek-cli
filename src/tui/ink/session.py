@@ -252,6 +252,10 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._exit_result = None
         #: render({onRender}) 每帧渲染后回调（React Ink v6 RenderMetrics）。
         self._on_render_callback: Callable | None = None
+        #: 退出提示文本（「再见 / 恢复: python chat.py --load …」）——由宿主
+        #: 经 ``set_exit_note`` 登记，``stop()`` 在渲染线程结束后输出到
+        #: **TUI 内容下方一行**（不清屏，见 ``InkRenderer.emit_exit_note``）。
+        self._exit_note: str | None = None
         self._wire_hooks()
         # ★ P5：input-area fiber 引用缓存（方向2 P5）——_render_frame 仅在失效时
         #   重建（None/deleted/类型不符），_position_cursor 复用（避免每帧全树
@@ -267,6 +271,23 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         # ★ 方向3（resize 全量刷新）：终端尺寸变化（width/height 任一）置位，
         #   _render_frame 消费后重置渲染器 prev——resize 后全量重写而非增量 diff。
         self._resize_pending: bool = False
+        # ★ 2026-10-20（用户需求：启动时从「当前光标下一行」开始渲染）：
+        #   首帧尺寸基准同步标志。上方 ``_last_render_*`` 初始为 0，首帧必然
+        #   看到「尺寸变化」——修复前该变化被当作 resize 处理
+        #   （``_resize_pending`` → ``reset(full=True)`` → ``_clear_before_full``），
+        #   而首帧本就 ``_prev is None`` 走全量写入、无旧帧可清，副作用是：
+        #   1) 清掉用户终端里已有的输出（ED 2，视觉上「打开即清屏」）；
+        #   2) ``_write_full`` 在清屏分支里把「起始行锚定」关掉
+        #      （``_start_anchor_pending = False``）→ 文档改按「贴屏幕底部」
+        #      锚定，启动渲染位置需求（光标下一行）**完全失效**（该需求
+        #      2026-10-06 加入后一直是死代码）。
+        #   修复：首帧只把当前尺寸记录为基准（仍传播 set_width/set_height 与
+        #   useWindowSize 通知、仍 resync 内容行基线），不置
+        #   ``_resize_pending``；本帧渲染完成后由 ``_render_frame_impl`` 置
+        #   False，此后真实 resize 行为不变。首帧尺寸在构造后、首帧前变化的
+        #   场景（``render()`` 的 width/height 覆盖）同样只需基准同步——首帧
+        #   本就会按当前尺寸全量绘制。
+        self._first_frame_pending: bool = True
         # 系统监控（CPU/MEM；每 sys_stats_interval 秒刷新输入区顶部分隔线显示）
         self._system_monitor = None
         self._last_sys_stats_time: float = 0.0
@@ -1023,17 +1044,32 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._render_thread.start()
 
     def prepare_exit(self) -> None:
-        """退出前清除当前帧（保留 scrollback），供生命周期 stop 调用。
+        """退出前刷出最后一帧（**保留 TUI 内容，不清屏**）。
 
-        非全屏流动模型的最后一帧包含底部栏（输入区 / 状态栏）；直接退出时
-        光标停在底部栏区域，后续 ``Goodbye!`` 会覆盖首行、其余行残留
-        （``░░░░░░] 1.8%`` 之类）。清屏（``\\033[2J\\033[H``）后退出输出从
-        干净屏幕开始，scrollback 历史由终端保留。
+        ★ 2026-10-20（用户需求：退出时在所有 TUI 内容下面一行打印
+        「再见 / 恢复: python chat.py --load …」，不再清屏）：修复前这里调用
+        ``InkRenderer.full_clear()``（``\\033[2J`` 清屏）——整屏 TUI 被抹掉，
+        退出提示随之消失，只剩 ``Goodbye!`` 落在屏幕左上角。
+        现在只 flush 最终帧；退出提示由 ``stop()``（渲染线程已 join）经
+        ``InkRenderer.emit_exit_note`` 输出在 TUI 下方一行。
         """
         try:
-            self._ink_renderer.full_clear()
+            self._ink_renderer.flush()
         except Exception:
-            _logger.debug("prepare_exit full_clear 异常", exc_info=True)
+            _logger.debug("prepare_exit flush 异常", exc_info=True)
+
+    def set_exit_note(self, text: str | None) -> None:
+        """登记退出提示（``stop()`` 时输出在 TUI 内容下方一行，不清屏）。
+
+        Args:
+            text: 提示文本（「再见   恢复: python chat.py --load <sid>」等，
+                可含 ANSI 样式）；None/空串表示不输出。
+
+        ★ 幂等：重复登记以最后一次为准；输出后清空（``stop()`` 重复调用不会
+        重复打印）。
+        """
+        note = text.strip() if isinstance(text, str) else ""
+        self._exit_note = note or None
 
     def stop(self) -> None:
         self._render_running = False
@@ -1061,6 +1097,18 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         if self._render_thread is None or not self._render_thread.is_alive():
             self._ink_renderer.suspend()
         self._drain_queue_safe()
+        # ★ 2026-10-20（用户需求）：退出提示输出在**全部 TUI 内容下方一行**，
+        #   且不清屏。须在渲染线程 join 之后（本句之前）输出——否则渲染线程
+        #   的下一帧会按旧布局重写该区域把提示覆盖掉。提示文本由宿主经
+        #   ``set_exit_note`` 登记（「再见   恢复: python chat.py --load <sid>」），
+        #   输出后清空（stop 幂等不重复打印）。
+        note = getattr(self, "_exit_note", None)
+        if note:
+            self._exit_note = None
+            try:
+                self._ink_renderer.emit_exit_note(note)
+            except Exception:
+                _logger.debug("退出提示输出异常", exc_info=True)
         # ★ 架构改进方向 C：stop 时注销本会话的 SIGWINCH 回调——释放回调
         #   注册表对会话实例的强引用（修复前回调从不注销，stop 后会话对象
         #   仍被全局注册表持有；重复 assemble 时旧会话回调仍被触发）。

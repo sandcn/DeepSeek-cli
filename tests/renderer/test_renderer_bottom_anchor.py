@@ -281,8 +281,10 @@ class TestStartRowAnchor:
         r.render(_frame([f"L{i}" for i in range(8)]))
         assert calls == [1]
         assert r._start_row is None
-        # resize 后全量重写走底部锚定（定位到 height-doc_h+1）
-        assert r._stream.getvalue()[before:].startswith("\x1b[17;1H")
+        # resize 后全量重写走底部锚定（定位到 height-doc_h+1）；★ 2026-10-20
+        # resize 残留修复后全量重写前会先清屏（ED 2 + 归位），定位序列紧随其后。
+        tail = r._stream.getvalue()[before:]
+        assert tail.replace("\x1b[2J\x1b[H", "").startswith("\x1b[17;1H")
 
 
 class _FakeOut:
@@ -409,3 +411,164 @@ class TestStartRowAnchorEndToEnd:
         assert display[-1].strip(), "状态栏行不应为空"
         assert "shell-" not in display[-1], "界面未贴屏幕底部（残留 shell 行）"
         assert renderer._start_row is None
+
+
+# ═══════════════════════════════════════════════════════════
+# 会话级启动帧（2026-10-20 用户需求：启动从当前光标下一行开始渲染）
+# ═══════════════════════════════════════════════════════════
+#
+# bug：真实启动路径（``InkSession._render_frame_impl``）首帧尺寸基准
+# （``_last_render_width/_last_render_height``）初值为 0，首帧必然「看到尺寸
+# 变化」→ ``_resize_pending`` → ``reset(full=True)`` → ``_clear_before_full``
+# → ``_write_full`` 先写 ED 2 清屏，并在清屏分支里把「起始行锚定」关闭
+# （``_start_anchor_pending = False``）→ 文档改按「贴屏幕底部」锚定：
+# 用户看到的是「打开即清屏 + TUI 从屏幕底部开始」，而不是需求要求的
+# 「从当前光标下一行开始」。渲染器单测（上方 TestStartRowAnchor*）直接构造
+# InkRenderer，绕过了会话层，因此该缺陷长期未被覆盖。
+#
+# 修复：首帧只记录尺寸基准（``_first_frame_pending``），不置
+# ``_resize_pending``；真实 resize（首帧之后）仍全量重置 + 清屏重写。
+
+
+class _FixedSizeCache:
+    """固定尺寸的终端尺寸缓存桩（避免测试读取真实终端尺寸）。"""
+
+    def __init__(self, width: int = 80, height: int = 24) -> None:
+        self.width = width
+        self.height = height
+
+    def get_width(self) -> int:
+        return self.width
+
+    def get_height(self) -> int:
+        return self.height
+
+    def poll(self, ttl: float = 0.0) -> None:
+        return None
+
+
+def _make_session(width: int = 80, height: int = 24, cursor_row: int = 5):
+    """构造最小 InkSession（不启动渲染线程，直接驱动单帧）。"""
+    from src.tui._config import TuiConfig
+    from src.tui.ink import TEXT, h
+    from src.tui.ink._render_api import _SimpleModel
+    from src.tui.ink.session import InkSession
+
+    session = InkSession(
+        model=_SimpleModel(),
+        build_tree=lambda m, w: h(TEXT, {"children": "hello"}),
+        stream=io.StringIO(),
+        width_cache=_FixedSizeCache(width, height),
+        config=TuiConfig.defaults(),
+    )
+    session._ink_renderer.set_cursor_row_provider(lambda: cursor_row)
+    return session
+
+
+class TestSessionStartupFrame:
+    """会话首帧：不清屏、按「光标下一行」锚定、且不再被误判为 resize。"""
+
+    def test_first_frame_does_not_clear_screen(self):
+        session = _make_session(cursor_row=5)
+        session._render_frame_impl()
+        out = session._ink_renderer.stream.getvalue()
+        assert "\x1b[2J" not in out, "启动首帧不得清屏（会抹掉终端里已有的输出）"
+
+    def test_first_frame_starts_below_cursor(self):
+        session = _make_session(cursor_row=5)
+        session._render_frame_impl()
+        out = session._ink_renderer.stream.getvalue()
+        renderer = session._ink_renderer
+        assert renderer._start_row == 6, "文档起始行应锚定到光标下一行"
+        assert out.startswith("\x1b[6;1H"), f"首个定位序列应为光标下一行: {out[:32]!r}"
+        # 起始行锚定生效：文档顶部在屏幕第 6 行、坐标换算与落位一致
+        assert renderer._effective_offset(1) == 1 - 6
+        assert renderer._cursor_row <= 24
+
+    def test_first_frame_flag_consumed_once(self):
+        session = _make_session()
+        assert session._first_frame_pending is True
+        session._render_frame_impl()
+        assert session._first_frame_pending is False
+        # 基准已同步：第二帧同尺寸不再触发全量重置
+        stream = session._ink_renderer.stream
+        before = len(stream.getvalue())
+        session._render_frame_impl()
+        assert "\x1b[2J" not in stream.getvalue()[before:]
+
+    def test_real_resize_after_startup_still_clears(self):
+        session = _make_session(cursor_row=5)
+        session._render_frame_impl()
+        stream = session._ink_renderer.stream
+        before = len(stream.getvalue())
+        # 真实 resize（首帧之后）：仍全量重置 + 清屏重写（resize 残留修复契约）
+        session._width_cache.width = 120
+        session._width_cache.height = 30
+        session._render_frame_impl()
+        delta = stream.getvalue()[before:]
+        assert "\x1b[2J" in delta, "resize 全量重写前应清屏（清掉旧尺寸帧残留）"
+        # resize 后坐标系重置：起始行锚定失效，改按底部锚定重写
+        assert session._ink_renderer._start_row is None
+
+
+@pytest.mark.skipif(pyte is None, reason="pyte 未安装（终端模拟依赖）")
+class TestSessionStartupFrameEndToEnd:
+    """端到端：真实会话首帧在 pyte 屏幕上确实落在光标下一行且不清屏。"""
+
+    def _render(self, shell_lines: int = 3, height: int = 30, width: int = 80):
+        from src.tui._config import TuiConfig
+        from src.tui.ink.session import InkSession
+        from src.tui.app.model import AppModel
+        from src.tui.app.app import App
+        from src.tui.ink.element import h
+
+        screen = pyte.Screen(width, height)
+        term = pyte.Stream(screen)
+        for i in range(shell_lines):
+            term.feed(f"shell-{i}\r\n")
+        term.feed("$ python chat.py\r\n")
+        cursor_row = screen.cursor.y + 1
+
+        model = AppModel()
+        model.width = width
+        model.committed_lines.append(Line([StyledRun("  \u2726 v2.2.0", None)]))
+        model.committed_lines.append(Line([StyledRun(" ", None)]))
+
+        out = io.StringIO()
+        session = InkSession(
+            model=model,
+            build_tree=lambda m, w: h(App, {"model": m, "width": w}),
+            stream=out,
+            width_cache=_FixedSizeCache(width, height),
+            config=TuiConfig.defaults(),
+        )
+        session._ink_renderer.set_cursor_row_provider(lambda: cursor_row)
+        session._render_frame_impl()
+        term.feed(out.getvalue())
+        return screen, cursor_row, session
+
+    def test_shell_history_kept_and_tui_below_cursor(self):
+        screen, cursor_row, session = self._render()
+        display = [line.rstrip() for line in screen.display]
+        # 终端里已有的输出（shell 历史 + 启动命令行）必须保留
+        assert display[0].startswith("shell-0"), f"启动清屏抹掉了旧输出: {display[:3]!r}"
+        assert display[cursor_row - 2] == "$ python chat.py"
+        titles = [line for line in display if line.startswith("\u2726 DeepSeek CLI")]
+        assert len(titles) == 1, f"标题重复: {titles!r}"
+        # 文档从光标下一行开始（屏幕 1-based 光标行 cursor_row → 0-based index cursor_row）
+        assert display[cursor_row].startswith("\u2726 DeepSeek CLI")
+        assert session._ink_renderer._start_row == cursor_row + 1
+
+    def test_cursor_at_screen_bottom_still_renders_interface(self):
+        """光标已贴屏幕最底行：起始行越界 → 钳到末行写入并滚动，界面仍完整。"""
+        screen, _cursor_row, session = self._render(shell_lines=30)
+        display = [line.rstrip() for line in screen.display]
+        titles = [line for line in display if line.startswith("\u2726 DeepSeek CLI")]
+        assert len(titles) == 1, f"标题重复: {titles!r}"
+        # 界面底部（状态栏行）仍贴屏幕底部，没有残半份旧 UI
+        assert display[-1].strip(), "状态栏行不应为空"
+        assert "shell-" not in display[-1], "界面未贴屏幕底部"
+        # 起始行越界后转底部锚定（锚定字段已解除，坐标模型与实际落位一致）
+        assert session._ink_renderer._start_row is None
+        assert session._ink_renderer._buf_h >= 30
+

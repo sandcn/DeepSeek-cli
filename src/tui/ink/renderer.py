@@ -1464,6 +1464,56 @@ class InkRenderer(_RendererContentMixin):
         #   软重置语义即此）。
         self._start_row = None
 
+    def emit_exit_note(self, text: str) -> None:
+        """在文档最后一行下方输出一行退出提示（保留 TUI、不清屏）。
+
+        ★ 2026-10-20（用户需求：退出时在所有 TUI 内容下面一行打印
+        「再见 / 恢复: python chat.py --load …」，且不再清屏）：修复前
+        ``InkSession.prepare_exit`` 调 ``full_clear()``（ED 2）清屏——整屏
+        TUI 被抹掉，「再见 / 恢复」提示随之消失，只剩 ``Goodbye!`` 落在
+        屏幕左上角。
+
+        实现：
+          - 最终帧由 ``place_cursor`` 停在输入行（文档中部），先按渲染器
+            坐标模型移动到**文档最后一行的屏幕行**（``_bottom_row``，含
+            屏幕/物理缓冲偏移换算与钳制），再写 ``\\r\\n``——提示行因此恰好
+            位于全部 TUI 内容的下方一行；文档贴屏幕底部时由该换行触发终端
+            自然上滚（历史进 scrollback，不清屏）；
+          - 提示文本后再写一个 ``\\r\\n``，让随后打印的 shell 提示符另起
+            一行（不与本行粘连）；
+          - 全程不写清屏序列、不重建帧；调用方须保证渲染线程已停止
+            （``InkSession.stop`` 在 join 之后调用）。
+
+        Args:
+            text: 提示文本（可含 ANSI 样式；本方法不添加前缀换行）。
+        """
+        if not text:
+            return
+        buf = io.StringIO()
+        doc_h = self._prev.height if self._prev is not None else 0
+        if doc_h > 0 and self._height > 0:
+            target = self._bottom_row(doc_h)
+            current = self._cursor_row
+            if current > target:
+                buf.write(cursor_up(current - target))
+            elif current < target:
+                buf.write(cursor_down(target - current))
+            self._cursor_row = target
+        buf.write("\r\n")
+        buf.write(text)
+        buf.write("\r\n")
+        try:
+            self._stream.write(buf.getvalue())
+            self._stream.flush()
+        except (OSError, ValueError):
+            _logger.debug("emit_exit_note 写入失败", exc_info=True)
+        # 光标已落在提示行下方：记账跟随实际位置（退出路径不再渲染，仅为
+        # 状态一致性；height=0 无屏幕约束时直接 +2）。
+        if self._height > 0:
+            self._cursor_row = self._clamp(self._cursor_row + 2)
+        else:
+            self._cursor_row += 2
+
     # ── 生命周期 ─────────────────────────────────────
 
     def suspend(self) -> None:

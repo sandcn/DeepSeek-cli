@@ -107,22 +107,36 @@ def _exit_save_and_stop(session, chat_ui=None) -> None:
     stop_active_monitor()
 
 
+def _emit_exit_note(note: str, chat_ui) -> None:
+    """输出退出提示（TUI：界面内容下方一行；无 UI：raw 输出）。
+
+    ★ 2026-10-20（用户需求：退出时在所有 TUI 下面一行打印「再见 / 恢复」，
+    不再清屏）：TUI 路径改为 ``chat_ui.set_exit_note(note)``——文本交给
+    InkSession，在 ``stop()``（渲染线程结束后）输出到全部界面内容的下方
+    一行，且不清屏。修复前经 ``write_line`` 作为内容行写进 TUI，随后被
+    退出清理覆盖（用户看不到提示）。旧实现/测试桩无 ``set_exit_note`` 时
+    回退 ``write_line``（保留原行为）。
+    """
+    if chat_ui is not None:
+        setter = getattr(chat_ui, "set_exit_note", None)
+        if callable(setter):
+            setter(note)
+            return
+        chat_ui.write_line(f"\n{note}")
+        return
+    publish_output(f"\n{note}", level="raw")
+
+
 def _save_and_show_recover(session, chat_ui=None):
     """保存对话并输出恢复命令"""
     non_system_msgs = _non_system_messages(session)
     if not non_system_msgs:
-        if chat_ui is not None:
-            chat_ui.write_line(f"\n{DIM}再见{RESET}")
-        else:
-            publish_output(f"\n{DIM}再见{RESET}", level="raw")
+        _emit_exit_note(f"{DIM}再见{RESET}", chat_ui)
         return
 
     sid = session.save()
     if sid:
-        msg = f"\n{DIM}再见   恢复: {get_recover_cmd(sid)}{RESET}"
+        note = f"{DIM}再见   恢复: {get_recover_cmd(sid)}{RESET}"
     else:
-        msg = f"\n{DIM}再见{RESET}"
-    if chat_ui is not None:
-        chat_ui.write_line(msg)
-    else:
-        publish_output(msg, level="raw")
+        note = f"{DIM}再见{RESET}"
+    _emit_exit_note(note, chat_ui)
