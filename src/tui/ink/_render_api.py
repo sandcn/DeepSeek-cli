@@ -280,8 +280,8 @@ def render(
             sys.stderr 的 write 为代理——print()/错误输出重定向到 TUI 流；
             unmount/cleanup 时恢复原流）。
         maxFps: React Ink 官方「渲染帧率上限」参数——本框架渲染线程恒定
-            30Hz 且不可改变，参数保留以兼容官方 API，但不再生效（传入
-            任意值帧率均为 30Hz）。
+            60Hz 且不可改变，参数保留以兼容官方 API，但不再生效（传入
+            任意值帧率均为 60Hz）。
         isScreenReaderEnabled: 屏幕阅读器模式（useIsScreenReaderEnabled 返回
             True；供组件输出无障碍文本）。
         kittyKeyboard: kitty 键盘协议配置——None/False 不启用；True 启用；
@@ -371,13 +371,14 @@ def render(
         session.write_terminal_sequence(cursor_shape_sequence(cursorShape))
 
     # ── React Ink render() 扩展 options ──
-    # maxFps：官方语义为「渲染帧率上限」，本框架渲染线程**恒定 30Hz 且不可
-    #   改变**（用户需求 2026-10-07）——按官方 API 保留参数签名（兼容调用
-    #   方），但不再覆盖 render_interval（``TuiConfig.__post_init__`` 已强制
-    #   render_interval 恒为 1/30，任何路径都无法改变帧率）。
+    # maxFps：官方语义为「渲染帧率上限」，本框架渲染线程**恒定 60Hz 且不可
+    #   改变**（用户需求 2026-10-20：render 线程跟 input 处理改成 60hz，不能
+    #   降减少和降级）——按官方 API 保留参数签名（兼容调用方），但不再覆盖
+    #   render_interval（``TuiConfig.__post_init__`` 已强制 render_interval 及
+    #   帧率派生节流参数恒为 60Hz 真源，任何路径都无法改变帧率）。
     if maxFps is not None:
         _logger.debug(
-            "render maxFps=%r 已忽略：渲染线程恒定 30Hz，帧率不可改变", maxFps,
+            "render maxFps=%r 已忽略：渲染线程恒定 60Hz，帧率不可改变", maxFps,
         )
     # isScreenReaderEnabled：注入屏幕阅读器开关（useIsScreenReaderEnabled）
     # ★ 多会话隔离（P0 架构修复）：写入**本会话** HookContext（修复前写模块

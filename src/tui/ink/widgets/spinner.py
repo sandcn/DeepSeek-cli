@@ -5,7 +5,7 @@ React Ink 生态 ``<Spinner>`` 的行内变体：渲染为**单字符** spinner 
 独立组件占一行，行内场景用 InlineSpinner）。
 
 时间基动画：帧号 = ``int(time.monotonic() * tick_hz) % len(frames)``——纯时间
-推进（非帧计数）；渲染线程恒定 30Hz，本控件仅按时间返回当前帧字符，
+推进（非帧计数）；渲染线程恒定 60Hz，本控件仅按时间返回当前帧字符，
 不请求渲染。
 """
 
@@ -31,7 +31,9 @@ def _spinner_frame_index(tick_hz: float, frames) -> int:
     n = len(frames)
     if n <= 0:
         return 0
-    hz = tick_hz if tick_hz and tick_hz > 0 else 30.0
+    # 回退值与 TuiConfig/RENDER_HZ 默认值一致（60Hz；2026-10-20 用户需求：
+    # render 线程跟 input 处理改成 60hz，不能降减少和降级）。
+    hz = tick_hz if tick_hz and tick_hz > 0 else 60.0
     return int(time.monotonic() * max(hz, 1e-6)) % n
 
 
@@ -39,7 +41,7 @@ def InlineSpinner(props: dict) -> Element:
     """行内时间基 spinner 字符控件。
 
     Props:
-        tickHz: 每秒帧切换次数（默认 30.0）。
+        tickHz: 每秒帧切换次数（默认 60.0）。
         frames: 帧序列（str/list/tuple；默认 braille 10 帧）。
         style: 字符样式（Style 对象或 None）。
 

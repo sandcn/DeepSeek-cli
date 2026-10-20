@@ -593,7 +593,7 @@ def LogsView(props) -> object:
 
     # 实时刷新：渲染后调用装配注入的刷新器（``model.logs_refresher``）——
     # 会话日志签名变化（新事件 / 消息增删）时重建并写回 ``model.logs_view``，
-    # 签名未变则零成本；deps=None → 每帧执行（30Hz，签名检查 O(事件数)）。
+    # 签名未变则零成本；deps=None → 每帧执行（60Hz，签名检查 O(事件数)）。
     # 视图层不依赖 core 层（刷新逻辑经注入的 callable 承担），因此 F12 在
     # AI 流式输出期间打开同样自动跟进。
     _refresher = getattr(model, "logs_refresher", None)

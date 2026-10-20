@@ -145,7 +145,7 @@ def _make_idle_frame_predicate(model, session):
     仅在**所有**时间驱动显示源都不活跃时返回 True（无流式状态/工具运行/
     解析进度/补全弹窗/模态视图/子代理卡片/占位符渐显）；任一活跃或判定
     异常时返回 False → 本拍正常重建渲染（零视觉回归——无法确认静态时
-    宁可多渲染一帧）。帧率不受影响：会话对外仍恒定 30Hz，仅跳过静态帧的
+    宁可多渲染一帧）。帧率不受影响：会话对外仍恒定 60Hz，仅跳过静态帧的
     组件树重建开销。
     """
     def _is_static() -> bool:
@@ -226,7 +226,7 @@ def create_framework(model, tui_config, line_tracker, input_instance):
         mouse=tui_config.mouse,
     )
     # ★ 空闲帧复用（2026-10-07 性能优化）：注入「静态状态」预测——宿主静态
-    #   时本拍复用上一帧（帧号照常推进，恒定 30Hz 节拍不变），省空转 CPU。
+    #   时本拍复用上一帧（帧号照常推进，恒定 60Hz 节拍不变），省空转 CPU。
     session.set_idle_frame_predicate(_make_idle_frame_predicate(model, session))
     # Claude TUI parity 步骤 3.1：Ctrl+L 清屏（session.clear_screen；
     # 未注入时 dispatcher 记 debug 跳过，测试兼容）

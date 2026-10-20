@@ -522,7 +522,7 @@ def test_f11_open_and_auto_update_on_sandbox_growth(tmp_path):
             str(tmp_path / "c.py"), None, "y\n", 7, tool_name="write",
         )
         _render(model, ChangesView)  # 本帧渲染后（提交期）刷新器重建数据
-        out = _render(model, ChangesView)  # 下一帧显示新数据（30Hz 认知即自动更新）
+        out = _render(model, ChangesView)  # 下一帧显示新数据（60Hz 认知即自动更新）
         assert len(model.changes_view.entries) == 3
         assert "3 个文件" in out  # 界面头部计数已自动更新
     finally:

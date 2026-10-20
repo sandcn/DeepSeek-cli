@@ -110,7 +110,7 @@ def _last_core_trigger_pos(text: str) -> int:
     """``text`` 中最后一个核心格式触发字符的下标（无则 -1）。
 
     对每个核心字符做一次 C 级 ``str.rfind``（18 个）——对短增量文本
-    （30Hz 下每次 write 的 delta）远快于逐字符 Python 循环。
+    （高频写入下每次 write 的 delta）远快于逐字符 Python 循环。
     """
     pos = -1
     for ch in _trigger_meta()[0]:
@@ -742,7 +742,7 @@ class AnsiStreamRenderer:
         已收集行（+ 未换行活动行）交给临时子解析器，取其「未闭合预览 Token」
         （或完整 token），经独立管线合并（``CodeBlockBatcher`` 等）后渲染。
 
-        性能：以「已收集行元组」为缓存键——内容未变化的帧（30Hz 空转）零开销；
+        性能：以「已收集行元组」为缓存键——内容未变化的帧（高频空转）零开销；
         追加行时重算一次（与告示正文块级预览同一策略）。
         """
         p = self._parser
@@ -1719,7 +1719,7 @@ class AnsiStreamRenderer:
         """预览用子解析（带小容量缓存：同一内容重复帧零成本）。
 
         `正文含块级标记的告示在流式期间每帧重渲染，缓存键为内容行元组——
-        内容未变化的帧（如 30Hz 空转）直接复用解析结果。
+        内容未变化的帧（如高频空转）直接复用解析结果。
         """
         key = tuple(lines)
         cached = self._preview_sub_cache.get(key)
@@ -2013,7 +2013,7 @@ class AnsiStreamRenderer:
         逐行高亮对「只追加」的流式输入可安全缓存（``highlight_code_lines``
         本身逐行处理、无跨行状态）——修复前每次 write 对整段预览（最多
         ``_PREVIEW_MAX_LINES`` 行）重新词法高亮，600 行代码流式输出实测约
-        27s，渲染线程在 30Hz 下近乎满载，进而造成命令队列背压。
+        27s，渲染线程在 30Hz（当时帧率）下近乎满载，进而造成命令队列背压。
 
         增量口径（每次 write 最多渲染 2 行）：
           - **已确定行**（``src_lines[:-1]``）按行数增量渲染；某行升格为完整

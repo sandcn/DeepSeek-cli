@@ -46,7 +46,9 @@ def _default_fx_params() -> tuple[float, float]:
         cfg = TuiConfig.defaults()
         return (cfg.fade_duration_sec, cfg.spinner_tick_hz)
     except Exception:
-        return (0.6, 30.0)
+        # 与 TuiConfig / RENDER_HZ 默认值一致（60Hz；2026-10-20 用户需求：
+        # render 线程跟 input 处理改成 60hz，不能降减少和降级）。
+        return (0.6, 60.0)
 
 
 # ★ P2（review）：包装缓存（保持 ``_default_fx_params`` 可 patch/可读语义）。
@@ -102,7 +104,7 @@ def spinner_frame(tick_hz: float, frames) -> int:
     """时间基 spinner 帧号（``int(time.monotonic() * tick_hz) % len(frames)``）。
 
     Args:
-        tick_hz: 每秒帧切换次数（消费 TuiConfig.spinner_tick_hz 默认值 30.0）；
+        tick_hz: 每秒帧切换次数（消费 TuiConfig.spinner_tick_hz 默认值 60.0）；
             <=0 时回退到配置默认值（防御）。
         frames: spinner 帧序列（可为 list/str/tuple，需支持 len/下标）。
 
@@ -131,7 +133,7 @@ def spinner_char(tick_hz: float = 0.0) -> str:
     同一逻辑——收敛为本 helper（帧序列统一取 ``SPINNER_FRAMES``）。
 
     Args:
-        tick_hz: 每秒帧切换次数；<=0 时用 ``spinner_frame`` 默认（30Hz）。
+        tick_hz: 每秒帧切换次数；<=0 时用 ``spinner_frame`` 默认（60Hz）。
 
     Returns:
         当前 spinner 帧字符（如 ``⠋``）。

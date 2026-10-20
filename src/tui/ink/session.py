@@ -74,7 +74,7 @@ _CONTENT_COMMANDS = CONTENT_COMMANDS
 _RECOVER_STABLE_SECS = 60.0
 
 # ── 渲染线程自适应等待参数（★ 单帧耗时无上界约束） ──────────────
-# 约束（2026-08-19）：渲染线程为 30Hz 循环，**单帧执行没有耗时上限**——
+# 约束（2026-08-19）：渲染线程为 60Hz 循环，**单帧执行没有耗时上限**——
 # 大量上文重放/超长 markdown 渲染一帧可达数秒以上。所有「等待渲染线程」
 # 的逻辑不得把慢帧误判为超时/挂起：
 #   - 帧号推进（``_frame_seq``）或帧执行中（``_frame_active``）= 有进展，
@@ -92,6 +92,72 @@ _JOIN_RENDER_HARD_TIMEOUT = 30.0
 #: flush() 队列排空总硬上限（秒）——真挂起防护（渲染线程存活但停滞时调用方
 #: 不得永久阻塞；见 flush 实现）
 _FLUSH_HARD_CEILING = 60.0
+
+# ── 60Hz 节拍精度（2026-10-20 用户需求：render 线程跟 input 处理改成 60hz） ──
+#: 节拍尾段自旋保护（秒）——Windows/Cygwin 的 ``Event.wait`` 粒度在
+#: ``timeBeginPeriod(1)`` 后仍约 1ms；等待到「还剩 ≤1ms」后自旋补齐，
+#: 避免 wait 粒度把 16.67ms 的 60Hz 节拍拉低到 ~58Hz。
+_TICK_SPIN_GUARD = 0.001
+#: 高分辨率定时器请求（仅 Windows/Cygwin）：线程所有者集合 + winmm 句柄。
+#: 每个渲染线程在进入 ``_render`` 时申请、退出时释放；多个渲染线程/会话
+#: 并存时只申请一次，最后一个线程退出时恢复系统默认分辨率。
+_high_res_timer_lock = threading.Lock()
+_high_res_timer_owners: set[int] = set()
+_high_res_timer_lib = None
+
+
+def _supports_high_resolution_timer() -> bool:
+    """当前平台是否支持 ``timeBeginPeriod``（Windows 原生 / Cygwin）。"""
+    return sys.platform == "win32" or sys.platform.startswith("cygwin")
+
+
+def _acquire_high_resolution_timer() -> None:
+    """为当前渲染线程申请 1ms 系统定时器分辨率（幂等，按线程标识）。
+
+    ★ 2026-10-20（用户需求：60Hz 不能降减少和降级）：Windows/Cygwin 默认
+    定时器粒度约 15.6ms，``Event.wait(16.67ms)`` 实测会睡 ~31ms（30Hz 时代
+    实测目标 30Hz 实际仅 ~23Hz）。``timeBeginPeriod(1)`` 把粒度降到 ~1ms，
+    使 60Hz 节拍可达；非 Windows 平台无此问题，直接跳过。申请失败仅记
+    debug（回退平台默认节拍，不阻断渲染）。
+    """
+    if not _supports_high_resolution_timer():
+        return
+    tid = threading.get_ident()
+    global _high_res_timer_lib
+    with _high_res_timer_lock:
+        if tid in _high_res_timer_owners:
+            return
+        if not _high_res_timer_owners:
+            try:
+                import ctypes
+                lib = ctypes.CDLL("winmm.dll")
+                lib.timeBeginPeriod(1)
+                _high_res_timer_lib = lib
+            except Exception:
+                _logger.debug(
+                    "申请 1ms 定时器分辨率失败（回退系统默认节拍）", exc_info=True,
+                )
+                _high_res_timer_lib = None
+                return
+        _high_res_timer_owners.add(tid)
+
+
+def _release_high_resolution_timer() -> None:
+    """释放当前渲染线程申请的定时器分辨率（幂等；最后一个线程恢复默认）。"""
+    if not _supports_high_resolution_timer():
+        return
+    tid = threading.get_ident()
+    global _high_res_timer_lib
+    with _high_res_timer_lock:
+        if tid not in _high_res_timer_owners:
+            return
+        _high_res_timer_owners.discard(tid)
+        if not _high_res_timer_owners and _high_res_timer_lib is not None:
+            try:
+                _high_res_timer_lib.timeEndPeriod(1)
+            except Exception:
+                _logger.debug("恢复系统定时器分辨率异常", exc_info=True)
+            _high_res_timer_lib = None
 
 # ★ 架构改进方向 A：``_KEEP_CONTENT_CMDS`` / ``_PUT_NO_DROP_TIMEOUT`` 定义已
 #   迁至 ``_session_queue_mixin``（唯一使用方），本模块 re-export 保持旧导入
@@ -212,7 +278,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   ``_poll_terminal_size`` 重探尺寸的节流时间戳（monotonic）。
         self._last_size_poll: float = 0.0
         # ★ 脏标记：模型有变更（命令应用/输入/重绘请求）时置位——
-        #   渲染线程恒定 30Hz 渲染（不因空闲跳过），本标记供等待方
+        #   渲染线程恒定 60Hz 渲染（不因空闲跳过），本标记供等待方
         #   （waitUntilRenderFlush / flush）判断「待渲染变更是否已消费」。
         self._dirty: bool = False
         # ★ 帧执行标记（2026-08-19，单帧耗时无上界约束）：``_render_frame``
@@ -320,7 +386,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #: 最近一帧（复用路径直接重放；None = 尚未渲染过任何帧）
         self._last_frame = None
         #: 宿主注入的「静态状态」预测函数（None = 恒不复用，默认行为与既有
-        #: 恒定 30Hz 全量渲染完全一致）
+        #: 恒定 60Hz 全量渲染完全一致）
         self._idle_frame_predicate: Callable[[], bool] | None = None
         #: 本拍「无变更」标记（``_should_render`` 写入；空闲帧复用的前置条件）
         self._idle_ok: bool = False
@@ -536,9 +602,9 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         ``predicate() -> bool``：True 表示**当前宿主处于静态状态**——组件树
         在无输入/无命令时不会因时间推进而改变（无呼吸动画/spinner/流式占位
         等时间驱动内容）。会话据此在本拍跳过组件树重建/调和/布局/绘制并复用
-        上一帧（帧号照常推进，对外仍恒定 30Hz），降低空闲空转 CPU。
+        上一帧（帧号照常推进，对外仍恒定 60Hz），降低空闲空转 CPU。
 
-        None（默认）表示不复用——行为与既有「恒定 30Hz 全量渲染」完全一致
+        None（默认）表示不复用——行为与既有「恒定 60Hz 全量渲染」完全一致
         （宿主未声明静态性时框架不擅自跳过渲染）。
         """
         self._idle_frame_predicate = predicate
@@ -663,7 +729,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             self._render_frame()
         except Exception:
             # ★ P2-1（review 方向）：渲染失败后补置 ``_dirty``——渲染线程
-            #   恒定 30Hz（下一拍必渲染），补置脏标记保持等待方语义一致
+            #   恒定 60Hz（下一拍必渲染），补置脏标记保持等待方语义一致
             #   （配合 _drain_queue 既有指数退避防刷屏）。
             self._dirty = True
             _logger.debug("clear_screen 重建空文档异常", exc_info=True)
@@ -736,7 +802,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         ``SelectInput`` use_input handler + ``use_modal`` 吞噬）仍会把用户的
         Enter **消费掉**（router 返回 True → InputDispatcher 跳过 ``_enter()``
         → prefill 不提交 →「按回车没反应，要再按一次」）。窗口时长 =
-        清理时刻 → 渲染线程完成下一帧（30Hz 节流 + 帧耗时——大量上文重放
+        清理时刻 → 渲染线程完成下一帧（60Hz 节流 + 帧耗时——大量上文重放
         时一帧 100ms~1s+）——「很多上文时大概率复现，1 条消息快速连按也
         会命中」。
 
@@ -799,8 +865,8 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             target = self._frame_seq + 2
             base_seq = self._frame_seq
             self._frame_flush_waiters.append((target, ev))
-        # 唤醒渲染线程（置脏 + 命令事件）——恒定 30Hz 节拍下渲染线程按
-        # 下一拍完成目标帧（≤1/30s），不再提前执行。
+        # 唤醒渲染线程（置脏 + 命令事件）——恒定 60Hz 节拍下渲染线程按
+        # 下一拍完成目标帧（≤1/60s），不再提前执行。
         self._bottom_redraw_requested.set()
         self._dirty = True
         self._cmd_event.set()
@@ -1304,17 +1370,21 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
 
     def _render(self) -> None:
         entry_version = self._render_version
+        # ★ 2026-10-20（用户需求：60Hz 节拍）：Windows/Cygwin 申请 1ms 定时器
+        #   分辨率——默认 15.6ms 粒度无法表达 16.67ms 的 60Hz 帧间隔。按渲染
+        #   线程标识申请（崩溃恢复新线程会重新申请），线程退出时释放。
+        _acquire_high_resolution_timer()
         # ★ PERF-8（防忙循环）：下次允许唤醒的时刻（monotonic）——subagent
         #   执行工具期间高频命令（ToolCountInc/DecCmd、SUBAGENT_FRAME、
         #   ParseInfoCmd 等）持续 ``_cmd_event.set()``：原 ``_cmd_event.wait
-        #   (timeout=0.1)`` 被 set 立即唤醒 → 渲染循环失去 30Hz 节流变成
+        #   (timeout=0.1)`` 被 set 立即唤醒 → 渲染循环失去 60Hz 节流变成
         #   忙循环（每轮循环固定开销 × 高频唤醒 → CPU 100%，实测 5ms 事件
         #   频率下 174Hz/27% CPU）。修复：节流时刻跨循环持久，wait 即使被
         #   唤醒也等到 ``next_loop``——高频命令在队列中堆积，每
         #   render_interval 一轮全量排空（无批处理长度上限），渲染循环稳定
-        #   30Hz；用户输入/关键命令仍经 ``_drain_queue`` 每轮处理（延迟
-        #   ≤ render_interval，与空闲 30Hz 行为一致）。
-        next_loop: float = 0.0
+        #   60Hz；用户输入/关键命令仍经 ``_drain_queue`` 每轮处理（延迟
+        #   ≤ render_interval，与空闲 60Hz 行为一致）。
+        next_loop: float = time.monotonic()
         # ★ 多会话隔离（P0 架构修复）：渲染线程整个生命周期激活本会话的
         #   HookContext——INPUT 阶段（_phase_process_input）的输入分发、
         #   use_input router 回调、key pressed 标志、焦点切换都发生在
@@ -1335,20 +1405,36 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                 if now < next_loop:
                     remaining = next_loop - now
                     while remaining > 0:
-                        self._cmd_event.wait(timeout=remaining)
+                        # ★ 尾段 ≤1ms 自旋（2026-10-20 用户需求：60Hz）：Windows/
+                        #   Cygwin 的 Event.wait 粒度约 1ms（timeBeginPeriod(1)
+                        #   后），纯 wait 会把 16.67ms 节拍拉低；仅最后 1ms 忙等，
+                        #   CPU 开销可控，且不减少任何渲染/输入处理工作。
+                        if remaining <= _TICK_SPIN_GUARD:
+                            while time.monotonic() < next_loop:
+                                pass
+                            break
+                        self._cmd_event.wait(
+                            timeout=remaining - _TICK_SPIN_GUARD,
+                        )
                         self._cmd_event.clear()
                         now = time.monotonic()
                         remaining = next_loop - now
-                        # ★ 恒定 30Hz（2026-10-07 用户需求）：不因重绘请求提前
-                        #   退出节流——任何请求都等到下一 30Hz 拍处理（帧率恒
-                        #   定不超频）；用户可感知更新在 ≤1/30s 内完成。
-                next_loop = max(next_loop, time.monotonic()) + self._config.render_interval
+                        # ★ 恒定 60Hz（2026-10-20 用户需求）：不因重绘请求提前
+                        #   退出节流——任何请求都等到下一 60Hz 拍处理（帧率恒
+                        #   定不超频）；用户可感知更新在 ≤1/60s 内完成。
+                # ★ 固定节拍（2026-10-20）：下一拍 = 上一拍 deadline + 帧间隔，
+                #   不把本帧处理耗时叠加到周期上（旧实现
+                #   ``max(next_loop, now)+interval`` 使每帧周期 = interval +
+                #   帧耗时，60Hz 实际只有 ~50Hz）。若本帧处理已越过下一拍
+                #   （渲染跟不上），下一次循环的 ``now < next_loop`` 为假 →
+                #   不等待、连续运转，不丢帧也不降级。
+                next_loop += self._config.render_interval
                 try:
                     # 方向5（死代码清理）：返回值未使用——has_content 删除。
                     self._drain_queue()
                     self._cmd_event.clear()
                     # ★ 重绘请求未消费时保持唤醒（下一轮节流等待立即返回后仍
-                    #   等到 ``next_loop``，帧率恒定 30Hz）。
+                    #   等到 ``next_loop``，帧率恒定 60Hz）。
                     if self._bottom_redraw_requested.is_set():
                         self._cmd_event.set()
                     # ★ BUG-39：稳定运行复位崩溃恢复计数——上次恢复后持续运行
@@ -1378,6 +1464,10 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         finally:
             if _ctx is not None:
                 _hooks.pop_context()
+            # ★ 2026-10-20（用户需求：60Hz 节拍）：渲染线程退出（stop /
+            #   request_exit / 崩溃结束）时释放 1ms 定时器分辨率——覆盖
+            #   render() 独立会话 unmount 不调用 stop() 的路径（幂等）。
+            _release_high_resolution_timer()
             if self._render_version != entry_version:
                 _logger.debug("render 线程版本已更新（新线程已启动），跳过排空")
             else:
@@ -1471,16 +1561,16 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                     except Exception:
                         # P3-16（设计说明）：无 boundary 异常端到端不触发崩溃
                         # 恢复——reconciler 层对无边界异常 re-raise 保留，但
-                        # session 层在此吞掉仅记 warning：**单帧失败 + 30Hz
+                        # session 层在此吞掉仅记 warning：**单帧失败 + 60Hz
                         # 重试**（render 线程不崩溃不重启）。reconciler.
                         # _handle_render_crash 崩溃恢复仅服务 render 循环级异常
                         # （队列/输入/面板回调等）。
-                        # P7（方向2）：持久性渲染异常从 30Hz 无限重试降为指数
+                        # P7（方向2）：持久性渲染异常从 60Hz 无限重试降为指数
                         # 退避（0.1→0.2→0.4→…→1.0 封顶，≤1Hz），日志刷屏缓解；
-                        # 正常路径无 sleep（渲染帧率 30Hz 不降低）。
+                        # 正常路径无 sleep（渲染帧率 60Hz 不降低）。
                         # 方向1（渲染失败帧不重试修复）：_should_render 已清
                         # _dirty，失败帧若不补置脏标记下一拍不会重试（仅退避
-                        # 等待）——补置 _dirty = True，下一 30Hz 拍重试，配合
+                        # 等待）——补置 _dirty = True，下一 60Hz 拍重试，配合
                         # 既有指数退避防刷屏（退避封顶 1s，不会无限重试）。
                         self._consecutive_render_failures += 1
                         delay = min(0.1 * 2 ** (self._consecutive_render_failures - 1), 1.0)
@@ -1560,12 +1650,14 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
     def _should_render(self) -> bool:
         """是否需渲染本帧：**恒定 True**——渲染线程每拍都渲染。
 
-        ★ 2026-10-07（用户需求「渲染线程任何时候都是 30hz 渲染，不能改变」）：
-        移除「空闲按需渲染」与「force 提前渲染」——任何状态（空闲/无命令/
-        无动画）都恰按 ``render_interval``（1/30s）节拍渲染一帧，既不跳过
-        也不提前，帧率严格 30Hz 且不可被配置/参数改变（``TuiConfig`` 的
-        ``__post_init__`` 强制 ``render_interval`` 恒为 1/30；
-        ``render(maxFps=...)`` 不再改变帧率）。
+        ★ 2026-10-20（用户需求「render 线程跟 input 处理改成 60hz，不能降减少
+        和降级」）：移除「空闲按需渲染」与「force 提前渲染」——任何状态
+        （空闲/无命令/无动画）都恰按 ``render_interval``（1/60s）节拍渲染
+        一帧，既不跳过也不提前，帧率严格 60Hz 且不可被配置/参数改变
+        （``TuiConfig`` 的 ``__post_init__`` 强制 ``render_interval`` 及帧率
+        派生节流参数恒为 60Hz 真源；``render(maxFps=...)`` 不再改变帧率）。
+        输入处理 ``_phase_process_input`` 位于同一帧的 INPUT 阶段，因此输入
+        轮询频率随本方法保证的节拍同步为 60Hz（不降低、不降级）。
 
         节拍由 ``_render`` 循环的 ``next_loop``（``render_interval``）保证，
         本方法不再重复节流。重绘请求（``_bottom_redraw_requested``）消费为
@@ -1617,6 +1709,13 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             _logger.debug("SIGWINCH 刷新异常", exc_info=True)
 
     def _phase_process_input(self) -> None:
+        """INPUT 阶段：每渲染帧调用一次 ``Input.process_events()``。
+
+        ★ 2026-10-20（用户需求：input 处理改成 60Hz）：本阶段位于
+        ``_drain_queue`` 的固定阶段链（SIGWINCH → INPUT → ...），由
+        ``_render`` 循环每拍调用一次；渲染线程 60Hz 节拍下输入轮询同为
+        60Hz，不跳帧、不降采样、不减少单帧输入处理预算。
+        """
         if self._input is not None:
             try:
                 self._input.process_events()

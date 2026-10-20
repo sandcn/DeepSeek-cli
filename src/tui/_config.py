@@ -7,7 +7,7 @@
 
     from src.tui._config import TuiConfig
     cfg = TuiConfig.defaults()
-    print(cfg.render_interval)  # 0.0333...（1/30）
+    print(cfg.render_interval)  # 0.0166...（1/60）
 
 配置模板约定（横切步骤17）：本项目配置为 ``TuiConfig`` dataclass，无独立
 .env/.env.example/config.yaml 模板文件——**新增字段即默认值模板**：新增可调
@@ -23,11 +23,12 @@ from typing import Any, TypeVar
 
 __all__: list[str] = ["ConfigBase", "TuiConfig", "RENDER_HZ", "RENDER_INTERVAL_SEC"]
 
-#: 渲染线程帧率（Hz）——恒定 30Hz，唯一真源且**不可改变**（用户需求：
-#: 「渲染线程任何时候都是 30hz 渲染，不能改变」）。所有帧率相关参数
-#: （``render_interval`` / ``drain_lock_timeout`` / ``bottom_redraw_interval``
-#: / ``spinner_tick_hz``）均由此推导，禁止各模块另写 ``30`` / ``1/30`` 魔数。
-RENDER_HZ: float = 30.0
+#: 渲染线程帧率（Hz）——恒定 60Hz，唯一真源且**不可改变**（用户需求：
+#: 「render 线程跟 input 处理改成 60hz，不能降减少和降级」）。所有帧率
+#: 相关参数（``render_interval`` / ``drain_lock_timeout`` /
+#: ``bottom_redraw_interval`` / ``spinner_tick_hz``）均由此推导，禁止各模块
+#: 另写 ``60`` / ``1/60`` 魔数。
+RENDER_HZ: float = 60.0
 #: 渲染线程帧间隔（秒）= ``1 / RENDER_HZ``。
 RENDER_INTERVAL_SEC: float = 1.0 / RENDER_HZ
 
@@ -67,13 +68,13 @@ class TuiConfig(ConfigBase):
     """
 
     # ── 渲染引擎参数 ──────────────────────────────────
-    #: 渲染线程帧间隔（秒）——恒定 ``1/30``（30Hz），**不可改变**：任何构造/
+    #: 渲染线程帧间隔（秒）——恒定 ``1/60``（60Hz），**不可改变**：任何构造/
     #: 覆盖路径都会被 ``__post_init__`` 强制回真源值。
     render_interval: float = RENDER_INTERVAL_SEC
     drain_lock_timeout: float = RENDER_INTERVAL_SEC  # drain 锁超时（秒），与 render_interval 对齐
     cmd_queue_maxsize: int = 10000          # 命令队列最大容量
     consecutive_full_threshold: int = 10    # 连续满队列告警阈值
-    bottom_redraw_interval: float = RENDER_INTERVAL_SEC  # 底部栏重绘间隔（秒），对应 30Hz
+    bottom_redraw_interval: float = RENDER_INTERVAL_SEC  # 底部栏重绘间隔（秒），对应 60Hz
 
     # ── 动画参数 ──────────────────────────────────────
     breath_cycle_len: int = 12              # 呼吸周期长度（帧数）
@@ -85,7 +86,7 @@ class TuiConfig(ConfigBase):
     fade_total_frames: int = 6              # FadeIn 渐显帧数（兼容旧配置保留）
     fade_start_color: int = 238             # FadeIn 起始暗色（256 色号）
     fade_duration_sec: float = 0.6          # FadeIn 渐显总时长（秒）——绝对时长，与渲染帧率无关
-    spinner_tick_hz: float = RENDER_HZ      # spinner 时间基推进频率（Hz），对齐渲染循环 30Hz
+    spinner_tick_hz: float = RENDER_HZ      # spinner 时间基推进频率（Hz），对齐渲染循环 60Hz
 
     # ── EventBus 参数 ──────────────────────────────────
     eventbus_throttle: float = 0.3          # EventBus 发布频率阈值（秒），对应 300ms
@@ -139,12 +140,21 @@ class TuiConfig(ConfigBase):
     mouse: bool = True
 
     def __post_init__(self) -> None:
-        """强制渲染帧率恒定 30Hz——帧率不可被任何构造/覆盖路径改变。
+        """强制渲染帧率恒定 60Hz——帧率不可被任何构造/覆盖路径降低。
 
-        用户需求（2026-10-07）「渲染线程任何时候都是 30hz 渲染，不能改变」：
-        ``render_interval`` 是帧率唯一表现，任何试图改动的构造（直接
-        ``TuiConfig(render_interval=...)`` 或 ``with_overrides``）都被此处
-        强制回真源 ``RENDER_INTERVAL_SEC``，保证帧率恒定。
+        用户需求（2026-10-20）「render 线程跟 input 处理改成 60hz，不能降减少
+        和降级」：``render_interval`` 是帧率唯一表现，任何试图改动的构造
+        （直接 ``TuiConfig(render_interval=...)`` 或 ``with_overrides``）都被
+        此处强制回真源 ``RENDER_INTERVAL_SEC``。同时把由帧率派生的节流参数
+        （``drain_lock_timeout`` / ``bottom_redraw_interval`` /
+        ``spinner_tick_hz``）一并强制回 60Hz 真源——堵死任何通过配置单独降低
+        渲染/输入/动画/解析刷新频率的降级路径。
         """
         if self.render_interval != RENDER_INTERVAL_SEC:
             object.__setattr__(self, "render_interval", RENDER_INTERVAL_SEC)
+        if self.drain_lock_timeout != RENDER_INTERVAL_SEC:
+            object.__setattr__(self, "drain_lock_timeout", RENDER_INTERVAL_SEC)
+        if self.bottom_redraw_interval != RENDER_INTERVAL_SEC:
+            object.__setattr__(self, "bottom_redraw_interval", RENDER_INTERVAL_SEC)
+        if self.spinner_tick_hz != RENDER_HZ:
+            object.__setattr__(self, "spinner_tick_hz", RENDER_HZ)

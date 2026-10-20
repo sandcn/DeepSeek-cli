@@ -58,7 +58,7 @@ _logger = logging.getLogger(__name__)
 #: 窗口 resize **不发送 SIGWINCH**（Cygwin pty 实测 winsize 变化不触发信号），
 #: ``TerminalWidthCache`` 默认 TTL 60s 内宽度陈旧——工具卡/布局宽度不随窗口
 #: 变化。渲染帧每帧经 ``_poll_terminal_size`` 按本间隔主动重探（5 次/秒
-#: ioctl 成本可忽略，渲染帧本就 30Hz）。
+#: ioctl 成本可忽略，渲染帧本就 60Hz）。
 _SIZE_POLL_INTERVAL = 0.2
 
 
@@ -216,7 +216,7 @@ class _SessionFrameMixin:
             _logger.debug("终端尺寸轮询异常", exc_info=True)
 
     def _should_reuse_idle_frame(self) -> bool:
-        """本拍是否复用上一帧（空闲帧复用——30Hz 节拍不变，省空转重建开销）。
+        """本拍是否复用上一帧（空闲帧复用——60Hz 节拍不变，省空转重建开销）。
 
         全部条件满足才复用（任一不满足 → 正常重建，零行为变化）：
           1. 宿主注入空闲预测函数（``set_idle_frame_predicate``）且返回 True
@@ -384,11 +384,11 @@ class _SessionFrameMixin:
             self._first_frame_pending = False
         # ★ 空闲帧复用（2026-10-07 性能优化，用户需求）：宿主声明的「静态
         #   状态」（``set_idle_frame_predicate``）下跳过组件树重建/调和/布局/
-        #   绘制，直接复用上一帧——**帧号照常推进（对外仍恒定 30Hz）**，仅省
+        #   绘制，直接复用上一帧——**帧号照常推进（对外仍恒定 60Hz）**，仅省
         #   空转 CPU（无变化帧的重建开销 ≈ 1ms/帧）。判定条件全部满足才复用：
         #   预测函数返回 True + 无待处理命令 + 非脏 + 无 resize + 无重绘请求 +
         #   无激活动画（``useAnimation``）。未注入预测函数时恒不复用（默认
-        #   行为与既有 30Hz 全量渲染完全一致）。
+        #   行为与既有 60Hz 全量渲染完全一致）。
         if self._should_reuse_idle_frame() and self._last_frame is not None:
             frame = self._last_frame
         else:

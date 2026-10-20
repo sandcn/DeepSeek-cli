@@ -1,7 +1,7 @@
 """_animation — useAnimation 共享动画驱动（React Ink v7 等价）。
 
 官方 ``useAnimation`` 语义：所有动画组件**共用一个定时器**——一次定时器
-推进只触发一轮渲染，多个动画组件合并渲染。本框架渲染循环为 30Hz
+推进只触发一轮渲染，多个动画组件合并渲染。本框架渲染循环为 60Hz
 （``TuiConfig.render_interval``），故驱动直接挂在渲染循环上：
 ``advance_animation()`` 每帧调用一次（session 注入），递增 tick 序号。
 
@@ -53,8 +53,8 @@ def advance_animation(now: float | None = None, ctx: "HookContext | None" = None
     ★ 不触发订阅者重渲染（review 修复）：订阅者回调经 hooks ``_schedule``
     落到 ``session._request_render``（置 ``_bottom_redraw_requested`` = force，
     打破节流）——若每帧 advance 都通知，将形成「渲染→advance→force→立即再
-    渲染」的无节流忙循环。本框架渲染循环**恒定 30Hz**（``render_interval``
-    = 1/30s，不可改变），动画组件每帧都会被重渲染，``frame``/``time``
+    渲染」的无节流忙循环。本框架渲染循环**恒定 60Hz**（``render_interval``
+    = 1/60s，不可改变），动画组件每帧都会被重渲染，``frame``/``time``
     由挂钟时间推导 → 无需 tick 通知即可平滑推进。
     ``animation_listeners`` 供 ``has_active_animations()`` 查询（动画订阅
     探测 API；渲染线程恒定渲染后不再作为渲染决策依据）。
@@ -82,7 +82,7 @@ def reset_animation_state(ctx: "HookContext | None" = None) -> None:
 
 
 def has_active_animations(ctx: "HookContext | None" = None) -> bool:
-    """是否存在活跃动画订阅（动画订阅探测 API；渲染线程恒定 30Hz 渲染，
+    """是否存在活跃动画订阅（动画订阅探测 API；渲染线程恒定 60Hz 渲染，
     不再依赖此探测决定是否渲染）。"""
     return bool(_ctx(ctx).animation_listeners)
 

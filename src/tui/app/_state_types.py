@@ -99,7 +99,7 @@ class ChatBlock:
     #: 2026-08-06 去边框后不含 pad/边框拼接；背景填充为「整行占满终端宽度」，
     #: 2026-10-05）
     #: ——修复前开放大工具卡（如长 bash 输出）每帧全量重建全部内容行 →
-    #: 30Hz 渲染循环下 CPU 100%。行对象被 block.lines 持有，dict 随
+    #: 60Hz 渲染循环下 CPU 100%。行对象被 block.lines 持有，dict 随
     #: block GC 自然释放；关闭块冻结后不再访问。
     _tool_card_body_cache: dict | None = None
     #: 工具卡帧级缓存（tuple[key, list]，PERF-6）——开放工具卡完整输出列表
