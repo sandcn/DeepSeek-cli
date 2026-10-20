@@ -18,8 +18,10 @@ def _rule_block() -> str:
     )
     assert start is not None, "缺少「修改后 bash_opt 实操三查红线」条目"
     block = [lines[start]]
+    # 子项既有「  - 」条目，也有「    1. 」这种缩进有序列表（例外举证四类），
+    # 统一按「两空格缩进」收集，遇到顶格内容才结束。
     for line in lines[start + 1:]:
-        if not line.startswith("  - "):
+        if not line.startswith("  "):
             break
         block.append(line)
     return "\n".join(block)
@@ -35,7 +37,6 @@ def test_redline_declares_highest_severity():
         "不可协商",
         "无豁免权",
         "一票否决",
-        "绝无例外",
         "硬性红线",
         "直接判定失败",
         "不容辩解",
@@ -127,7 +128,7 @@ def test_sections_and_delivery_reference_redline():
     assert_contains(
         text,
         "本节含四条最高优先级硬红线",
-        "实操三查缺失（一票否决，与安全红线同级）",
+        "实操三查缺失（一票否决，违反后果与安全红线相同，裁决层级次于安全红线）",
         "交付说明必须附实操三查证据",
         "已按「修改后 bash_opt 实操三查红线」实际操作运行",
     )

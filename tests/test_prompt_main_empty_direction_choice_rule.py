@@ -1,7 +1,7 @@
-"""空模式提词：方向性选择必须多用 user_select，默认全选。
+"""空模式提词：方向性选择必须多用 user_select，默认项须可安全回退。
 
-用户要求：提词中增加「有方向上的选择问题，多用 user_select 的让用户做选择，
-默认全选」。
+用户要求：提词中增加「有方向上的选择问题，多用 user_select 的让用户做选择」；
+默认项取推荐/中性/暂不执行，互斥方案不得同时设为默认。
 """
 
 from __future__ import annotations
@@ -28,19 +28,21 @@ def test_direction_choice_rule_requires_user_select():
     )
 
 
-def test_direction_choice_rule_defaults_to_select_all():
-    """默认多选并默认全选，非交互场景按全选回退。"""
+def test_direction_choice_rule_uses_safe_defaults():
+    """默认多选，但默认项须可安全回退；互斥方案不得同时设为默认。"""
     bullet = _decision_bullet()
     assert_contains(
         bullet,
         "默认多选",
         "multi_select=True",
         "default_options",
-        "默认全选",
+        "推荐项 / 中性项 / 暂不执行",
+        "不得把互斥方案同时设为默认",
+        "选项互斥时改用单选",
         "超时",
         "无响应",
         "非交互环境",
-        "按全选回退",
+        "不得按「全选」回退",
     )
 
 

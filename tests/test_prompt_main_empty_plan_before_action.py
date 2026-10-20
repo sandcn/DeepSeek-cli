@@ -19,5 +19,6 @@ def test_plan_before_action():
     )
 
 
-def test_simple_task_may_skip_explicit_plan():
-    assert "简单任务可省略显式计划" in read_prompt()
+def test_simple_task_may_not_skip_explicit_plan():
+    """简单不是省略计划的理由：提词明确禁止以「简单」为由跳过计划。"""
+    assert "禁止以「简单」「显而易见」为由省略计划" in read_prompt()

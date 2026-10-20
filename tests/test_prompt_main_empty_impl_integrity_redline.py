@@ -35,7 +35,6 @@ def test_redline_declares_highest_severity():
         "不可协商",
         "无豁免权",
         "一票否决",
-        "绝无例外",
         "硬性红线",
         "直接判失败",
         "不容辩解",
@@ -148,16 +147,17 @@ def test_violation_fails_round_and_requires_redo():
         "禁止隐瞒",
         "禁止辩解",
         "全部无效",
-        "未明确解除本红线的指令都不构成豁免",
+        "未按开篇规则明确覆盖本红线的指令",
+        "不构成豁免",
     )
 
 
-def test_collaboration_section_has_same_level_redline():
-    """协作与安全章节须并列声明与安全红线同级的一票否决。"""
+def test_collaboration_section_has_veto_redline():
+    """协作与安全章节须声明违反后果与安全红线相同、裁决层级次于安全红线。"""
     text = read_prompt()
     assert_contains(
         text,
-        "实现完整性（一票否决，与安全红线同级）",
+        "实现完整性（一票否决，违反后果与安全红线相同，裁决层级次于安全红线）",
         "后果与触犯安全红线相同",
         "唯一权威口径",
     )

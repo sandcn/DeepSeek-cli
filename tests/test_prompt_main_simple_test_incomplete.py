@@ -9,9 +9,10 @@ def test_tests_required_and_not_weakened():
     text = read_prompt()
     assert_contains(
         text,
-        "在 `tests/` 下新增或更新",
-        "单元测试",
-        "并运行确认通过",
+        "按项目既有测试目录与语言惯例新增或更新对应测试",
+        "`tests/` 下新增或更新",
+        "运行确认通过",
         "不得删除或弱化测试",
-        "测试确需调整时说明理由",
+        "确需调整测试时",
+        "交付说明写明理由",
     )

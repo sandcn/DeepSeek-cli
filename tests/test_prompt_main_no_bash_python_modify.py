@@ -9,6 +9,6 @@ def test_bash_scope_excludes_code_writes():
     text = read_prompt()
     assert_contains(
         text,
-        "bash 仅用于构建、安装依赖、运行测试、git、进程和系统信息查询",
+        "bash 仅用于构建、只读安装依赖、运行测试、git、进程和系统信息查询",
         "不要用 bash 直接改写代码文件",
     )

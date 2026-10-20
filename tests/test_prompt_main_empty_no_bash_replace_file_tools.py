@@ -70,7 +70,6 @@ def test_rule_is_highest_priority_red_line():
         "最高优先级",
         "零容忍",
         "一票否决",
-        "绝无例外",
         "当轮任务直接判失败",
     )
 
@@ -104,7 +103,7 @@ def test_only_exception_is_missing_internal_tool():
     assert_contains(
         rule_block(),
         "内部工具集中根本不存在对应工具",
-        "bash 仅用于构建、安装依赖、运行测试、git、进程和系统信息查询",
+        "bash 仅用于构建、只读安装依赖、运行测试、git、进程和系统信息查询",
         "例外原因",
     )
 
@@ -121,11 +120,11 @@ def test_violation_fails_and_must_be_redone_with_internal_tools():
 
 
 def test_coordination_section_restates_rule_as_veto():
-    """「协作与安全」须以与安全红线同级的措辞重申该规则。"""
+    """「协作与安全」须以违反后果与安全红线相同的措辞重申该规则。"""
     bullets = [line for line in read_prompt().splitlines() if line.startswith("- ")]
     rule = next(
         (line for line in bullets if line.startswith("- **bash 替代内部工具（")),
         None,
     )
     assert rule is not None, "协作与安全缺少「bash 替代内部工具」条目"
-    assert_contains(rule, "一票否决", "与安全红线同级", "一次都不行", "不构成豁免")
+    assert_contains(rule, "一票否决", "违反后果与安全红线相同", "一次都不行", "不构成豁免")

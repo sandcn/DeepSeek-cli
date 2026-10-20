@@ -45,7 +45,6 @@ def test_declares_highest_severity():
         "不可协商",
         "无豁免权",
         "一票否决",
-        "绝无例外",
         "直接判定失败",
         "一律驳回",
         "不予受理",
@@ -185,12 +184,12 @@ def test_takes_precedence_over_other_defaults():
     )
 
 
-def test_collaboration_section_has_same_level_redline():
-    """协作与安全章节须并列声明与安全红线同级的一票否决。"""
+def test_collaboration_section_has_veto_redline():
+    """协作与安全章节须声明违反后果与安全红线相同、裁决层级次于安全红线。"""
     text = read_prompt()
     assert_contains(
         text,
-        "未授权改代码（一票否决，与安全红线同级）",
+        "未授权改代码（一票否决，违反后果与安全红线相同，裁决层级次于安全红线）",
         "后果与触犯安全红线相同",
         "该条为唯一权威口径",
     )
@@ -202,7 +201,7 @@ def test_delivery_requires_zero_change_check():
     assert_contains(
         text,
         "零改动自检",
-        "不得产生任何文件改动",
+        "不得产生任何人工编写的代码/配置/脚本/测试/文档/样式/资源文件改动",
         "回滚到改动前原文",
         "整轮交付直接判定失败",
     )

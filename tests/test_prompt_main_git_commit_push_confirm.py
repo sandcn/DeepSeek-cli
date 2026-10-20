@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
-from tests._prompt_semantics import assert_contains, prompt_bullets
+from tests._prompt_semantics import assert_contains, read_prompt
 
 
 def _git_bullet() -> str:
-    """定位提词中唯一的 Git 规则条目（避免用全文关键词凑数）。"""
-    bullets = [line for line in prompt_bullets() if line.startswith("- **Git**")]
-    assert len(bullets) == 1, f"应有且仅有一条 Git 规则，实际: {bullets}"
-    return bullets[0]
+    """定位提词中唯一的 Git 规则条目及其全部子项（避免用全文关键词凑数）。"""
+    lines = read_prompt().splitlines()
+    starts = [i for i, line in enumerate(lines) if line.startswith("- **Git**")]
+    assert len(starts) == 1, f"应有且仅有一条 Git 规则，实际: {starts}"
+    block = [lines[starts[0]]]
+    for line in lines[starts[0] + 1:]:
+        if not line.startswith("  - "):
+            break
+        block.append(line)
+    return "\n".join(block)
 
 
 def test_git_rule_uses_user_select_before_commit_or_push():
@@ -21,7 +27,7 @@ def test_git_rule_uses_user_select_before_commit_or_push():
 def test_git_rule_asks_user_to_agree():
     """Git 条目必须让用户明确选择是否同意执行。"""
     bullet = _git_bullet()
-    assert_contains(bullet, "是否同意")
+    assert_contains(bullet, "同意执行")
 
 
 def test_git_rule_requires_message_confirmation():
@@ -39,11 +45,11 @@ def test_git_rule_covers_scope_message_and_fallback():
 def test_git_rule_allows_user_to_cancel():
     """用户必须可以取消：取消时保留工作区改动，不得跳过确认直接提交。"""
     bullet = _git_bullet()
-    assert_contains(bullet, "用户可以取消", "保持改动留在工作区", "不得跳过 `user_select`")
+    assert_contains(bullet, "用户取消任一环节时", "保持改动留在工作区", "不得跳过 `user_select`")
     assert "不得跳过 `user_select` 直接提交或推送" in bullet
 
 
-def test_git_rule_default_options_approve():
-    """超时/非交互回退同意，明确默认推进而不是卡住。"""
+def test_git_rule_default_options_decline():
+    """超时/非交互回退「取消/不提交」，不得替用户推进远程写操作。"""
     bullet = _git_bullet()
-    assert_contains(bullet, "default_options", "置为「同意」", "按「同意」处理")
+    assert_contains(bullet, "default_options", "置为「取消/不提交」", "按「取消/不提交」处理")

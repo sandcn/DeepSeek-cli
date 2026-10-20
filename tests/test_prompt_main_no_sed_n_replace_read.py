@@ -15,4 +15,4 @@ def test_read_is_the_only_reader():
 
 
 def test_bash_scope_is_explicit():
-    assert "bash 仅用于构建、安装依赖、运行测试、git、进程和系统信息查询" in read_prompt()
+    assert "bash 仅用于构建、只读安装依赖、运行测试、git、进程和系统信息查询" in read_prompt()
