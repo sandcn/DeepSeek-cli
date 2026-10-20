@@ -5,9 +5,10 @@ tool_calls 增量 chunk 都发布一次 ``tool_parsing``（只要参数预览非
 agent 侧 ``EventDispatcher._on_tool_parsing`` 每次都映射为一条 CRITICAL
 （prio0）的 ``MainPhaseCmd(phase="parsing")``——单次工具解析实测产生上千条
 **完全幂等**的重复命令（``_do_main_phase`` 对同 phase 不重置计时、不重开
-通道，重复推送零信息增量）。这些 prio0 命令挤满渲染队列批处理配额
-（``max_batch_size``），把低优先级的解析进度行命令（``ParseInfoCmd``）饿死
-→ 进度行 token/耗时数字长时间不刷新。
+通道，重复推送零信息增量）。修复前渲染队列为有界批处理，这些 prio0 命令
+挤占批处理配额，把低优先级的解析进度行命令（``ParseInfoCmd``）饿死
+→ 进度行 token/耗时数字长时间不刷新（现渲染队列已改为每帧全量排空，该
+饥饿路径从根上消除，本去重仍用于减少无谓事件/命令产生）。
 
 修复：参数预览（``_args_preview``，上限 200 字符）**值未变化**时不再重复
 发布 ``tool_parsing``——预览一旦达到上限即恒定，事件数从 O(分片数) 降为

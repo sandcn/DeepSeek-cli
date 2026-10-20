@@ -6,9 +6,8 @@
 
 根因（命令队列优先级饥饿）：模型高速流式输出时每个 tool_calls 增量 chunk 都
 产生一条 prio0（CRITICAL/STREAM）内容/阶段命令（``MainPhaseCmd`` 每 chunk
-一条，实测单次解析上千条完全幂等的重复命令）。有界批处理
-（``InkSession._drain_commands_locked`` 每帧最多 ``max_batch_size``=50 条）+
-严格优先级队列下，prio0 命令积压 ≥ 批处理上限后，prio2 的
+一条，实测单次解析上千条完全幂等的重复命令）。修复前的有界批处理（每帧最多
+50 条）+ 严格优先级队列下，prio0 命令积压 ≥ 批处理上限后，prio2 的
 ``ParseInfoCmd``（解析进度行）**再也进不了任何批次**——渲染帧持续推进
 （spinner 在转）而进度行 token 数/耗时数字长期不刷新；积压消化后跳变恢复
 （「过一会自己恢复」）。
@@ -18,14 +17,14 @@
      BG_BASH_COUNT 这类**状态快照**命令在队列中同类未消费时**就地替换**（保持
      ``(priority, seq)`` 位置与堆序、不新增条目）——队列中恒至多一条且为最新
      值，且替换先于 put 执行（队列满时最新进度仍能落地）。
-  2. **批处理防饥饿**（``InkSession._drain_commands_locked`` 经
-     ``_pop_starved_state_cmd``）：本批未包含状态类命令且队列中仍有优先级更低
-     的该类命令时，额外捞取**最新**一条并入本批——进度行最多延迟一个渲染节拍
-     刷新。
+  2. **每帧全量排空**（``InkSession._drain_commands_locked``）：批处理长度不设
+     上限（2026-10-20 用户需求「每帧处理的渲染 cmd 要无限长度，并且要处理完
+     所有」）——本帧排空队列全部命令，低优先级命令不会再被 prio0 洪流饿死，
+     进度行每帧刷新。
 
 本测试覆盖：合并语义（最新值/位置/顺序/unfinished_tasks 一致性）、队列满时
-最新进度不丢、防饥饿捞取（含「仅捞最新」「不误捞」）、以及正常无积压场景零
-行为变化。
+最新进度不丢、每帧全量排空（无长度上限/全部处理完/优先级顺序）、以及正常无
+积压场景零行为变化。
 """
 
 from __future__ import annotations
@@ -45,7 +44,7 @@ from src.tui._const import (
     BgBashCountCmd,
     _CLEAR_PARSE_LINE,
 )
-from src.tui.ink._cmd_priority import _COALESCE_CMDS, _get_cmd_id
+from src.tui.ink._cmd_priority import _COALESCE_CMDS
 from src.tui.ink.session import InkSession
 from src.tui._const import RenderCommand
 
@@ -172,68 +171,69 @@ class TestCoalesce:
 
 
 # ═══════════════════════════════════════════════════════════
-# 2. 批处理防饥饿（低优先级状态命令不再被 prio0 洪流饿死）
+# 2. 每帧全量排空（无批处理长度上限，处理完所有命令）
 # ═══════════════════════════════════════════════════════════
 
-class TestAntiStarvation:
-    """``_drain_commands_locked`` 每帧保证状态类命令有机会被处理。"""
+class TestDrainAll:
+    """``_drain_commands_locked`` 每帧排空队列全部命令（无长度上限）。"""
 
     def test_state_cmd_not_starved_by_prio0_flood(self):
-        """prio0 洪流积压时，本批仍捞出解析进度命令（进度行每拍刷新）。"""
+        """prio0 洪流积压时，本帧仍处理全部命令（进度命令不丢、值最新）。"""
         s = _make_session()
         for i in range(200):
             s.push_cmd(ContentCmd(text=f"c{i}"))
         s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=42, elapsed=4.2))
         cmds, changed, locked = s._drain_commands_locked()
         assert locked and changed
-        assert len(cmds) == s._config.max_batch_size + 1
+        assert len(cmds) == 201
+        assert s._cmd_queue.qsize() == 0
         assert [type(c).__name__ for c in cmds].count("ParseInfoCmd") == 1
         assert cmds[-1].tokens == 42
 
-    def test_anti_starvation_keeps_unfinished_tasks_consistent(self):
-        """捞取后 ``unfinished_tasks`` 与实际条目数一致（flush/join 不挂）。"""
+    def test_drain_all_keeps_unfinished_tasks_consistent(self):
+        """全量排空后 ``unfinished_tasks`` 归零（flush/join 不挂）。"""
         s = _make_session()
         for i in range(120):
             s.push_cmd(ContentCmd(text=f"c{i}"))
         s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=7, elapsed=0.7))
         before = s._cmd_queue.qsize()
-        s._drain_commands_locked()
-        consumed = before - s._cmd_queue.qsize()
-        assert s._cmd_queue.unfinished_tasks == s._cmd_queue.qsize()
-        assert consumed == s._config.max_batch_size + 1
-
-    def test_anti_starvation_picks_latest_state_cmd(self):
-        """多条同类状态命令被挤住时捞取**最新**一条（seq 最大）。"""
-        s = _make_session()
-        for i in range(80):
-            s.push_cmd(ContentCmd(text=f"c{i}"))
-        # 直接注入两条（绕过合并）模拟历史积压
-        s._cmd_queue.put((2, next(s._cmd_seq),
-                          ParseInfoCmd(tool_names="Write", tokens=1, elapsed=0.1)))
-        s._cmd_queue.put((2, next(s._cmd_seq),
-                          ParseInfoCmd(tool_names="Write", tokens=9, elapsed=0.9)))
         cmds, _c, _l = s._drain_commands_locked()
-        picked = [c for c in cmds if _get_cmd_id(c) == RenderCommand.PARSE_INFO]
-        assert len(picked) == 1
-        assert picked[0].tokens == 9
+        assert len(cmds) == before == 121
+        assert s._cmd_queue.qsize() == 0
+        assert s._cmd_queue.unfinished_tasks == 0
+        waiter = threading.Thread(target=s._cmd_queue.join, daemon=True)
+        waiter.start()
+        waiter.join(timeout=2.0)
+        assert not waiter.is_alive(), "unfinished_tasks 未归零（queue.join 挂起）"
 
-    def test_anti_starvation_not_triggered_without_state_cmd(self):
-        """队列无状态类命令时批次仍为 50 条（零额外开销/零行为变化）。"""
+    def test_drain_all_orders_by_priority_then_seq(self):
+        """全量出队仍严格按 (priority, seq) 顺序（低优先级最后处理）。"""
         s = _make_session()
-        for i in range(120):
-            s.push_cmd(ContentCmd(text=f"c{i}"))
+        s.push_cmd(WriteLineCmd(text="low"))
+        s.push_cmd(ContentCmd(text="prio0"))
+        s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=1, elapsed=0.1))
         cmds, _c, _l = s._drain_commands_locked()
-        assert len(cmds) == s._config.max_batch_size
+        assert [type(c).__name__ for c in cmds] == [
+            "ContentCmd", "ParseInfoCmd", "WriteLineCmd",
+        ]
 
-    def test_anti_starvation_not_triggered_when_batch_already_has_state_cmd(self):
-        """本批已含状态类命令时不额外捞取（不超发）。"""
+    def test_drain_all_after_multiple_batches_kept_order(self):
+        """多批注入后一次排空仍保持全局 (priority, seq) 顺序。"""
         s = _make_session()
-        s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=5, elapsed=0.5))
-        for i in range(10):
+        for i in range(30):
             s.push_cmd(ContentCmd(text=f"c{i}"))
+        for i in range(20):
+            s.push_cmd(WriteLineCmd(text=f"w{i}"))
         cmds, _c, _l = s._drain_commands_locked()
-        assert len(cmds) == 11
-        assert sum(1 for c in cmds if _get_cmd_id(c) == RenderCommand.PARSE_INFO) == 1
+        assert len(cmds) == 50
+        assert [c.text for c in cmds[:30]] == [f"c{i}" for i in range(30)]
+        assert [c.text for c in cmds[30:]] == [f"w{i}" for i in range(20)]
+
+    def test_empty_queue_returns_no_change(self):
+        """空队列：无命令、无变更，锁正常获取。"""
+        s = _make_session()
+        cmds, changed, locked = s._drain_commands_locked()
+        assert cmds == [] and changed is False and locked is True
 
     def test_normal_streaming_frame_unaffected(self):
         """常规流式帧（少量命令）行为不变：按优先级全量出队。"""
@@ -244,25 +244,8 @@ class TestAntiStarvation:
         assert locked and changed
         assert [type(c).__name__ for c in cmds] == ["MainPhaseCmd", "ParseInfoCmd"]
 
-    def test_without_anti_starvation_state_cmd_is_starved(self):
-        """对照证据：关闭防饥饿捞取时，prio0 洪流下进度命令进不了任何批次。
-
-        锁定缺陷本身（修复前行为）——若未来有人移除防饥饿逻辑，本断言会失败
-        并给出「进度行数字卡住」的根因提示。
-        """
-        s = _make_session()
-        for i in range(200):
-            s.push_cmd(ContentCmd(text=f"c{i}"))
-        s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=42, elapsed=4.2))
-        s._pop_starved_state_cmd = lambda *a, **k: None  # 模拟修复前（无捞取）
-        cmds, _c, _l = s._drain_commands_locked()
-        assert len(cmds) == s._config.max_batch_size
-        assert not any(
-            _get_cmd_id(c) == RenderCommand.PARSE_INFO for c in cmds
-        ), "解析进度命令仍被 prio0 洪流饿死（防饥饿失效）"
-
-    def test_anti_starvation_survives_queue_keep_content_drain(self):
-        """``_drain_queue_safe(keep_content=True)`` 保留进度命令后仍可被捞出。"""
+    def test_drain_all_survives_queue_keep_content_drain(self):
+        """``_drain_queue_safe(keep_content=True)`` 保留进度命令后仍可被处理。"""
         s = _make_session()
         for i in range(80):
             s.push_cmd(ContentCmd(text=f"c{i}"))
@@ -272,4 +255,6 @@ class TestAntiStarvation:
         assert dropped == 1  # 仅 WRITE_LINE 被丢弃
         assert s._cmd_queue.qsize() == 81
         cmds, _c, _l = s._drain_commands_locked()
+        assert len(cmds) == 81
         assert cmds[-1].tokens == 33
+        assert s._cmd_queue.qsize() == 0

@@ -7,14 +7,13 @@ InkRenderer 非全屏输出。
 关键不变式（与 TuiEngine 一致）：
   - 命令优先级（_CRITICAL_CMDS / _STREAM_CMDS / ...）+ seq 保插入序
   - 关键命令（PhaseDone/ToolSummary/工具计数/主阶段/品牌屏）push 阻塞语义
-  - 命令批量处理（max_batch_size）
+  - 命令逐帧全量处理（每帧排空队列，无批处理长度上限）
   - 单 render 线程模型 + 崩溃自动恢复（max_recover_attempts）
   - render 循环：drain → clear → wait（event 清-wait 顺序防忙等）
 """
 
 from __future__ import annotations
 
-import heapq
 import itertools
 import logging
 import queue
@@ -1311,8 +1310,8 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   (timeout=0.1)`` 被 set 立即唤醒 → 渲染循环失去 30Hz 节流变成
         #   忙循环（每轮循环固定开销 × 高频唤醒 → CPU 100%，实测 5ms 事件
         #   频率下 174Hz/27% CPU）。修复：节流时刻跨循环持久，wait 即使被
-        #   唤醒也等到 ``next_loop``——高频命令在队列中批处理（每
-        #   render_interval 一轮，堆积 ≤ max_batch_size），渲染循环稳定
+        #   唤醒也等到 ``next_loop``——高频命令在队列中堆积，每
+        #   render_interval 一轮全量排空（无批处理长度上限），渲染循环稳定
         #   30Hz；用户输入/关键命令仍经 ``_drain_queue`` 每轮处理（延迟
         #   ≤ render_interval，与空闲 30Hz 行为一致）。
         next_loop: float = 0.0
@@ -1529,21 +1528,16 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         锁块内**仅排空命令**——命令应用（``_apply_commands``）与渲染在锁外
         执行（见 ``_drain_queue`` APPLY/RENDER 阶段说明）。
 
-        ★ 2026-09-20（解析进度行卡住修复）**批处理防饥饿**：有界批处理
-        （``max_batch_size``）+ 严格优先级队列下，低优先级命令在高优先级
-        洪流持续积压时**永久得不到处理**——模型高速流式输出时每个 chunk
-        产生一条 prio0 内容命令，队列积压 ≥ 批处理上限后，prio2 的
-        ``ParseInfoCmd``（解析进度行）再也不会进入任何批次：渲染帧持续推进
-        （进度行 spinner 在转）而 token 数/耗时数字长时间不刷新（用户报障
-        「⠹ Write 25t 0.11s 卡住，数据仍在传」）。本方法在本批未包含
-        「最新值覆盖」状态命令（``_COALESCE_CMDS``）且队列中仍有优先级更低
-        （数值更大）的该类命令时，额外捞取**最新**一条（seq 最大）并入本批
-        ——进度行最多延迟一个渲染节拍刷新。
+        ★ 2026-10-20（用户需求：每帧处理的渲染 cmd **无限长度**，并且要
+        **处理完所有**）：本帧**排空队列全部命令**——不再按批处理上限
+        （原 ``max_batch_size``）截断。队列中所有待处理命令都在本帧 APPLY
+        阶段应用，低优先级命令不会再被高优先级洪流饿死（有界批处理下的
+        饥饿问题从根上消除，原 ``_pop_starved_state_cmd`` 防饥饿捞取随之
+        移除）。
 
         Returns:
             (commands, changed, locked) 三元组：
-              - commands: 本帧排空的命令列表（≤ max_batch_size，防饥饿捞取
-                时可能为 max_batch_size + 1）；
+              - commands: 本帧排空的**全部**命令（无长度上限）；
               - changed:  是否有命令被排空；
               - locked:   True=锁已获取；False=锁超时（调用方跳过本帧）。
         """
@@ -1554,64 +1548,14 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         ) as locked:
             if not locked:
                 return [], False, False
-            while len(commands) < self._config.max_batch_size:
+            while True:
                 try:
                     _, _, cmd = self._cmd_queue.get_nowait()
                     self._cmd_queue.task_done()
                     commands.append(cmd)
                 except queue.Empty:
                     break
-            if commands:
-                victim = self._pop_starved_state_cmd(
-                    max(_get_cmd_priority(c) for c in commands),
-                )
-                if victim is not None:
-                    commands.append(victim)
         return commands, bool(commands), True
-
-    def _pop_starved_state_cmd(self, batch_lowest_priority: int):
-        """从队列中捞出被高优先级洪流饿死的「最新值覆盖」状态命令。
-
-        仅在队列中存在优先级**低于**本批所有命令（priority 数值更大）的
-        ``_COALESCE_CMDS`` 命令时生效（正常无积压场景零开销：队列中该类命令
-        的优先级通常不低）。
-
-        取**最新**一条（seq 最大）——该类命令是状态快照，最新值即最终显示
-        状态；取出后堆数组任意下标 pop 须 ``heapq.heapify`` 恢复堆序
-        （BUG-31 同族），``task_done()`` 在 ``queue.mutex`` 外调用（mutex 与
-        ``all_tasks_done`` Condition 同源、不可重入）。
-
-        Args:
-            batch_lowest_priority: 本批命令的最低优先级（priority 最大值）。
-
-        Returns:
-            捞取到的命令；无该类命令被饿死时为 None。
-        """
-        victim = None
-        with self._cmd_queue.mutex:
-            idx = None
-            for i, item in enumerate(self._cmd_queue.queue):
-                if item[0] <= batch_lowest_priority:
-                    continue
-                if _get_cmd_id(item[2]) not in _COALESCE_CMDS:
-                    continue
-                if idx is None or item[1] > self._cmd_queue.queue[idx][1]:
-                    idx = i
-            if idx is not None:
-                victim = self._cmd_queue.queue.pop(idx)
-                heapq.heapify(self._cmd_queue.queue)
-                # ★ P3（review）：弹出后释放容量——通知 ``not_full`` 等待者
-                #   （``push_cmd(block=True)``/``_put_no_drop`` 可能正阻塞在
-                #   not_full；不经 ``get()`` 的私有弹出须自行通知，否则空等
-                #   到超时）。
-                self._cmd_queue.not_full.notify_all()
-        if victim is not None:
-            try:
-                self._cmd_queue.task_done()
-            except ValueError:
-                pass
-            return victim[2]
-        return None
 
     def _should_render(self) -> bool:
         """是否需渲染本帧：**恒定 True**——渲染线程每拍都渲染。

@@ -110,7 +110,7 @@ _PUT_NO_DROP_TIMEOUT = 30.0
 
 #: 「最新值覆盖」语义命令集合 —— 真源在 ``_cmd_priority._COALESCE_CMDS``
 #: （2026-09-20 解析进度行卡住修复；本模块经上方 import re-export，消费方为
-#: ``push_cmd`` 就地替换 + ``InkSession._pop_starved_state_cmd`` 防饥饿捞取）。
+#: ``push_cmd`` 就地替换——队列中同类状态命令恒至多一条且为最新值）。
 
 
 class _SessionQueueMixin:

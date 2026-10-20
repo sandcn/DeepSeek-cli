@@ -70,7 +70,6 @@ class TuiConfig(ConfigBase):
     #: 渲染线程帧间隔（秒）——恒定 ``1/30``（30Hz），**不可改变**：任何构造/
     #: 覆盖路径都会被 ``__post_init__`` 强制回真源值。
     render_interval: float = RENDER_INTERVAL_SEC
-    max_batch_size: int = 50                # 单帧最大批处理命令数，防止 UI 冻结
     drain_lock_timeout: float = RENDER_INTERVAL_SEC  # drain 锁超时（秒），与 render_interval 对齐
     cmd_queue_maxsize: int = 10000          # 命令队列最大容量
     consecutive_full_threshold: int = 10    # 连续满队列告警阈值

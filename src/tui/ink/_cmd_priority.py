@@ -75,10 +75,10 @@ _LOW_CMDS = frozenset({
 #:     路径（修复前队列满时丢弃 → 进度行数字长时间停在上一次入队成功的值）。
 #:   - BG_BASH_COUNT：后台任务计数（下一拍同值重发，仅最新有意义）。
 #: 消费侧：``_SessionQueueMixin.push_cmd`` 优先走就地替换；
-#: ``_SessionFrameMixin._drain_commands_locked`` 在本批未包含该类命令时额外
-#: 捞取一条（防饥饿）——有界批处理 + 严格优先级队列会让低优先级命令在
-#: prio0 洪流（模型高速流式输出：每 chunk 一条内容命令）下永久得不到处理
-#: （渲染帧持续推进、spinner 在转，而解析进度行数字长时间不刷新）。
+#: ``InkSession._drain_commands_locked`` 每帧排空队列**全部**命令（无批处理
+#: 长度上限）——低优先级命令不会再在 prio0 洪流（模型高速流式输出：每 chunk
+#: 一条内容命令）下被饿死；合并仅用于抑制队列条目膨胀（同类状态命令恒至多
+#: 一条且为最新值，最新值即最终显示状态）。
 _COALESCE_CMDS = frozenset({
     RenderCommand.PARSE_INFO,
     RenderCommand.BG_BASH_COUNT,
