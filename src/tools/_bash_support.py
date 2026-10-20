@@ -821,7 +821,7 @@ def _filter_reused_win_pids(pids, create_times) -> list[int]:
                     logger.debug("Windows 候选进程 %s 的 PID 已被复用，跳过", pid)
                     continue
             except Exception:  # pragma: no cover - 依赖系统调用
-                pass
+                logger.debug("PID 复用检查失败: pid=%s", pid, exc_info=True)
         safe.append(pid)
     return safe
 
@@ -1424,7 +1424,8 @@ def kill_process_tree(pid: int, *, attempts: int = KILL_MAX_ATTEMPTS,
                     from . import _win_proc
                     round_win.extend(_win_proc.job_processes(job_handle))
                 except Exception:  # pragma: no cover - 依赖系统调用
-                    pass
+                    logger.debug(
+                        "查询 Job 内进程失败: job=%s", job_handle, exc_info=True)
             round_win.extend(_win_pids_for_hint(
                 _merge_hints(win_hint, win_hints), win_start_time))
         # 去重、过滤自身

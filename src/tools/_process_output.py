@@ -32,10 +32,13 @@ from __future__ import annotations
 
 import codecs
 import locale
+import logging
 import os
 import sys
 
 from .._text_width import codepoint_width
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "CHILD_STDIO_ENCODING",
@@ -144,11 +147,11 @@ def default_output_encodings() -> tuple[str, ...]:
     try:
         _add(locale.getpreferredencoding(False))
     except Exception:  # pragma: no cover - locale 查询异常（极端环境）
-        pass
+        logger.debug("locale 首选编码查询失败", exc_info=True)
     try:
         _add(sys.getfilesystemencoding())
     except Exception:  # pragma: no cover - 同上
-        pass
+        logger.debug("文件系统编码查询失败", exc_info=True)
     return tuple(encodings)
 
 
@@ -491,7 +494,7 @@ class OutputLineDecoder:
             try:
                 self._text_buffer += self._wide_decoder.decode(b"", True)
             except Exception:  # pragma: no cover - 增量解码器收尾异常（防御）
-                pass
+                logger.debug("宽字符流收尾解码失败", exc_info=True)
             lines.extend(self._split_text(""))
             if self._text_buffer:
                 lines.append(self._text_buffer)

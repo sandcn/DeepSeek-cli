@@ -63,7 +63,7 @@ async def test_keys_writes_pty_sequence(monkeypatch):
     async def _fake_write(fd, data):
         written.append((fd, bytes(data)))
 
-    monkeypatch.setattr(bash_opt_module, "_write_pty_all", _fake_write)
+    monkeypatch.setattr(bash_opt_module, "_write_pty_bytes", _fake_write)
     rec = _record(mode="pty")
     result = await _run_keys(rec, "up")
     assert "已向后台任务" in result
@@ -76,7 +76,7 @@ async def test_keys_accepts_control_combination(monkeypatch):
     async def _fake_write(fd, data):
         written.append((fd, bytes(data)))
 
-    monkeypatch.setattr(bash_opt_module, "_write_pty_all", _fake_write)
+    monkeypatch.setattr(bash_opt_module, "_write_pty_bytes", _fake_write)
     rec = _record(mode="pty")
     await _run_keys(rec, "ctrl+c")
     assert written == [(9, b"\x03")]

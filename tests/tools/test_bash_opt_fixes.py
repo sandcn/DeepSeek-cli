@@ -284,16 +284,37 @@ async def test_write_pty_all_times_out(monkeypatch):
 async def test_pty_write_timeout_reports_readable_error(monkeypatch):
     import src.tools.bash_opt as module
 
-    def _always_blocking(fd, data):
-        raise BlockingIOError(11, "resource temporarily unavailable")
+    async def _always_timeout(fd, data):
+        # 模拟 Windows 线程化写入 / POSIX EAGAIN 重试的总超时
+        raise TimeoutError(
+            "PTY 写入超时（超过 0.05 秒）：目标进程未读取输入，写缓冲区持续占满")
 
-    monkeypatch.setattr(module.os, "write", _always_blocking)
-    monkeypatch.setattr(module, "_PTY_WRITE_TIMEOUT", 0.05)
-    monkeypatch.setattr(module, "_PTY_WRITE_RETRY_INTERVAL", 0.005)
+    monkeypatch.setattr(module, "_write_pty_bytes", _always_timeout)
     agent = _FakeAgent({"bg-1": _record(mode="pty", master_fd=1)})
     result = await _call(agent, op="stdin", text="hi")
     assert result.startswith("(写入后台任务")
     assert "超时" in result
+
+
+async def test_pty_write_bytes_windows_uses_thread_for_blocking_fd(monkeypatch):
+    """Windows ConPTY 写端是阻塞 fd：必须在线程里写（不能阻塞事件循环）。"""
+    import src.tools.bash_opt as module
+
+    calls = {}
+
+    def _fake_blocking(fd, data):
+        calls["fd"] = fd
+        calls["data"] = bytes(data)
+        calls["thread"] = threading.current_thread() is threading.main_thread()
+
+    class _FakeOs:
+        name = "nt"
+
+    # 只替换 bash_opt 模块内的 os 引用（不污染真实 os 模块）
+    monkeypatch.setattr(module, "os", _FakeOs)
+    monkeypatch.setattr(module, "_write_pty_all_blocking", _fake_blocking)
+    await module._write_pty_bytes(3, b"payload")
+    assert calls == {"fd": 3, "data": b"payload", "thread": False}
 
 
 # ═══════════════════════════════════════════════════════════

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import errno as _errno
+import inspect
 import json
 import logging
 import os
@@ -945,6 +946,106 @@ def _take_pre_background_output(line_cb: dict | None) -> str:
     return "".join(pre)
 
 
+#: 输入回显过滤队列的最大长度（行）。只保留最近写入的行，避免无限增长。
+_ECHO_FILTER_MAX_LINES = 200
+
+
+def _consume_echo_line(echo_filter: dict | None, line: str) -> bool:
+    """终端输入回显去重：命中「最近写入行」时返回 True（调用方丢弃该行）。
+
+    PTY 的终端驱动（ConPTY 的 conhost；POSIX 关掉 ``ECHO`` 后由程序自己回显）
+    会把经 ``bash_opt op=stdin`` 写入的行再输出一遍，模型看到的输出因此出现
+    重复输入。写入端（bash_opt）把写入的每一行登记到
+    ``echo_filter["lines"]``，读取端在行处理时按**行尾匹配**消费一条：
+
+      - ``C:\\path>echo hi`` / ``>>> echo hi`` / ``$ echo hi`` 这类「提示符 +
+        输入」拼在同一行的回显都能命中；
+      - 只消费一次（真实输出再次出现同样文本时保留第二行）；
+      - 空行 / 空白行不参与匹配（避免误删）。
+
+    Args:
+        echo_filter: ``{"lines": [str, ...]}``（可变对象，读取端与写入端共享）。
+        line: 已解码、已剥 ANSI 的一行（可含行尾换行）。
+
+    Returns:
+        bool: True 表示该行是输入回显，调用方应丢弃。
+    """
+    if not echo_filter:
+        return False
+    pending = echo_filter.get("lines")
+    if not pending:
+        return False
+    text = line.strip("\r\n")
+    if not text.strip():
+        return False
+    for index, candidate in enumerate(pending):
+        if candidate and text.endswith(candidate):
+            del pending[index]
+            return True
+    return False
+
+
+def _remember_echo_lines(echo_filter: dict | None, text: str) -> None:
+    """登记写入终端的文本行（供读取端去重输入回显；见 :func:`_consume_echo_line`）。
+
+    Args:
+        echo_filter: ``{"lines": [str, ...]}``（与 ``_read_loop`` 共享的可变对象）。
+        text: 写入 stdin 的文本（``op=stdin`` 的 text 参数，可含多行）。
+    """
+    if not echo_filter:
+        return
+    lines = echo_filter.setdefault("lines", [])
+    for part in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        candidate = part.rstrip()
+        if candidate:
+            lines.append(candidate)
+    overflow = len(lines) - _ECHO_FILTER_MAX_LINES
+    if overflow > 0:
+        del lines[:overflow]
+
+
+#: Windows 下被 Ctrl+C 终止的退出码（``STATUS_CONTROL_C_EXIT``）
+_WIN_CTRL_C_EXIT = 0xC000013A
+
+
+def _is_ctrl_c_exit(returncode: "int | None") -> bool:
+    """退出码是否表示「被 Ctrl+C 终止」（POSIX 130 / Windows 0xC000013A）。
+
+    PTY 模式里 Ctrl+C 由终端驱动投递成信号（不经过 ``_read_loop`` 的中断
+    检测），``_interrupted`` 标志不会置位；只能从退出码判断，否则模型拿到的
+    是「stdout 空、stderr 空、returncode 130」，无法区分「命令无输出」与
+    「被中断」。
+    """
+    return returncode == 130 or returncode == _WIN_CTRL_C_EXIT
+
+
+def _notify_pty_ready(callback, master_fd, resize_fn) -> None:
+    """调用 ``pty_ready_fn``，兼容只接受 ``master_fd`` 的旧回调。
+
+    Args:
+        callback: 调用方提供的回调。
+        master_fd: PTY master / 输入写端 fd（可能为 None——ConPTY 转 fd 失败）。
+        resize_fn: ``resize(cols, rows) -> bool``；回调可通过 ``resize=`` 关键字
+            取得（只接受位置参数的回调不传该关键字）。
+    """
+    try:
+        parameters = inspect.signature(callback).parameters
+        accepts_resize = (
+            "resize" in parameters
+            or any(p.kind is inspect.Parameter.VAR_KEYWORD
+                   for p in parameters.values())
+        )
+    except (TypeError, ValueError):  # pragma: no cover - 内置/不可内省回调
+        accepts_resize = False
+    try:
+        if accepts_resize:
+            callback(master_fd, resize=resize_fn)
+        else:
+            callback(master_fd)
+    except Exception:
+        logger.debug("pty_ready_fn 回调异常", exc_info=True)
+
+
 class BashFunc(Func):
     name = "bash"
     # 前台命令超过该秒数未完成 → 自动转后台执行（不终止进程），
@@ -1009,11 +1110,18 @@ class BashFunc(Func):
                             "description": (
                                 "是否用伪终端（PTY）执行（默认 false）。"
                                 "Windows 走 ConPTY、POSIX 走 pty.openpty。"
-                                "启用后子进程拿到真 TTY：交互式程序 / TUI（python REPL、less、vim、top 等）可用，"
+                                "启用后子进程拿到真 TTY：交互式程序（python REPL、ssh 等）可用，"
                                 "彩色输出与进度条正常，stdin 按终端语义解析（回车是 \\r，不是 \\n）。"
-                                "代价：PTY 只有一条输出流，stdout / stderr 物理合并（stderr 恒为空）——"
+                                "代价：PTY 只有一条输出流，stdout / stderr 物理合并（stderr 为空）——"
                                 "需要分离双流时才用默认 PIPE 模式。"
                                 "交互式后台任务（如 python 交互、ssh、REPL）建议 background=true 且 pty=true。"
+                                "★ 全屏 TUI 程序（vim / top / less）会持续输出光标控制序列，"
+                                "剥离 ANSI 后只剩互相覆盖的文本，对判断命令结果没有价值——"
+                                "需要可读输出时请用默认 PIPE 模式。"
+                                "★ 终端驱动的输入回显已尽量过滤（POSIX 关闭 ECHO；ConPTY 按最近写入行去重），"
+                                "但子进程自己回显的内容不保证完全去除。"
+                                "★ 被中断时（Esc / Ctrl+C）stderr 会返回「(命令已被中断)」提示，"
+                                "其余情况 stderr 为空。"
                                 "★ 平台限制：Windows ConPTY 下 ctrl+c（写入 \\x03）对部分程序可中断"
                                 "（实测可中断 Python 的 time.sleep），但不保证所有程序都响应——"
                                 "进程无响应时请用 bash_opt op=kill 终止任务。"
@@ -1064,6 +1172,11 @@ class BashFunc(Func):
         #: 彩色与进度条正常、``Ctrl+C`` 会变成信号；代价是 stdout/stderr
         #: 物理合并（``stderr`` 恒为空），需要分离双流时用默认 PIPE 模式。
         self.pty = bool(pty)
+        #: PTY 输入回显去重队列（``{"lines": [...]}``）：``bash_opt op=stdin``
+        #: 写入的每一行登记到这里，``_read_loop`` 在输出里命中时丢弃一次
+        #: （终端驱动的本地回显 / 程序自身回显都会把输入重复输出）。
+        #: 用可变 dict 是为了「前台转后台」后仍与任务记录里的队列共享同一对象。
+        self._echo_filter: dict = {"lines": []}
         # 无 cwd 参数：命令始终在当前工作目录执行。
         # 无 timeout 参数：前台执行超过 _AUTO_BG_TIMEOUT 秒自动转后台
         # （不终止进程，返回 task_id JSON）；后台任务无限运行。
@@ -1229,7 +1342,7 @@ class BashFunc(Func):
     @staticmethod
     async def _read_loop(reader, process, lines, publish_line_fn,
                          show_output=False, is_stderr=False,
-                         kill_fn=None, decoder=None):
+                         kill_fn=None, decoder=None, echo_filter=None):
         """共享读取循环，消除 _run_pipe 和 _run_pty 中的重复代码（~80行×2）。
 
         从 reader 读取字节，处理中断检测、超时/PTY EIO/超长行、**编码自适应
@@ -1271,6 +1384,9 @@ class BashFunc(Func):
                     传入时使用自定义杀死逻辑；为 None 时回退到 process.kill()。
             decoder: 可选的 ``OutputLineDecoder``（测试/自定义编码候选注入；
                     省略时按本机编码新建）。每个流（stdout/stderr）独立一个。
+            echo_filter: 可选的 ``{"lines": [str, ...]}``（PTY 输入回显去重，
+                    与 ``bash_opt op=stdin`` 写入端共享的可变对象；见
+                    :func:`_consume_echo_line`）。PIPE 流不传。
 
         Returns:
             bool: True 表示被 ESC 中断信号打断，False 表示正常读到 EOF
@@ -1298,6 +1414,11 @@ class BashFunc(Func):
             #   _on_line 同一处理，此处提前到数据源头使
             #   返回给大模型的输出同样生效）
             clean = _simulate_terminal(_strip_ansi(clean))
+            # ★ 输入回显去重（PTY）：写入端（bash_opt op=stdin）登记过的行
+            #   再次出现在输出里时丢弃一次——终端驱动的本地回显 / 程序自身
+            #   回显都会把输入重复输出，返回给模型的内容不应包含这段重复。
+            if _consume_echo_line(echo_filter, clean):
+                return
             lines.append(clean)
             if show_output:
                 safe = clean  # 已剥 ANSI、已兑现 \r 覆盖
@@ -1540,11 +1661,14 @@ class BashFunc(Func):
                             publish_line_fn(line_text, is_stderr)
                             （PTY 模式下 stdout/stderr 合并，is_stderr 恒为 False）
             pty_ready_fn: 可选的回调，PTY 创建后调用
-                          pty_ready_fn(master_fd)，用于外部获取 PTY master fd
-                          以在终端 resize 时同步更新 PTY winsize。
-            interactive: 是否启用交互式输入。True 时子进程 stdin 连接到
-                          PTY slave（从 master 端写入的数据进入子进程 stdin），
-                          False 时 stdin 为 DEVNULL（非交互命令）。
+                          ``pty_ready_fn(master_fd, resize=_resize)``：外部可获得
+                          PTY master fd 与 resize 函数（``_resize(cols, rows)``），
+                          用于终端 resize 时同步更新 PTY winsize。只接受一个
+                          位置参数的回调也兼容（不会传 ``resize``）。
+            interactive: 是否启用交互式输入（**仅为签名兼容保留**）。PTY 模式
+                          下子进程 stdin / stdout / stderr 恒连接到 PTY slave——
+                          否则子进程会看到「stdout 是终端、stdin 不是」，
+                          ``isatty(stdin)`` 为假，与真实终端语义不一致。
             interactive_ready_fn: 可选的回调，子进程创建后调用
                           interactive_ready_fn(process, "pty", master_fd=master_fd)
                           供后台任务记录进程句柄（bash_opt 工具写入输入用）。
@@ -1552,8 +1676,9 @@ class BashFunc(Func):
         Returns:
             结构化结果 dict：{"stdout": str, "stderr": str, "returncode": int}
             （PTY 模式 stdout/stderr 物理合并到同一 master fd，无法分离，
-            全部输出归入 stdout、stderr 恒为空字符串；returncode 为子进程
-            退出码；被中断时 stderr 放中断提示、returncode 为 -1）
+            全部输出归入 stdout；stderr 恒为空——**唯一例外是被中断时**，
+            此时 stderr 放中断提示，便于模型区分「无输出正常退出」与
+            「被 Ctrl+C / 中断取消」。returncode 为子进程退出码。）
         """
         if os.name == "nt":
             # Windows：PTY 走 ConPTY（见 _conpty 模块）。POSIX 的 pty/fcntl
@@ -1561,6 +1686,7 @@ class BashFunc(Func):
             return await self._run_conpty(
                 show_command=show_command, show_output=show_output,
                 publish_line_fn=publish_line_fn,
+                pty_ready_fn=pty_ready_fn,
                 interactive=interactive,
                 interactive_ready_fn=interactive_ready_fn,
             )
@@ -1569,22 +1695,44 @@ class BashFunc(Func):
         import struct
         import termios
 
+        if show_command:
+            await print_to_terminal(f"\n{GREEN}$ {self.command}{RESET}\n")
+
         master_fd, slave_fd = pty.openpty()
 
-        # 设置 PTY 终端大小（避免某些程序因 COLUMNS=0 而异常）
-        try:
-            fcntl.ioctl(slave_fd, termios.TIOCSWINSZ,
-                        struct.pack('HHHH', 24, 120, 0, 0))
-        except Exception:
-            logger.debug("PTY TIOCSWINSZ 设置失败")
+        # 初始尺寸：跟随当前终端（拿不到时回退 120x24，避免 COLUMNS=0）
+        size = shutil.get_terminal_size(fallback=(120, 24))
+        cols = max(int(getattr(size, "columns", 120) or 120), 1)
+        rows = max(int(getattr(size, "lines", 24) or 24), 1)
 
-        # ★ pty_ready_fn 回调：通知外层 PTY master fd，
-        #   用于终端 resize 时同步更新 PTY winsize。
-        if pty_ready_fn is not None:
+        def _resize(new_cols, new_rows) -> bool:
+            """同步 PTY 窗口大小（外部终端 resize 时调用）。"""
             try:
-                pty_ready_fn(master_fd)
-            except Exception:
-                logger.debug("pty_ready_fn 回调异常")
+                fcntl.ioctl(master_fd, termios.TIOCSWINSZ,
+                            struct.pack('HHHH', max(int(new_rows), 1),
+                                        max(int(new_cols), 1), 0, 0))
+            except (OSError, ValueError):
+                logger.debug("PTY TIOCSWINSZ 设置失败", exc_info=True)
+                return False
+            return True
+
+        _resize(cols, rows)
+
+        # ★ 关闭终端驱动的本地回显：写入 stdin 的内容不应再被回显到输出流。
+        #   修复前 PTY 默认 ECHO 开启，`bash_opt op=stdin` 写入的每一行都会
+        #   在输出里重复一遍（实测 `cat` 返回 "hello\nhello"：第一行是驱动
+        #   回显、第二行才是程序输出），模型会把重复输入当成命令结果。
+        try:
+            attrs = termios.tcgetattr(slave_fd)
+            attrs[3] &= ~(termios.ECHO | getattr(termios, "ECHONL", 0))
+            termios.tcsetattr(slave_fd, termios.TCSANOW, attrs)
+        except (OSError, termios.error):
+            logger.debug("PTY 关闭 ECHO 失败", exc_info=True)
+
+        # ★ pty_ready_fn 回调：通知外层 PTY master fd + resize 函数
+        #   （终端 resize 时同步更新 PTY winsize）。
+        if pty_ready_fn is not None:
+            _notify_pty_ready(pty_ready_fn, master_fd, _resize)
 
         env = self._get_subprocess_env()
         env['TERM'] = 'xterm-256color'  # 告诉子进程这是终端
@@ -1593,38 +1741,35 @@ class BashFunc(Func):
         #   powershell ...）；回退平台默认 POSIX shell 的逻辑在 _pty_launch_argv。
         launch_argv = _pty_launch_argv(self.command)
 
-        def _setup_controlling_terminal() -> None:
-            """子进程 exec 前建立「会话 + 控制终端」（preexec_fn 内执行）。
+        def _attach_controlling_terminal() -> None:
+            """子进程 exec 前把 PTY slave 设为控制终端（preexec_fn 内执行）。
 
-            ★ 只调用 ``os.setpgid(0, 0)``（旧实现）只创建了新的进程组，
-            PTY slave 仍是普通 fd——它没有成为子进程的控制终端，因此
-            line discipline 的 ``ISIG`` 没有可投递信号的前台进程组：向
-            master 写入 ``\\x03``（ctrl+c）时，内核只会把该字节当作普通
-            输入传给程序，不会产生 SIGINT。``bash_opt op=keys key='ctrl+c'``
-            因此在 PTY 模式下「发送成功但无法中断进程」。
+            会话由 ``start_new_session=True`` 在 subprocess 的 C 层建立
+            （``setsid()``，子进程成为新会话首进程 / 前台进程组），这里只做
+            ``TIOCSCTTY``：把 fd 1（subprocess 已 dup 成 PTY slave）设为该
+            会话的控制终端。
 
-            这里补上标准三件套：
-              1. ``setsid()``：子进程成为新会话的会话首进程（同时是新的
-                 进程组组长 / 前台进程组）；
-              2. ``TIOCSCTTY``：把继承来的 PTY slave 设为该会话的控制终端；
-              3. ``setpgid`` 兜底（setsid 已设置，失败时保持旧行为）。
+            为什么必须设置：没有控制终端时 line discipline 的 ``ISIG`` 没有
+            可投递信号的前台进程组，向 master 写 ``\\x03``（ctrl+c）只会作为
+            普通输入字节传给程序，不会产生 SIGINT——``bash_opt op=keys
+            key='ctrl+c'`` 会「发送成功但无法中断进程」。
 
-            preexec_fn 在 fork 之后、exec 之前运行，不能依赖日志 / 锁
-            （多线程下可能死锁），失败一律静默：最坏退回旧行为，不应阻止
-            命令执行。
+            ★ 为什么不自己 ``setsid()/setpgid()``：preexec_fn 在 fork 之后
+            执行 Python 代码，多线程进程里有死锁风险（CPython 文档明示）；
+            把 setsid 交给 C 层能缩小风险窗口，这里只剩一次 ioctl。失败一律
+            静默：最坏退回「ctrl+c 不生效」，不应阻止命令执行。
+
+            ★ 不使用 ``pass_fds`` 保留 slave fd：subprocess 的 dup2 在
+            preexec_fn 之前完成，fd 1 已是 slave；而 pass_fds 会让子进程及其
+            全部后代多持有一份 slave 副本（实测孙进程出现 ``/dev/ptyN`` fd），
+            既泄漏 fd，也破坏「输出全部关闭 → master 收 EOF」的语义。
             """
-            try:
-                os.setsid()
-            except OSError:
-                pass
-            try:
-                fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
-            except OSError:
-                pass
-            try:
-                os.setpgid(0, 0)
-            except OSError:
-                pass
+            for fd in (1, 0, 2):
+                try:
+                    fcntl.ioctl(fd, termios.TIOCSCTTY, 0)
+                    return
+                except OSError:
+                    continue
 
         try:
             from ..core.adapters.kernel_runtime import spawn_process
@@ -1632,12 +1777,13 @@ class BashFunc(Func):
             process = await spawn_process(
                 launch_argv,
                 shell=False,
-                stdin=slave_fd if interactive else asyncio.subprocess.DEVNULL,
+                # PTY 下 stdin 必须是 slave（见 interactive 参数说明）
+                stdin=slave_fd,
                 stdout=slave_fd,
                 stderr=slave_fd,
                 env=env,
-                pass_fds=(slave_fd,),
-                preexec_fn=_setup_controlling_terminal,
+                start_new_session=True,
+                preexec_fn=_attach_controlling_terminal,
             )
         except BaseException:
             os.close(master_fd)
@@ -1684,25 +1830,46 @@ class BashFunc(Func):
         #   read 返回 EIO，但缓冲中可能还有未消费的数据（一次性到达的多行
         #   输出）。该 protocol 把 EIO 归一化为 EOF，先消费完缓冲再结束，
         #   避免「多行输出只返回第一行」。
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         reader = asyncio.StreamReader()
         protocol = _PtyEioAsEofProtocol(reader)
-
+        # ★ fd 所有权只交给 pipe 对象一次：连接失败时关闭 pipe（它会关闭 fd），
+        #   不再额外 os.close(master_fd)——旧实现两者都关，FileIO 析构时会
+        #   二次关闭同一个 fd 号（期间可能已被别的代码复用 → 误关无关 fd）。
+        pipe = os.fdopen(master_fd, 'rb', buffering=0)
         try:
-            transport, _ = await loop.connect_read_pipe(
-                lambda: protocol,
-                os.fdopen(master_fd, 'rb', buffering=0),
-            )
-        except Exception:
-            os.close(master_fd)
+            transport, _ = await loop.connect_read_pipe(lambda: protocol, pipe)
+        except BaseException:
+            pipe.close()
             raise
 
         lines = []
+
+        _kill_once = False
+
+        def _kill_tree_once() -> None:
+            """杀整棵进程树（含 Windows Job；与 PIPE 分支一致）。"""
+            nonlocal _kill_once
+            if _kill_once:
+                return
+            _kill_once = True
+            # Job 先终止：Cygwin 的 bash 在 exec 时会重建 Windows 进程，
+            # PPID 链 / pid 复用防护都不可靠，Job 成员关系才是可靠的整树
+            # 终止手段（修复前这里只扫进程树，中断时孤儿后代残留）。
+            terminate_process_job(win_job)
+            _kill_process_tree(process.pid)
+
         try:
             _interrupted = await BashFunc._read_loop(
                 reader, process, lines, publish_line_fn,
                 show_output=show_output, is_stderr=False,
-                kill_fn=lambda: _kill_process_tree(process.pid),
+                kill_fn=_kill_tree_once,
+                # ★ POSIX 分支不启用输入回显过滤：终端驱动的 ECHO 已在
+                #   openpty 后关闭，剩下的输出都是程序真实输出。再按「写入行」
+                #   过滤会误删真实输出（实测 `cat` 收到 hello 后输出的 "hello"
+                #   被当成回显丢弃，read 变成空）。ConPTY 无法关闭终端回显，
+                #   才在 _run_conpty 里启用该过滤。
+                echo_filter=None,
             )
         except OSError as e:
             if e.errno == _errno.EIO:
@@ -1710,7 +1877,7 @@ class BashFunc(Func):
             else:
                 raise
         except asyncio.CancelledError:
-            _kill_process_tree(process.pid)
+            _kill_tree_once()
             raise
         finally:
             try:
@@ -1720,57 +1887,78 @@ class BashFunc(Func):
             await process.wait()
             _remove_script_file(_script_path_from_launch(launch_argv))
 
-        if _interrupted:
-            return {"stdout": "", "stderr": "(命令已被中断)",
-                    "returncode": self._bash_rc(process.returncode)}
+        returncode = self._bash_rc(process.returncode)
+        stdout = ''.join(lines).strip()
+        if _interrupted or _is_ctrl_c_exit(returncode):
+            # ★ 中断提示（2026-10-20 修复）：Ctrl+C / Esc 中断时旧实现返回
+            #   {"stdout": "", "stderr": "", "returncode": 130}——既没有输出也
+            #   没有提示，模型只能靠退出码猜。这里保留已读到的输出，并像
+            #   PIPE 分支一样在 stderr 给出「(命令已被中断)」。
+            return {"stdout": stdout, "stderr": "(命令已被中断)",
+                    "returncode": returncode}
         return {
-            "stdout": ''.join(lines).strip(),
+            "stdout": stdout,
             # PTY 模式 stdout/stderr 合并到同一 master fd，无法分离
             "stderr": "",
-            "returncode": self._bash_rc(process.returncode),
+            "returncode": returncode,
         }
 
     async def _run_conpty(self, show_command=False, show_output=False,
-                          publish_line_fn=None, interactive=False,
+                          publish_line_fn=None, pty_ready_fn=None,
+                          interactive=False,
                           interactive_ready_fn=None):
         """用 Windows ConPTY 执行命令（``pty=true`` 且 ``os.name == 'nt'``）。
 
         与 POSIX :meth:`_run_pty` 的差异只在「怎么建伪终端」：
 
-          - POSIX：``pty.openpty`` + ``preexec_fn``（setsid / TIOCSCTTY）；
+          - POSIX：``pty.openpty`` + ``preexec_fn``（TIOCSCTTY）+ ``start_new_session``；
           - Windows：``_conpty.spawn``（CreatePseudoConsole + STARTUPINFOEX）。
 
         两者的输出处理完全复用 :meth:`_read_loop`（同一个 ``StreamReader``
         接口），因此 UTF-8/本地代码页自适应解码、ANSI 剥离、``\\r`` 覆盖模拟、
-        行回调（display / read_buffer）行为一致。
+        输入回显去重、行回调（display / read_buffer）行为一致。
 
         Args:
             show_command: 是否打印命令行到终端。
             show_output: 是否实时打印输出到终端。
             publish_line_fn: 可选的行回调 ``async (text, is_stderr) -> None``。
-            interactive: 是否启用交互式输入（``pty=true`` 下恒为真——ConPTY
-                的输入写端始终可用，保留参数只为与 :meth:`_run_pty` 同签名）。
+            pty_ready_fn: 可选回调 ``pty_ready_fn(write_fd, resize=_resize)``：
+                外部可获得输入写端 fd 与 resize 函数（调用
+                ``ResizePseudoConsole``）。只接受一个位置参数的回调也兼容。
+            interactive: 是否启用交互式输入（**仅为签名兼容保留**）：
+                ConPTY 的输入写端始终连接伪终端，不存在「非交互」形态。
             interactive_ready_fn: 子进程创建后的回调
                 ``(process, "pty", master_fd=<写端 fd>, job_handle=<Job>)``，
                 供后台任务记录 stdin 写端与进程句柄。
 
         Returns:
-            三元结果 dict（PTY 输出合并，``stderr`` 恒为空）。
+            三元结果 dict（PTY 输出合并，``stderr`` 通常为空；被中断时
+            ``stderr`` 放中断提示，便于模型区分「无输出」与「被中断」）。
         """
         if show_command:
             await print_to_terminal(f"\n{GREEN}$ {self.command}{RESET}\n")
 
         env = self._get_subprocess_env()
         env['TERM'] = 'xterm-256color'
-        # 交互式程序（REPL / TUI）在 PTY 下会读取行列数；ConPTY 自带默认值，
-        # 这里显式给一个常见尺寸，避免 0 列导致折行异常。
+        # 交互式程序（REPL / TUI）在 PTY 下会读取行列数；跟随当前终端尺寸
+        # （拿不到时回退 120x30），避免 0 列导致折行异常。
+        size = shutil.get_terminal_size(fallback=(120, 30))
+        cols = max(int(getattr(size, "columns", 120) or 120), 1)
+        rows = max(int(getattr(size, "lines", 30) or 30), 1)
         launch_argv = _conpty_launch_argv(self.command)
 
         try:
-            process = _conpty.spawn(launch_argv, env=env)
+            process = _conpty.spawn(launch_argv, env=env, cols=cols, rows=rows)
         except BaseException:
             _remove_script_file(_script_path_from_launch(launch_argv))
             raise
+
+        # ★ pty_ready_fn：提供写端 fd + resize 回调（ConPTY 的
+        #   ResizePseudoConsole）。修复前 _run_conpty 完全忽略该参数、
+        #   且 ResizePseudoConsole 从未被调用——终端 resize 不会同步，
+        #   TUI 尺寸永远停在启动时的初始值。
+        if pty_ready_fn is not None:
+            _notify_pty_ready(pty_ready_fn, process.write_fd, process.resize)
 
         # Windows Job：kill / 中断时 TerminateJobObject 覆盖 PPID 链断裂的
         # 孤儿后代（与 PIPE 分支同一套机制）
@@ -1802,6 +1990,7 @@ class BashFunc(Func):
                 process.reader, process, lines, publish_line_fn,
                 show_output=show_output, is_stderr=False,
                 kill_fn=_kill_tree_once,
+                echo_filter=self._echo_filter,
             )
         except asyncio.CancelledError:
             _kill_tree_once()
@@ -1814,14 +2003,16 @@ class BashFunc(Func):
 
         _remove_script_file(_script_path_from_launch(launch_argv))
 
-        if interrupted:
-            return {"stdout": "", "stderr": "(命令已被中断)",
-                    "returncode": self._bash_rc(process.returncode)}
+        returncode = self._bash_rc(process.returncode)
+        stdout = ''.join(lines).strip()
+        if interrupted or _is_ctrl_c_exit(returncode):
+            return {"stdout": stdout, "stderr": "(命令已被中断)",
+                    "returncode": returncode}
         return {
-            "stdout": ''.join(lines).strip(),
+            "stdout": stdout,
             # ConPTY 只有一条输出流，stdout/stderr 物理合并
             "stderr": "",
-            "returncode": self._bash_rc(process.returncode),
+            "returncode": returncode,
         }
 
     async def _run_async(self, show_command=False, show_output=False,
@@ -1864,6 +2055,9 @@ class BashFunc(Func):
             holder["master_fd"] = master_fd
             holder["stdin_writer"] = stdin_writer
             holder["job_handle"] = job_handle
+            # PTY 输入回显去重队列：与 self._echo_filter 共享，转后台后
+            # 由 _promote_to_background 换成任务记录里的队列（同一 list）。
+            holder["echo_filter"] = self._echo_filter["lines"]
             if _WINDOWS_LIKE:
                 try:
                     from . import _win_proc
@@ -1990,9 +2184,27 @@ class BashFunc(Func):
         """
         agent = getattr(self, 'agent', None)
         if agent is None or not hasattr(agent, '_register_background_task'):
+            # ★ 无 Agent 上下文时不能「丢下任务不管」：旧实现直接返回错误，
+            #   但 exec_task 与子进程仍在运行——命令永远无法被管理（读 stdin
+            #   的 cat / ssh 会永久挂起，且占用子进程与 fd）。这里取消执行并
+            #   终止进程树（PTY 分支的 CancelledError 处理也会杀一次）。
+            process = holder.get("process")
+            exec_task.cancel()
+            try:
+                await asyncio.wait({exec_task}, timeout=2.0)
+            except Exception:  # pragma: no cover - 取消过程异常不影响结果
+                logger.debug("取消超时前台任务失败", exc_info=True)
+            if process is not None:
+                try:
+                    terminate_process_job(holder.get("job_handle"))
+                    _kill_process_tree(process.pid)
+                except Exception:  # pragma: no cover - 依赖系统调用
+                    logger.debug("清理超时前台任务进程失败", exc_info=True)
+            close_process_job(holder.get("job_handle"))
+            holder["job_handle"] = None
             return self._error_result(
                 f"(命令执行超过 {self._AUTO_BG_TIMEOUT} 秒，但当前未关联 "
-                f"Agent 上下文，无法自动转后台管理)")
+                f"Agent 上下文，无法自动转后台管理；已终止该命令)")
 
         task_id = f"bg-{uuid.uuid4().hex[:12]}"
         process = holder.get("process")
@@ -2029,6 +2241,9 @@ class BashFunc(Func):
             "mode": holder.get("mode"),
             "master_fd": holder.get("master_fd"),
             "stdin_writer": holder.get("stdin_writer"),
+            # PTY 输入回显去重队列（bash_opt op=stdin 登记写入行，
+            # _read_loop 消费；与 self._echo_filter["lines"] 共享同一 list）
+            "echo_filter": {"lines": holder.get("echo_filter") or []},
             "io_lock": asyncio.Lock(),
             # ── 实时输出缓冲（bash_opt read 读取后清空） ──
             "read_buffer": "",
@@ -2045,6 +2260,10 @@ class BashFunc(Func):
         agent._register_background_task(task_id, rec)
         # Job 句柄归属转给任务记录：_run_exec 的 finally 不再关闭它
         holder["promoted"] = True
+        # ★ 回显去重队列换成任务记录里的 list（**同一对象**）：bash_opt 写入时
+        #   登记到 rec["echo_filter"]["lines"]，_read_loop 经 self._echo_filter
+        #   读取——共享同一 list 才能让转后台后的输入回显也被过滤。
+        self._echo_filter["lines"] = rec["echo_filter"]["lines"]
         if _WINDOWS_LIKE and pid:
             try:
                 from ._task_winpid import register
@@ -2207,6 +2426,8 @@ class BashFunc(Func):
             "mode": None,           # "pty" / "pipe"（写入方式）
             "master_fd": None,      # PTY master fd（mode="pty" 时，os.write 写入）
             "stdin_writer": None,   # PIPE stdin StreamWriter（mode="pipe" 时）
+            # PTY 输入回显去重：op=stdin 写入行登记于此，_read_loop 命中时丢弃
+            "echo_filter": {"lines": []},
             "io_lock": asyncio.Lock(),  # stdin/keys 写入串行化
             # ── 实时输出缓冲（bash_opt read 读取后清空） ──
             "read_buffer": "",      # 运行期间已产生、尚未被 read 消费的输出
@@ -2258,6 +2479,12 @@ class BashFunc(Func):
             rec["mode"] = mode
             rec["master_fd"] = master_fd
             rec["stdin_writer"] = stdin_writer
+            # ★ PTY 输入回显去重队列：后台执行体（bg）的 _read_loop 读取
+            #   bg._echo_filter，这里把它指向任务记录的 list（同一对象），
+            #   bash_opt op=stdin 写入时登记到 rec["echo_filter"]["lines"]。
+            echo_filter = rec.get("echo_filter")
+            if isinstance(echo_filter, dict):
+                bg._echo_filter["lines"] = echo_filter.setdefault("lines", [])
             if _WINDOWS_LIKE:
                 try:
                     from . import _win_proc

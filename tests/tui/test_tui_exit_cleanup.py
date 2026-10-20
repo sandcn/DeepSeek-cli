@@ -153,7 +153,6 @@ class TestEmitExitNote:
 
     def test_moves_from_cursor_to_document_bottom_first(self):
         """光标停在输入行（文档中部）时先下移到最后一行再换行。"""
-        from src.tui.ink import Line, StyledRun
         from src.tui.ink.renderer import InkRenderer
 
         r = InkRenderer(stream=io.StringIO(), height=24)

@@ -55,18 +55,19 @@ _PLATFORM_ONLY = {
 
 _STDLIB = {
     "__future__", "abc", "argparse", "asyncio", "atexit", "base64", "bisect",
-    "collections", "contextlib", "contextvars", "copy", "ctypes", "dataclasses",
-    "datetime", "difflib", "email", "enum", "errno", "fcntl", "fnmatch",
-    "functools", "gc", "glob", "grp", "hashlib", "heapq", "html", "importlib",
-    "inspect", "io", "ipaddress", "itertools", "json", "locale", "logging",
-    "math", "msvcrt", "os", "pathlib", "pkgutil", "platform", "pty", "pwd",
-    "queue", "random", "re", "select", "shutil", "signal", "socket", "stat",
-    "string", "struct", "subprocess", "sys", "tarfile", "tempfile", "termios",
-    "threading", "time", "tty", "types", "typing", "unicodedata", "urllib",
-    "uuid", "warnings", "weakref", "zlib", "colorsys", "configparser", "csv",
-    "dis", "getpass", "gzip", "http", "linecache", "mimetypes", "pickle",
-    "pprint", "secrets", "shelve", "sqlite3", "statistics", "textwrap",
-    "tokenize", "traceback", "typing_extensions", "xml", "zipfile",
+    "codecs", "collections", "contextlib", "contextvars", "copy", "ctypes",
+    "dataclasses", "datetime", "difflib", "email", "enum", "errno", "fcntl",
+    "fnmatch", "functools", "gc", "glob", "grp", "hashlib", "heapq", "html",
+    "importlib", "inspect", "io", "ipaddress", "itertools", "json", "locale",
+    "logging", "math", "msvcrt", "os", "pathlib", "pkgutil", "platform", "pty",
+    "pwd", "queue", "random", "re", "select", "shlex", "shutil", "signal",
+    "socket", "stat", "string", "struct", "subprocess", "sys", "tarfile",
+    "tempfile", "termios", "threading", "time", "tty", "types", "typing",
+    "unicodedata", "urllib", "uuid", "warnings", "weakref", "zlib", "colorsys",
+    "configparser", "csv", "dis", "getpass", "gzip", "http", "linecache",
+    "mimetypes", "pickle", "pprint", "secrets", "shelve", "sqlite3",
+    "statistics", "textwrap", "tokenize", "traceback", "typing_extensions",
+    "xml", "zipfile",
 }
 
 

@@ -224,7 +224,7 @@ async def test_keys_repeat_writes_terminal_multiple_times(monkeypatch):
     async def _fake_write(fd, data):
         written.append((fd, bytes(data)))
 
-    monkeypatch.setattr(bash_opt_module, "_write_pty_all", _fake_write)
+    monkeypatch.setattr(bash_opt_module, "_write_pty_bytes", _fake_write)
     monkeypatch.setattr(bash_opt_module, "probe_window", lambda pid: None)
     result = await _run_keys(_record(), key="ctrl+c", repeat=3)
     assert written == [(9, b"\x03")] * 3
@@ -237,7 +237,7 @@ async def test_keys_repeat_default_writes_once(monkeypatch):
     async def _fake_write(fd, data):
         written.append((fd, bytes(data)))
 
-    monkeypatch.setattr(bash_opt_module, "_write_pty_all", _fake_write)
+    monkeypatch.setattr(bash_opt_module, "_write_pty_bytes", _fake_write)
     monkeypatch.setattr(bash_opt_module, "probe_window", lambda pid: None)
     result = await _run_keys(_record(), key="esc")
     assert written == [(9, b"\x1b")]

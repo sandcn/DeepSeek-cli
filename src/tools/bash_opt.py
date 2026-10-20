@@ -23,8 +23,9 @@ bash_opt — 按 task_id 操作后台 bash 任务
             丢掉输出。PTY（pty=true）**没有真正的 EOF**：只是写入 EOT
             （ConPTY 为 \\x1a / POSIX 为 \\x04）模拟按键，程序不一定会退出
             （实测 python REPL 收到 EOT 后继续运行）——依赖 EOF 的命令请用
-            非 PTY 任务，需要结束 PTY 任务请用 op=kill。关闭后 stdin / keys
-            写入会明确提示「stdin 已关闭」
+            非 PTY 任务，需要结束 PTY 任务请用 op=kill。**PTY 的 stdin 通道
+            不会因此关闭**（EOT 只是一次按键），之后仍可继续 op=stdin /
+            op=keys；pipe 模式关闭后写入会明确提示「stdin 已关闭」
 - op=keys   向后台命令发送光标/键盘消息（自动路由：目标进程有 GUI 窗口时
             作为窗口级键盘消息注入该窗口，否则回退写入终端——跨平台
             ANSI/VT100 转义序列；支持 ctrl+c 等修饰键组合、esc/pageup 等
@@ -208,13 +209,12 @@ import json
 import logging
 import math
 import os
-import sys
 import tempfile
 import time
 from contextlib import asynccontextmanager
 
 from .base import Func
-from .bash import READ_BUFFER_DROPPED_KEY, kill_process_tree
+from .bash import READ_BUFFER_DROPPED_KEY, _remember_echo_lines, kill_process_tree
 from ._bash_opt_schema import build_bash_opt_schema
 from ._process_output import CHILD_STDIO_ENCODING
 from .file_ops import normalize_user_path, validate_path_security
@@ -398,6 +398,48 @@ async def _write_pty_all(fd: int, data: bytes, *,
             await asyncio.sleep(retry_interval)
             continue
         total += written
+
+
+def _write_pty_all_blocking(fd: int, data: bytes) -> None:
+    """阻塞 fd 上写完 ``data``（Windows ConPTY 输入管道；在工作线程里调用）。
+
+    Windows 匿名管道不支持 CRT 非阻塞模式（``os.set_blocking`` 对管道 fd
+    无效），``os.write`` 在缓冲区满时**直接阻塞**而不是抛 BlockingIOError。
+    因此不能在事件循环线程里调用——否则目标程序不读输入时整个应用冻结
+    （TUI 无响应、其他工具也停摆）。调用方用 ``asyncio.to_thread`` 包一层，
+    并用 ``asyncio.wait_for`` 提供超时（见 :func:`_write_pty_bytes`）。
+
+    Args:
+        fd: 写端文件描述符。
+        data: 待写入字节。
+    """
+    view = memoryview(data)
+    total = 0
+    while total < len(view):
+        written = os.write(fd, view[total:])
+        if written <= 0:  # pragma: no cover - 管道关闭时会抛 OSError
+            raise OSError("PTY 写入返回 0（写端已关闭）")
+        total += written
+
+
+async def _write_pty_bytes(fd: int, data: bytes) -> None:
+    """向 PTY / ConPTY 写端写完数据（按平台选择非阻塞或线程化写入）。
+
+    - POSIX：master fd 已被 ``connect_read_pipe`` 设为非阻塞，走
+      :func:`_write_pty_all`（EAGAIN 重试 + 总超时）；
+    - Windows ConPTY：写端是阻塞匿名管道，必须放到工作线程（否则阻塞事件
+      循环），用 ``asyncio.wait_for`` 限制等待时间。
+
+    Raises:
+        OSError: 写入失败 / 超时（``TimeoutError`` 是 ``OSError`` 子类）。
+    """
+    if os.name == "nt":
+        await asyncio.wait_for(
+            asyncio.to_thread(_write_pty_all_blocking, fd, data),
+            timeout=_PTY_WRITE_TIMEOUT,
+        )
+        return
+    await _write_pty_all(fd, data)
 
 
 def _format_position(arguments: dict, x_key: str = "x", y_key: str = "y") -> str:
@@ -1455,6 +1497,12 @@ class BashOptFunc(Func):
         ok, err = await self._write_to_task(rec, data)
         if not ok:
             return err
+        # ★ 登记输入回显（仅 Windows ConPTY）：ConPTY 无法关闭终端驱动的
+        #   回显，读取端（bash._read_loop）按行尾匹配丢弃一次。POSIX 分支
+        #   已在 openpty 后关闭 ECHO，剩下的都是程序真实输出——再登记会
+        #   误删真实输出（实测 cat 的 "hello" 被当成回显丢弃）。
+        if rec.get("mode") == "pty" and os.name == "nt":
+            _remember_echo_lines(rec.get("echo_filter"), text)
         return (f"(已向后台任务 {self.task_id} 发送 stdin 输入"
                 f"（编码 {self.encoding}）: "
                 f"{self._sanitize_display(text)})")
@@ -1475,13 +1523,19 @@ class BashOptFunc(Func):
           程序不一定会因此退出（实测 ``python -i -q`` 收到 EOT 后仍在运行），
           返回文本会如实说明；依赖 EOF 的命令请改用非 PTY 任务，需要结束
           PTY 任务请用 ``op=kill``（PTY master 关闭会同时断开输出读取，
-          因此这里不能直接关闭 PTY）。
+          因此这里不能直接关闭 PTY）。**PTY 的 stdin 通道不会因此关闭**：
+          EOT 只是一次按键，之后仍可继续 ``op=stdin`` / ``op=keys``。
         """
         mode = rec.get("mode")
         if mode is None:
             return (f"(后台任务 {self.task_id} 尚未就绪（进程句柄未建立），"
                     f"请稍后重试)")
-        if rec.get("stdin_closed"):
+        if mode == "pty":
+            if rec.get("eot_sent"):
+                return (f"(已向后台任务 {self.task_id} 的 PTY 发送过 EOT；"
+                        f"PTY 没有真正的 EOF，通道仍可用——可继续 op=stdin / "
+                        f"op=keys 写入，或再次发送 EOT)")
+        elif rec.get("stdin_closed"):
             return f"(后台任务 {self.task_id} 的 stdin 已关闭，无需重复操作)"
         lock = rec.get("io_lock")
         if lock is not None:
@@ -1499,7 +1553,7 @@ class BashOptFunc(Func):
             eof_byte = b"\x1a" if os.name == "nt" else b"\x04"
             try:
                 await asyncio.wait_for(
-                    _write_pty_all(master_fd, eof_byte),
+                    _write_pty_bytes(master_fd, eof_byte),
                     timeout=self._STDIN_CLOSE_TIMEOUT,
                 )
             except asyncio.TimeoutError:
@@ -1508,14 +1562,19 @@ class BashOptFunc(Func):
                         f"可用 op=kill 终止)")
             except OSError as exc:
                 return (f"(向后台任务 {self.task_id} 的 PTY 写入 EOT 失败: {exc})")
-            rec["stdin_closed"] = True
+            # ★ 不置 stdin_closed（2026-10-20 修复）：PTY 没有真正的 EOF，
+            #   写入 EOT 只是一次按键模拟（ICANON 下还只在行首生效，行内有
+            #   内容时只是刷新输入缓冲）。把它当成「stdin 已关闭」会永久
+            #   锁死交互通道——写一次 Ctrl+D 之后 op=stdin / op=keys 全部
+            #   被拒，与实际语义不符。这里只记录「已发送过 EOT」用于提示。
+            rec["eot_sent"] = True
             return (f"(已向后台任务 {self.task_id} 的 PTY 写入 EOT"
                     f"（ConPTY 为 Ctrl+Z、POSIX 为 Ctrl+D）；注意 PTY 没有真正的"
                     f" EOF：这只是模拟按键，程序不一定会退出（实测 python REPL "
                     f"收到 EOT 后仍在运行）。依赖 stdin EOF 才输出 / 退出的命令"
                     f"请改用非 PTY 任务（pty=false）再 close_stdin；需要结束该"
-                    f"任务请用 op=kill。后续 stdin / keys 写入会提示 stdin 已关闭，"
-                    f"需要继续交互请重新启动任务)")
+                    f"任务请用 op=kill。stdin 通道仍可用——需要继续交互可直接"
+                    f" op=stdin / op=keys 继续写入)")
 
         if mode != "pipe":
             return f"(后台任务 {self.task_id} 写入模式异常: {mode})"
@@ -1997,7 +2056,7 @@ class BashOptFunc(Func):
             try:
                 candidates.update(_task_winpid.job_processes(job))
             except Exception:  # pragma: no cover - 依赖系统调用
-                pass
+                logger.debug("查询任务 Job 内进程失败: job=%s", job, exc_info=True)
         hint = rec.get("win_hint")
         hints = rec.get("win_hints")
         start_time = rec.get("win_start_time")
@@ -4956,7 +5015,9 @@ class BashOptFunc(Func):
                 if master_fd is None:
                     return (False,
                             f"(后台任务 {self.task_id} 无 PTY 句柄，进程可能已结束)")
-                await _write_pty_all(master_fd, data)
+                # 平台差异由 _write_pty_bytes 处理：POSIX 非阻塞重试，
+                # Windows ConPTY 在线程里写（阻塞管道不能阻塞事件循环）。
+                await _write_pty_bytes(master_fd, data)
             elif mode == "pipe":
                 stdin = rec.get("stdin_writer")
                 if stdin is None:

@@ -64,9 +64,12 @@ def _interactive_stdin() -> bool:
     读取 stdin，要求 stdin 是真实 TTY。
 
     原生 Windows（``HAS_TERMIOS=False``）：TUI 输入改由
-    ``src.tui._win_console``（``ReadConsoleInputW`` + ``SetConsoleMode``）
+    ``src._win_console``（``ReadConsoleInputW`` + ``SetConsoleMode``）
     承载，**不依赖 termios**——stdin 是控制台句柄即可交互
     （``_win_console.supported()``）。
+
+    ★ 实现位于 L0 的 ``src/_win_console.py``（不是 ``src.tui``）：基础设施层
+    （tools）不得依赖表现层，实现下沉后 tui 与 tools 共用同一后端。
 
     ★ 修复（2026-10-20，用户需求：Windows 下 user_select 弹窗必须显示）：
     修复前 ``_execute_terminal_async`` 只要 ``HAS_TERMIOS`` 为 False 就
@@ -89,7 +92,7 @@ def _interactive_stdin() -> bool:
     if not HAS_TERMIOS:
         # 原生 Windows：isatty 之外的兜底探测（控制台句柄可读按键）
         try:
-            from src.tui import _win_console
+            from .. import _win_console
             return bool(_win_console.supported())
         except Exception:
             _logger.debug("user_select: Windows 控制台输入探测失败", exc_info=True)

@@ -5,7 +5,7 @@
 
 根因：``UserSelectFunc._execute_terminal_async`` 以 ``HAS_TERMIOS`` 作为
 「终端是否可交互」的判据。原生 Windows 没有 termios（``HAS_TERMIOS``
-恒为 False），但 TUI 的输入层已由 ``src.tui._win_console``
+恒为 False），但 TUI 的输入层已由 ``src._win_console``
 （``ReadConsoleInputW`` + ``SetConsoleMode``）承载——不依赖 termios 即可
 逐键读取。修复后判据改为 ``_interactive_stdin()``：
 
@@ -82,7 +82,8 @@ def _patch_env(
     fileno=0, fileno_raises=False,
 ):
     """构造 user_select 工具执行环境（终端/Windows 控制台/ChatUI 桩）。"""
-    from src.tui import _win_console
+    # 实现在 L0 的 src._win_console（tools 不得依赖 src.tui）；patch 真实模块
+    from src import _win_console
     from src.tools import user_select as us_mod
 
     monkeypatch.setattr(us_mod, "HAS_TERMIOS", has_termios)

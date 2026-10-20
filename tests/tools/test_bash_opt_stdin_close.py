@@ -3,9 +3,10 @@
 覆盖以下新增能力：
 
 1. ``op=close_stdin``：pipe 模式关闭 stdin 写端（等 wait_closed、置
-   ``stdin_closed``、清空 ``stdin_writer``）；pty 模式写 EOT（0x04）；
-   重复调用 / 未就绪 / 无写端 / 关闭后继续写 stdin 都有可读提示；
-   该 op 接管任务生命周期（与 stdin 一致）。
+   ``stdin_closed``、清空 ``stdin_writer``）；pty 模式写 EOT（0x04），
+   只记录 ``eot_sent`` 而**不关闭通道**（PTY 没有真正的 EOF，之后仍可
+   继续 stdin / keys）；重复调用 / 未就绪 / 无写端 / 关闭后继续写 stdin
+   都有可读提示；该 op 接管任务生命周期（与 stdin 一致）。
 2. ``op=stdin`` 的 ``encoding``：缺省 **utf-8**（跟随 bash 工具为子进程
    统一设置的 stdio 编码：包装脚本设置 Console Input/OutputEncoding 与
    PYTHONIOENCODING / PYTHONUTF8，Python 等按 UTF-8 读 stdin——按 GBK 写
@@ -155,7 +156,7 @@ async def test_close_stdin_pty_writes_eot(monkeypatch):
         written["fd"] = fd
         written["data"] = data
 
-    monkeypatch.setattr(bash_opt_module, "_write_pty_all", _fake_write)
+    monkeypatch.setattr(bash_opt_module, "_write_pty_bytes", _fake_write)
     rec = _record(mode="pty", master_fd=7)
     agent = _FakeAgent({"bg-1": rec})
 
@@ -164,7 +165,10 @@ async def test_close_stdin_pty_writes_eot(monkeypatch):
     # Windows ConPTY 的 EOF 是 Ctrl+Z（\x1a），POSIX PTY 是 Ctrl+D（\x04）
     expected = b"\x1a" if os.name == "nt" else b"\x04"
     assert written == {"fd": 7, "data": expected}
-    assert rec["stdin_closed"] is True
+    # ★ PTY 没有真正的 EOF：只记录「已发送 EOT」，**不关闭** stdin 通道
+    #   （修复前置 stdin_closed=True，之后 op=stdin / op=keys 全部被拒）。
+    assert rec.get("eot_sent") is True
+    assert not rec.get("stdin_closed")
     assert "EOT" in result
 
 
@@ -178,7 +182,7 @@ async def test_close_stdin_pty_reports_no_real_eof(monkeypatch):
     async def _fake_write(fd, data, **kwargs):
         return None
 
-    monkeypatch.setattr(bash_opt_module, "_write_pty_all", _fake_write)
+    monkeypatch.setattr(bash_opt_module, "_write_pty_bytes", _fake_write)
     agent = _FakeAgent({"bg-1": _record(mode="pty", master_fd=7)})
 
     result = await _call(agent, op="close_stdin")
@@ -195,7 +199,7 @@ async def test_stdin_pty_uses_carriage_return(monkeypatch):
     async def _fake_write(fd, data, **kwargs):
         written["data"] = data
 
-    monkeypatch.setattr(bash_opt_module, "_write_pty_all", _fake_write)
+    monkeypatch.setattr(bash_opt_module, "_write_pty_bytes", _fake_write)
     agent = _FakeAgent({"bg-1": _record(mode="pty", master_fd=7)})
 
     await _call(agent, op="stdin", text="hi")
@@ -211,6 +215,70 @@ async def test_stdin_pipe_keeps_line_feed(monkeypatch):
     await _call(agent, op="stdin", text="hi")
 
     assert stdin.written == [b"hi\n"]
+
+
+async def test_close_stdin_pty_keeps_channel_open(monkeypatch):
+    """PTY：close_stdin 之后仍可继续写 stdin（PTY 没有真正的 EOF）。
+
+    修复前 ``close_stdin`` 在 PTY 上直接置 ``stdin_closed=True``：写一次
+    Ctrl+D 就把交互通道永久锁死，后续 ``op=stdin`` / ``op=keys`` 全部被拒。
+    EOT 只是一次按键，通道必须保持可用。
+    """
+    written = []
+
+    async def _fake_write(fd, data, **kwargs):
+        written.append(bytes(data))
+
+    monkeypatch.setattr(bash_opt_module, "_write_pty_bytes", _fake_write)
+    rec = _record(mode="pty", master_fd=7)
+    agent = _FakeAgent({"bg-1": rec})
+
+    await _call(agent, op="close_stdin")
+    result = await _call(agent, op="stdin", text="still-alive")
+
+    assert "still-alive" in result
+    assert "无法再写入" not in result
+    assert written[-1] == b"still-alive\r"
+    # 再次 close_stdin：提示已发送过，但不应报错 / 不应锁死
+    again = await _call(agent, op="close_stdin")
+    assert "发送过 EOT" in again
+    assert rec.get("stdin_closed") is None
+
+
+async def test_stdin_pty_registers_echo_filter(monkeypatch):
+    """Windows ConPTY 下写入的文本行登记到回显过滤队列（读取端去重）。"""
+    async def _fake_write(fd, data, **kwargs):
+        return None
+
+    class _FakeOs:
+        name = "nt"
+
+    monkeypatch.setattr(bash_opt_module, "os", _FakeOs)
+    monkeypatch.setattr(bash_opt_module, "_write_pty_bytes", _fake_write)
+    rec = _record(mode="pty", master_fd=7, echo_filter={"lines": []})
+    agent = _FakeAgent({"bg-1": rec})
+
+    await _call(agent, op="stdin", text="echo hi")
+
+    assert rec["echo_filter"]["lines"] == ["echo hi"]
+
+
+async def test_stdin_posix_pty_does_not_register_echo_filter(monkeypatch):
+    """POSIX PTY 已关闭 ECHO：不得登记回显（否则会误删程序真实输出）。"""
+    async def _fake_write(fd, data, **kwargs):
+        return None
+
+    class _FakeOs:
+        name = "posix"
+
+    monkeypatch.setattr(bash_opt_module, "os", _FakeOs)
+    monkeypatch.setattr(bash_opt_module, "_write_pty_bytes", _fake_write)
+    rec = _record(mode="pty", master_fd=7, echo_filter={"lines": []})
+    agent = _FakeAgent({"bg-1": rec})
+
+    await _call(agent, op="stdin", text="echo hi")
+
+    assert rec["echo_filter"]["lines"] == []
 
 
 async def test_stdin_after_close_is_rejected():

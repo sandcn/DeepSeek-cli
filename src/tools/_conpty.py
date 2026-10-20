@@ -26,20 +26,33 @@ PTY 任务请用 ``op=kill``。
 **物理合并**（``stderr`` 恒为空）——这是终端的固有语义，无法在 ConPTY 层
 分开；需要分离双流的命令应使用默认的 PIPE 模式。
 
+另外两点行为约定（调用方需知）：
+
+  - **输入回显**：ConPTY 的终端驱动会把写入输入管道的行回显到输出流
+    （子进程自己也可能回显），因此交互任务的输出里会出现与输入重复的行。
+    ``bash`` 工具在读取端按「最近写入行」做尽力过滤（见
+    ``bash._read_loop`` 的 ``echo_filter``），但无法保证完全去除。
+  - **TUI 输出不可用于模型**：``vim`` / ``top`` 这类全屏程序会持续输出光标
+    定位 / 清屏序列，``bash`` 工具剥离 ANSI 后只剩互相覆盖的文本，对判断
+    命令结果没有价值；需要可读输出时请用默认 PIPE 模式。
+
 实现要点：
 
   - ``CreatePipe`` 建两条匿名管道（输入 / 输出）；
   - ``CreatePseudoConsole`` 用「输入读端 + 输出写端」建立伪终端，得到 HPCON；
   - ``CreateProcessW`` 带 ``STARTUPINFOEX`` + ``PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE``
     启动子进程（``asyncio.create_subprocess_*`` 无法传该属性，因此本模块
-    自行调用 Win32 API）；
+    自行调用 Win32 API）。``bInheritHandles=False``：子进程不继承任何父句柄，
+    避免后代长期持有输出管道写端导致读线程永远等不到 EOF；
   - 独立线程用阻塞 ``ReadFile`` 读输出，``loop.call_soon_threadsafe`` 喂给
     ``asyncio.StreamReader``（Windows 的 ProactorEventLoop 不支持把匿名管道
-    直接交给 ``connect_read_pipe``）；
+    直接交给 ``connect_read_pipe``）；读端句柄由该线程独占并在退出时关闭；
   - 独立线程 ``WaitForSingleObject`` 等进程退出 → ``ClosePseudoConsole``
     （关闭输出侧，让读线程收到 EOF）并记录退出码；
   - 写端经 ``msvcrt.open_osfhandle`` 转成 CRT fd，交给现有 ``os.write``
-    路径（``bash_opt`` 的 stdin / keys 复用同一句柄）。
+    路径（``bash_opt`` 的 stdin / keys 复用同一句柄）。**该 fd 是阻塞的**
+    （Windows 匿名管道不支持 CRT 非阻塞），调用方必须在工作线程里写，
+    不能在事件循环线程直接 ``os.write`` 大量数据。
 
 平台边界：只服务**原生 Windows**。非 Windows 或系统没有 ConPTY API
 （Windows 10 1809 之前）时 :func:`is_available` 返回 False，调用方回退 PIPE。
@@ -141,14 +154,21 @@ class SECURITY_ATTRIBUTES(ctypes.Structure):
 #: 否则读端被 conhost 持有 → 父进程永远等不到输出 EOF）
 _HANDLE_FLAG_INHERIT = 0x00000001
 
-#: ``PROC_THREAD_ATTRIBUTE_HANDLE_LIST``：限制 `bInheritHandles=TRUE` 时**哪些**
-#: 句柄被继承。必需——否则父进程可继承的 stdin/stdout/stderr 也会传给子进程，
-#: 子进程优先使用继承来的标准句柄，输出不进伪终端（实测：pytest 捕获 stdout
-#: 时子进程把输出写回父进程管道，ConPTY 侧读到 0 字节）。
-_PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002
-
 #: ``STARTF_USESTDHANDLES``：显式声明标准句柄由 STARTUPINFO 指定
 _STARTF_USESTDHANDLES = 0x00000100
+
+# 说明（2026-10-20 修复）：旧实现用 ``PROC_THREAD_ATTRIBUTE_HANDLE_LIST``
+# 把 ConPTY 的 ``input_read`` / ``output_write`` 白名单式交给子进程，
+# 并让 ``CreateProcessW(bInheritHandles=True)``。这是**有害的**：
+#   - 子进程（及其全部后代）会持有一份 ConPTY 输出管道写端副本；
+#   - 根进程退出后，只要还有孙进程/daemon 存活，该写端就不关闭，
+#     读线程的 ``ReadFile`` 永远等不到 EOF → ``_read_loop`` 卡死、
+#     任务永远不结束（只能 op=kill）；
+#   - 输入读端被继承同理，输入管道无法进入「无读者」状态（写端不会 EPIPE）。
+# 标准句柄继承问题已由 ``STARTF_USESTDHANDLES`` + ``hStd* = NULL``
+# （子进程标准句柄由伪控制台提供）解决，不需要 HANDLE_LIST。现在
+# ``CreateProcessW`` 一律 ``bInheritHandles=False``，子进程不继承任何父句柄，
+# 与 Microsoft 官方 ConPTY 示例一致。
 
 
 #: kernel32 绑定缓存（懒加载；失败后不再重试）
@@ -262,13 +282,19 @@ class ConPtyProcess:
         #: dict 保证只关一次（重复 ClosePseudoConsole 会造成堆损坏）。
         self._pcon_state = pcon_state
         self._input_write_handle = int(input_write_handle)
+        #: 输出读端句柄**由读线程独占管理**（读完 / 出错时自行 CloseHandle）。
+        #: close() 不再关闭它——否则会与阻塞中的 ``ReadFile`` 竞争：句柄值被
+        #: 系统复用后，读线程可能读到无关管道的数据。
         self._output_read_handle = int(output_read_handle)
         self._reader = reader
         self._done = done_event
         self._exit_code_box = exit_code_box
         self._exit_code: int | None = None
         self._closed = False
-        #: 输入写端（CRT fd；``os.write`` 可写，PTY 会把字节解释为按键）
+        #: 输入写端（CRT fd；``os.write`` 可写，PTY 会把字节解释为按键）。
+        #: ★ 注意：匿名管道句柄本身是阻塞的，CRT fd 无法设为非阻塞——调用方
+        #: 必须在**工作线程**里写（见 bash_opt 的 ``_write_pty_all`` 调用点），
+        #: 不要在事件循环线程里直接 ``os.write`` 大量数据。
         self.write_fd: int | None = None
         # msvcrt 只在原生 Windows 存在；spawn() 也只在那里可用（is_available）
         if msvcrt is not None:
@@ -278,6 +304,23 @@ class ConPtyProcess:
             except OSError:  # pragma: no cover - 句柄异常（极罕见）
                 logger.debug("ConPTY 输入句柄转 fd 失败", exc_info=True)
                 self.write_fd = None
+                # ★ 修复：转 fd 失败时 fd 并未接管该句柄，必须自己关闭，
+                #   否则每个失败任务泄漏一个内核句柄。
+                self._close_input_handle()
+
+    def _close_input_handle(self) -> None:
+        """关闭输入写端内核句柄（仅在 fd 未接管它时调用；幂等）。"""
+        handle = self._input_write_handle
+        self._input_write_handle = 0
+        if not handle:
+            return
+        lib = _load_kernel32()
+        if lib is None:
+            return
+        try:
+            lib.CloseHandle(ctypes.c_void_p(handle))
+        except OSError:  # pragma: no cover - 依赖系统调用
+            pass
 
     @property
     def pid(self) -> int:
@@ -330,7 +373,11 @@ class ConPtyProcess:
             logger.debug("ConPTY 终止进程失败", exc_info=True)
 
     def close(self) -> None:
-        """释放资源（幂等）：关闭写端 fd / 伪终端 / 残留句柄。"""
+        """释放资源（幂等）：关闭写端 fd / 伪终端 / 残留句柄。
+
+        ★ 输出读端句柄由读线程独占管理（见 :meth:`_reader` 的说明），
+        这里不关闭，避免与阻塞中的 ``ReadFile`` 竞争。
+        """
         if self._closed:
             return
         self._closed = True
@@ -344,14 +391,37 @@ class ConPtyProcess:
         lib = _load_kernel32()
         if lib is None:
             return
-        for handle in (self._output_read_handle, self._process_handle):
-            if handle:
-                try:
-                    lib.CloseHandle(ctypes.c_void_p(handle))
-                except OSError:  # pragma: no cover - 依赖系统调用
-                    pass
-        self._output_read_handle = 0
+        handle = self._process_handle
         self._process_handle = 0
+        if handle:
+            try:
+                lib.CloseHandle(ctypes.c_void_p(handle))
+            except OSError:  # pragma: no cover - 依赖系统调用
+                pass
+
+    def resize(self, cols: int, rows: int) -> bool:
+        """调整伪终端尺寸（``ResizePseudoConsole``；终端 resize 时调用）。
+
+        Args:
+            cols: 列数（字符单元格）。
+            rows: 行数（字符单元格）。
+
+        Returns:
+            bool: 是否调整成功（伪终端已关闭 / API 不可用时 False）。
+        """
+        handle = int(self._pcon_state.get("handle") or 0)
+        if not handle:
+            return False
+        lib = _load_kernel32()
+        if lib is None:
+            return False
+        try:
+            result = lib.ResizePseudoConsole(
+                ctypes.c_void_p(handle), COORD(max(int(cols), 1), max(int(rows), 1)))
+        except OSError:  # pragma: no cover - 依赖系统调用
+            logger.debug("ResizePseudoConsole 失败", exc_info=True)
+            return False
+        return result == 0
 
     def _close_pcon(self) -> None:
         """关闭伪终端（幂等，与监督线程共用同一状态，只关一次）。"""
@@ -392,8 +462,9 @@ def spawn(argv: list[str], *, env: dict | None = None, cwd: str | None = None,
 
     loop = asyncio.get_running_loop()
     # ── 1. 两条匿名管道：输入（我们写 → 子进程读）、输出（子进程写 → 我们读）
-    # 句柄必须可继承：ConPTY 内部由 conhost 持有这两端，CreateProcess 以
-    # bInheritHandles=True 把可继承句柄交给子进程。
+    # 句柄保持「可继承」标记只为 CreatePipe 自身语义（ConPTY 建立时直接使用
+    # 这两个句柄值）；子进程不会继承它们——CreateProcessW 以
+    # bInheritHandles=False 启动，见下方说明与常量区的修复注记。
     attributes = SECURITY_ATTRIBUTES()
     attributes.nLength = ctypes.sizeof(SECURITY_ATTRIBUTES)
     attributes.lpSecurityDescriptor = None
@@ -429,8 +500,7 @@ def spawn(argv: list[str], *, env: dict | None = None, cwd: str | None = None,
 
     # ConPTY 持有两端副本；父进程侧在子进程启动后关闭（见下）。
     # ── 3. 用 STARTUPINFOEX + PSEUDOCONSOLE 属性启动子进程
-    attribute_list, attribute_buffers = _build_attribute_list(
-        pcon, [int(input_read.value), int(output_write.value)])
+    attribute_list, attribute_buffers = _build_attribute_list(pcon)
     if attribute_list is None:
         lib.ClosePseudoConsole(pcon)
         _close_handles(input_read, input_write, output_read, output_write)
@@ -452,12 +522,17 @@ def spawn(argv: list[str], *, env: dict | None = None, cwd: str | None = None,
     command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(argv))
     env_block = _environment_block(env)
     try:
+        # ★ bInheritHandles=False（2026-10-20 修复）：子进程**不继承任何父句柄**。
+        #   旧实现用 HANDLE_LIST + True 把 ConPTY 的 input_read / output_write
+        #   交给子进程，导致后代进程长期持有输出管道写端 → 根进程退出后
+        #   ReadFile 等不到 EOF、任务永远不结束。伪控制台通过属性列表附加，
+        #   不依赖句柄继承（与 Microsoft 官方示例一致）。
         created = lib.CreateProcessW(
             None,
             command_line,
-            ctypes.byref(attributes),
             None,
-            True,
+            None,
+            False,
             _EXTENDED_STARTUPINFO_PRESENT | _CREATE_UNICODE_ENVIRONMENT,
             ctypes.cast(env_block, ctypes.c_void_p) if env_block is not None else None,
             cwd,
@@ -504,17 +579,32 @@ def spawn(argv: list[str], *, env: dict | None = None, cwd: str | None = None,
     def _reader_loop() -> None:
         buffer = ctypes.create_string_buffer(_READ_CHUNK)
         read = ctypes.c_uint32(0)
-        while True:
-            ok = lib.ReadFile(ctypes.c_void_p(output_read_value), buffer,
-                              _READ_CHUNK, ctypes.byref(read), None)
-            if not ok or not read.value:
-                if not ok:
-                    logger.debug("ConPTY ReadFile 结束: error=%s",
-                                 ctypes.get_last_error())
-                break
-            data = bytes(buffer.raw[: read.value])
-            loop.call_soon_threadsafe(_feed, data)
-        loop.call_soon_threadsafe(_feed_eof)
+        try:
+            while True:
+                ok = lib.ReadFile(ctypes.c_void_p(output_read_value), buffer,
+                                  _READ_CHUNK, ctypes.byref(read), None)
+                if not ok or not read.value:
+                    if not ok:
+                        logger.debug("ConPTY ReadFile 结束: error=%s",
+                                     ctypes.get_last_error())
+                    break
+                data = bytes(buffer.raw[: read.value])
+                try:
+                    loop.call_soon_threadsafe(_feed, data)
+                except RuntimeError:  # pragma: no cover - 事件循环已关闭（应用退出）
+                    break
+        finally:
+            # ★ 读端句柄由**本线程独占管理**：退出时关闭（close() 不再碰它）。
+            #   若由 close() 关闭，可能与阻塞中的 ReadFile 竞争——句柄值被
+            #   系统复用时，读线程会读到无关管道 / 关闭无关句柄。
+            try:
+                lib.CloseHandle(ctypes.c_void_p(output_read_value))
+            except OSError:  # pragma: no cover - 依赖系统调用
+                pass
+            try:
+                loop.call_soon_threadsafe(_feed_eof)
+            except RuntimeError:  # pragma: no cover - 事件循环已关闭
+                pass
 
     threading.Thread(target=_reader_loop, name="conpty-reader", daemon=True).start()
 
@@ -555,22 +645,27 @@ def spawn(argv: list[str], *, env: dict | None = None, cwd: str | None = None,
     )
 
 
-def _build_attribute_list(pcon, inheritable: list[int]):
-    """构建进程属性列表：``PSEUDOCONSOLE`` + ``HANDLE_LIST``（白名单继承）。
+def _build_attribute_list(pcon):
+    """构建进程属性列表：只含 ``PSEUDOCONSOLE``（不再使用 HANDLE_LIST）。
+
+    旧实现额外挂 ``PROC_THREAD_ATTRIBUTE_HANDLE_LIST`` 把 ConPTY 的输入读端 /
+    输出写端交给子进程；这会让子进程及其后代持有输出管道写端，根进程退出后
+    读线程永远等不到 EOF（daemon / 后台孙进程场景任务卡死）。伪控制台通过
+    ``PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`` 附加到子进程，不需要任何句柄继承
+    （见 ``spawn`` 的 ``CreateProcessW(bInheritHandles=False)``）。
 
     Args:
         pcon: ``CreatePseudoConsole`` 返回的 HPCON（c_void_p）。
-        inheritable: 允许子进程继承的句柄值（ConPTY 的输入读端 / 输出写端）。
 
     Returns:
-        ``(address, buffers)``；失败时 ``(None, None)``。调用方用完必须
-        ``DeleteProcThreadAttributeList(address)`` 并保持 ``buffers`` 存活
+        ``(address, buffer)``；失败时 ``(None, None)``。调用方用完必须
+        ``DeleteProcThreadAttributeList(address)`` 并保持 ``buffer`` 存活
         直到删除完成。
     """
     lib = _load_kernel32()
     if lib is None:
         return None, None
-    attribute_count = 2
+    attribute_count = 1
     size = ctypes.c_size_t(0)
     # 第一次调用只取所需缓冲区大小（预期失败：ERROR_INSUFFICIENT_BUFFER）
     lib.InitializeProcThreadAttributeList(None, attribute_count, 0,
@@ -597,15 +692,7 @@ def _build_attribute_list(pcon, inheritable: list[int]):
     if not updated:
         lib.DeleteProcThreadAttributeList(address)
         return None, None
-    handles = (ctypes.c_void_p * len(inheritable))(*[int(v) for v in inheritable])
-    updated = lib.UpdateProcThreadAttribute(
-        address, 0, _PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-        handles, ctypes.sizeof(handles), None, None,
-    )
-    if not updated:
-        lib.DeleteProcThreadAttributeList(address)
-        return None, None
-    return int(address.value), (buffer, handles)
+    return int(address.value), buffer
 
 
 def _close_handles(*handles) -> None:

@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import platform as _platform
 import re
@@ -41,6 +42,8 @@ __all__ = [
 
 _PROC_ROOT = "/proc"
 _MAX_ANCESTOR_DEPTH = 8
+
+logger = logging.getLogger(__name__)
 
 #: bash 工具启动子进程时注入的真实交互 shell 名（如 ``powershell``）。
 #: 子进程的父链首项是工具自己的执行外壳（Windows 上是 ``cmd.exe /c``），
@@ -360,8 +363,8 @@ def _win_process_cmdline(pid: int) -> str:
         import psutil
 
         return " ".join(psutil.Process(pid).cmdline())
-    except Exception:
-        pass
+    except Exception:  # pragma: no cover - psutil 探测失败（权限 / 进程已退出）
+        logger.debug("psutil 读取进程命令行失败: pid=%s", pid, exc_info=True)
     if os.name != "nt":
         return ""
     try:

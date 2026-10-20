@@ -68,7 +68,7 @@ def pty_writes(monkeypatch):
     async def _fake_write(fd, data):
         written.append((fd, bytes(data)))
 
-    monkeypatch.setattr(bash_opt_module, "_write_pty_all", _fake_write)
+    monkeypatch.setattr(bash_opt_module, "_write_pty_bytes", _fake_write)
     return written
 
 

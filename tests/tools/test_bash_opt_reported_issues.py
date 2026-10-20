@@ -58,14 +58,24 @@ def _func(**kwargs):
 # ═══════════════════════════════════════════════════════════
 
 def test_pty_child_becomes_session_leader_with_controlling_terminal():
-    """子进程必须 setsid + TIOCSCTTY，否则 \\x03 不会变成 SIGINT。"""
+    """子进程必须有控制终端（start_new_session + TIOCSCTTY），\\x03 才是 SIGINT。
+
+    修复后的实现：会话由 subprocess 的 C 层 ``start_new_session=True`` 建立
+    （不再在 preexec_fn 里执行 Python 级 setsid——那会扩大 fork 后的死锁
+    风险窗口），preexec_fn 只做一次 ``TIOCSCTTY``（作用在 fd 1，subprocess
+    已把 slave dup 到标准句柄）。
+    """
     from src.tools import bash as bash_module
 
     source = Path(bash_module.__file__).read_text(encoding="utf-8")
-    assert "_setup_controlling_terminal" in source
-    assert "os.setsid()" in source
+    assert "_attach_controlling_terminal" in source
     assert "TIOCSCTTY" in source
-    assert "preexec_fn=_setup_controlling_terminal" in source
+    assert "start_new_session=True" in source
+    assert "preexec_fn=_attach_controlling_terminal" in source
+    # 回归保护：不得再用 pass_fds 保留 slave fd——它会让子进程及全部后代
+    # 多持有一份 slave 副本（实测孙进程出现 /dev/ptyN fd），既泄漏 fd，
+    # 也破坏「输出全部关闭 → master 收 EOF」的语义。
+    assert "pass_fds=(slave_fd,)" not in source
 
 
 @pytest.mark.skipif(not hasattr(os, "setsid") or not hasattr(os, "write"),
