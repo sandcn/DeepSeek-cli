@@ -1183,40 +1183,112 @@ def is_shell_like_exe(name: str | None) -> bool:
     return bool(stem) and stem in _SHELL_LIKE_STEMS
 
 
-def _win_pids_for_hint(hint: str | None, start_time: int | None) -> list[int]:
-    """按可执行名 + 启动时间筛出「任务启动后新出现」的 Windows 进程。
+#: 「按 exe 名兜底」只认任务启动后这段时间内新建的同名进程（Windows
+#: FILETIME，100ns；60 秒）。
+#: 为什么需要上界：Cygwin 下 mintty 等 GUI 程序启动后会 daemon 化
+#: （父进程退出、进程树 / Job 都够不着），按名兜底是唯一通道；但任务的
+#: 生命周期可以很长，若把「启动之后**任何时刻**出现的同名进程」都当成
+#: 任务进程，用户中途自己打开的终端 / 编辑器就会被 ``op=kill`` 误杀。
+#: 真实的后代（含启动较晚的 GUI）本来就在 Job / 进程树里，不依赖按名兜底；
+#: 按名兜底只用于「启动瞬间脱离归属」的进程（App Execution Alias、daemon
+#: 化的 mintty），因此把匹配窗口限定在任务启动后 60 秒。
+_HINT_MATCH_WINDOW = 60 * 10_000_000
+#: 创建时间与任务启动时间的时钟粒度容差（1 秒；FILETIME 是 100ns，
+#: 但系统计时可能滞后）。
+_HINT_TIME_SLACK = 10_000_000
+
+
+def _hint_names(hint) -> list[str]:
+    """归一化 hint 输入（``str`` / 可迭代）→ 去空、去 shell 名、去重保序。"""
+    if hint is None:
+        return []
+    if isinstance(hint, str):
+        raw = [hint]
+    else:
+        try:
+            raw = list(hint)
+        except TypeError:
+            raw = [hint]
+    names: list[str] = []
+    for item in raw:
+        name = str(item or "").strip()
+        if not name or is_shell_like_exe(name) or name in names:
+            continue
+        names.append(name)
+    return names
+
+
+def _merge_hints(*groups) -> list[str]:
+    """合并多组 hint（``str`` / 可迭代 / ``None``）→ 去重保序的名字列表。"""
+    merged: list[str] = []
+    for group in groups:
+        for name in _hint_names(group):
+            if name not in merged:
+                merged.append(name)
+    return merged
+
+
+def _win_pids_for_hint(hint, start_time: int | None) -> list[int]:
+    """按可执行名（可多个）+ 任务启动时间窗筛出相关的 Windows 进程。
 
     Cygwin 下 App Execution Alias（Store 应用）或经 explorer 启动的窗口，
-    其进程既不在任务 Job 内，也不在 Toolhelp32 父子链上；只能靠命令行首个
-    token 的 exe 名 + 创建时间兜底。start_time 为 0/None 时不做时间过滤。
+    以及 daemon 化的 GUI（mintty 自劫持后父进程退出），其进程既不在任务
+    Job 内，也不在 Toolhelp32 父子链上；只能靠「命令里出现过的程序名 +
+    创建时间」兜底。
 
-    shell / 解释器名字直接返回空表（见 :func:`is_shell_like_exe`）；
-    创建时间读不到的候选也跳过——无法排除「用户早就开着的同名进程」，
-    宁可漏杀 App Execution Alias，也不误杀用户程序。
+    Args:
+        hint: 一个或多个可执行名（``str`` / 可迭代）；shell / 解释器名被忽略
+            （见 :func:`is_shell_like_exe`）。
+        start_time: 任务启动时间（Windows FILETIME）。**必须提供**：读不到
+            就无法排除「用户开着的同名进程」，此时不做按名兜底（宁可漏杀
+            也不误杀）。创建时间读不到的候选同样跳过。
+
+    Returns:
+        命中的 Windows PID 列表（去重、保持 hint 顺序）：创建时间落在
+        ``[start_time - 1s, start_time + 60s]`` 内的同名存活进程。
     """
-    if not hint or is_shell_like_exe(hint):
+    names = _hint_names(hint)
+    if not names:
+        return []
+    if not start_time:
+        logger.debug("任务启动时间未知，跳过按名兜底（避免误杀用户同名程序）")
         return []
     try:
         from . import _win_proc
-        candidates = _win_proc.find_processes_by_name(hint)
     except Exception:  # pragma: no cover - 依赖系统调用
-        logger.debug("按名称查找 Windows 进程失败: %s", hint, exc_info=True)
         return []
-    if not start_time:
-        return candidates
+    start = int(start_time)
+    deadline = start + _HINT_MATCH_WINDOW
     result: list[int] = []
-    for pid in candidates:
+    seen: set[int] = set()
+    for name in names:
         try:
-            create_time = _win_proc.process_create_time(pid)
+            candidates = _win_proc.find_processes_by_name(name)
         except Exception:  # pragma: no cover - 依赖系统调用
-            create_time = None
-        if create_time is None:
-            # 读不到创建时间就无法排除「用户早就开着的同名进程」：
-            # 宁可漏杀 App Execution Alias，也不误杀用户程序。
-            logger.debug("进程 %s 创建时间不可读，跳过按名兜底", pid)
+            logger.debug("按名称查找 Windows 进程失败: %s", name, exc_info=True)
             continue
-        # 允许 1 秒的时钟粒度误差（FILETIME 是 100ns，但系统计时可能滞后）
-        if int(create_time) + 10_000_000 >= int(start_time):
+        for pid in candidates:
+            try:
+                pid = int(pid)
+            except (TypeError, ValueError):
+                continue
+            if pid <= 0 or pid in seen:
+                continue
+            try:
+                create_time = _win_proc.process_create_time(pid)
+            except Exception:  # pragma: no cover - 依赖系统调用
+                create_time = None
+            if create_time is None:
+                # 读不到创建时间就无法排除「用户早就开着的同名进程」：
+                # 宁可漏杀 App Execution Alias，也不误杀用户程序。
+                logger.debug("进程 %s 创建时间不可读，跳过按名兜底", pid)
+                continue
+            created = int(create_time)
+            if created + _HINT_TIME_SLACK < start:
+                continue  # 任务启动前就存在 → 用户自己的程序
+            if created > deadline:
+                continue  # 早就过了启动窗口 → 用户中途打开的同名程序
+            seen.add(pid)
             result.append(pid)
     return result
 
@@ -1231,6 +1303,7 @@ def kill_process_tree(pid: int, *, attempts: int = KILL_MAX_ATTEMPTS,
                       extra_win_pids=None,
                       extra_win_create_times=None,
                       win_hint: str | None = None,
+                      win_hints=None,
                       win_start_time: int | None = None) -> KillResult:
     """杀死进程及其所有后代，**杀后校验、未死补杀**（公开 API）。
 
@@ -1270,10 +1343,16 @@ def kill_process_tree(pid: int, *, attempts: int = KILL_MAX_ATTEMPTS,
             不传时尝试用 ``/proc/<pid>/winpid`` 现读）。
         extra_win_pids: 任务运行期采样累积的 Windows 后代 PID。
         extra_win_create_times: ``extra_win_pids`` 对应的创建时间。
-        win_hint: 命令行首个 token 的 exe 名（小写 basename），用于
+        win_hint: 命令行**首选** exe 名（小写 basename），用于
             App Execution Alias / explorer 启动的 Store 应用兜底。
+        win_hints: 命令行里出现的**全部** exe 名候选（``op=kill`` 传入）。
+            Cygwin 下 mintty 等 GUI 程序 daemon 化后父进程退出，进程树与
+            Job 都够不着它，只能按名兜底；只看首个 token 会漏掉
+            ``cd /tmp && mintty ...`` 这类命令。与 ``win_hint`` 合并去重。
         win_start_time: 任务启动时间（Windows FILETIME），与 ``win_hint``
-            一起过滤「任务启动前就存在的同名进程」。
+            一起过滤「任务启动前就存在的同名进程」，并把按名兜底限定在任务
+            启动后 :data:`_HINT_MATCH_WINDOW` 内（避免误杀用户中途打开的
+            同名程序）。
 
     Returns:
         KillResult；``remaining_pids`` / ``remaining_win_pids`` 非空表示仍有
@@ -1335,7 +1414,7 @@ def kill_process_tree(pid: int, *, attempts: int = KILL_MAX_ATTEMPTS,
         used = index
 
         # 每轮重新收集 Windows 候选：Job 成员 + 根 Windows 树的当前后代 +
-        # 运行期采样 + Store 应用兜底（按 exe 名 + 启动时间）。
+        # 运行期采样 + 按 exe 名兜底（Store 应用 / daemon 化的 mintty）。
         round_win: list[int] = list(safe_extra_win)
         if is_cyg:
             if win_root:
@@ -1346,7 +1425,8 @@ def kill_process_tree(pid: int, *, attempts: int = KILL_MAX_ATTEMPTS,
                     round_win.extend(_win_proc.job_processes(job_handle))
                 except Exception:  # pragma: no cover - 依赖系统调用
                     pass
-            round_win.extend(_win_pids_for_hint(win_hint, win_start_time))
+            round_win.extend(_win_pids_for_hint(
+                _merge_hints(win_hint, win_hints), win_start_time))
         # 去重、过滤自身
         self_winpid = _self_winpid() if is_cyg else None
         dedup_win: list[int] = []

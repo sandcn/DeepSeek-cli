@@ -33,6 +33,7 @@ def _rec() -> dict:
         "descendant_win_pids": {457},
         "descendant_win_create_times": {457: 1002},
         "win_hint": "notepad.exe",
+        "win_hints": ["notepad.exe", "mintty"],
         "win_start_time": 999,
     }
 
@@ -53,6 +54,7 @@ async def test_kill_passes_windows_fields_to_kill_process_tree(monkeypatch):
     assert captured["winpid"] == 456
     assert captured["extra_win_pids"] == {457}
     assert captured["win_hint"] == "notepad.exe"
+    assert captured["win_hints"] == ["notepad.exe", "mintty"]
     assert captured["win_start_time"] == 999
     assert agent.removed == ["bg-1"]
 

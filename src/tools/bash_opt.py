@@ -1332,6 +1332,7 @@ class BashOptFunc(Func):
                     extra_win_pids=rec.get("descendant_win_pids"),
                     extra_win_create_times=rec.get("descendant_win_create_times"),
                     win_hint=rec.get("win_hint"),
+                    win_hints=rec.get("win_hints"),
                     win_start_time=rec.get("win_start_time"),
                 )
             except Exception as e:
@@ -1998,21 +1999,19 @@ class BashOptFunc(Func):
             except Exception:  # pragma: no cover - 依赖系统调用
                 pass
         hint = rec.get("win_hint")
+        hints = rec.get("win_hints")
         start_time = rec.get("win_start_time")
-        if hint:
+        if hint or hints:
+            # 与 op=kill 共用同一套「按名 + 启动时间窗」兜底：覆盖 daemon 化的
+            # GUI（mintty）与 Store 应用；时间上界避免把用户中途打开的同名
+            # 程序算进本任务。
+            from ._bash_support import _merge_hints, _win_pids_for_hint
             try:
-                found = _win_proc.find_processes_by_name(hint)
+                for candidate in _win_pids_for_hint(
+                        _merge_hints(hint, hints), start_time):
+                    candidates.add(int(candidate))
             except Exception:  # pragma: no cover - 依赖系统调用
-                found = []
-            for candidate in found:
-                try:
-                    create_time = _win_proc.process_create_time(candidate)
-                except Exception:  # pragma: no cover - 依赖系统调用
-                    create_time = None
-                if (start_time and create_time is not None
-                        and int(create_time) + 10_000_000 < int(start_time)):
-                    continue
-                candidates.add(int(candidate))
+                logger.debug("按名兜底查找 Windows 进程失败", exc_info=True)
         for candidate in candidates:
             try:
                 if _win_proc.is_process_alive(candidate):

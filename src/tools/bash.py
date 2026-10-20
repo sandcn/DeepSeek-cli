@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -57,34 +58,257 @@ _CYGWIN_LIKE = (sys.platform or "").startswith(("cygwin", "msys"))
 #: ``cmd /c notepad.exe``、``powershell -Command 'Start-Process notepad.exe'``。
 _EXE_TOKEN_RE = re.compile(r"""[^\s"']+\.exe""", re.IGNORECASE)
 
+#: 命令行里的「简单命令」分隔符（``&&`` / ``||`` / ``;`` / ``|`` / ``&`` / 换行）。
+#: GUI 程序常出现在**后面的段**里（``cd /tmp && mintty ...``）：Cygwin 下
+#: mintty 会 daemon 化（自劫持后父进程退出、POSIX PPID 变 1、Windows 父
+#: PID 指向已退出的 fork 中间体），既不在进程树也不在 Job 里——按名兜底
+#: 是唯一还能定位它的通道，只看首个 token 会完全漏掉它（实测 ``op=kill``
+#: 报「无残留进程」而 mintty 窗口仍在）。
+_SEGMENT_SEPARATORS = ";&|\n"
 
-def _command_exe_hint(command: str) -> str | None:
-    """从命令行提取可执行名提示（小写 basename；提取不到返回 None）。
+#: 透传型启动器：自身不是被测程序，真正的程序在其后的非选项 token
+#: （``cygstart mintty ...`` / ``env FOO=1 mintty ...`` / ``nohup mintty``）。
+_LAUNCHER_STEMS = frozenset({
+    "cygstart", "start", "env", "nohup", "exec", "nice", "time",
+    "command", "builtin", "xargs", "sudo",
+})
 
-    ★ shell / 解释器不作为提示：Cygwin / MSYS2 下每个后台任务都有
+#: shell 内建命令：不是可执行文件，且其参数只是数据（``cd /tmp`` 里的
+#: ``/tmp`` 不是程序），不产出 hint。
+_SHELL_BUILTINS = frozenset({
+    ".", ":", "[", "alias", "bg", "break", "cd", "command", "continue",
+    "echo", "eval", "exec", "exit", "export", "false", "fc", "fg", "getopts",
+    "hash", "jobs", "kill", "local", "printf", "pwd", "read", "return", "set",
+    "shift", "source", "test", "times", "trap", "true", "type", "ulimit",
+    "umask", "unalias", "unset", "wait",
+})
+
+#: shell 复合语句关键字（出现在段首，不是程序位）
+_SHELL_KEYWORDS = frozenset({
+    "if", "then", "else", "elif", "fi", "do", "done", "for", "while",
+    "until", "case", "esac", "function", "!", "{", "}",
+})
+
+#: 环境变量赋值 / 纯数字参数（都不是程序位）
+_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_NUMERIC_RE = re.compile(r"^\d+$")
+
+#: 解释器参数里的「词」（``python -c "Popen(['mintty'])"``）
+_WORD_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./\\-]*")
+
+#: 解释器参数逐词做 PATH 查询的上限（防超长脚本 / heredoc 拖慢任务启动）
+_HINT_MAX_WORDS = 200
+
+
+def _hint_token(raw: str) -> str:
+    """去掉包裹符号（引号 / 括号 / 逗号）后的 token 文本。"""
+    return str(raw or "").strip().strip("\"'`()[]{},")
+
+
+def _split_segments(text: str) -> list[str]:
+    """按 shell 分隔符切分命令行（``&&`` / ``||`` / ``;`` / ``|`` / ``&`` / 换行）。
+
+    **不切引号内部**：``python -c "import x; y(['mintty'])"`` 里的 ``;`` 属于
+    代码片段，按字面切开会把双引号劈成两半，连带丢掉真正的程序名
+    （实测会把 ``mintty`` 变成 ``Popen(['mintty`` 这种残缺 token）。
+    """
+    segments: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if quote:
+            buf.append(char)
+            if char == "\\" and quote == '"' and index + 1 < length:
+                buf.append(text[index + 1])
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in ("'", '"'):
+            quote = char
+            buf.append(char)
+            index += 1
+            continue
+        if char in _SEGMENT_SEPARATORS:
+            segments.append("".join(buf))
+            buf = []
+            index += 1
+            # 吃掉成对的 && / ||
+            if index < length and text[index] == char and char in "&|":
+                index += 1
+            continue
+        buf.append(char)
+        index += 1
+    segments.append("".join(buf))
+    return segments
+
+
+def _hint_name(name: str) -> str:
+    """小写 basename（保留 ``.exe`` 后缀，与既有 hint 形态一致）。"""
+    return _hint_token(name).replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+
+def _hint_stem(name: str) -> str:
+    """小写 basename（去掉 ``.exe`` 后缀）——只用于比较，不改变 hint 形态。"""
+    text = _hint_name(name)
+    return text[:-4] if text.endswith(".exe") else text
+
+
+def _program_token(tokens: list[str]) -> tuple[str | None, int]:
+    """返回一段简单命令里的「程序位」token 及其下标（找不到返回 ``(None, -1)``）。
+
+    跳过段首的环境变量赋值与复合语句关键字；遇到透传型启动器
+    （``cygstart`` / ``env`` / ``nohup`` 等）继续往后找它启动的程序。
+    """
+    index = 0
+    while index < len(tokens):
+        token = _hint_token(tokens[index])
+        if not token:
+            index += 1
+            continue
+        if _ASSIGNMENT_RE.match(token) or token in _SHELL_KEYWORDS:
+            index += 1
+            continue
+        break
+    while index < len(tokens) and _hint_stem(tokens[index]) in _LAUNCHER_STEMS:
+        index += 1
+        while index < len(tokens):
+            nxt = _hint_token(tokens[index])
+            if (not nxt or nxt.startswith("-")
+                    or _ASSIGNMENT_RE.match(nxt) or _NUMERIC_RE.match(nxt)):
+                index += 1
+                continue
+            break
+    if index >= len(tokens):
+        return None, -1
+    return tokens[index], index
+
+
+def _resolvable_program(name: str) -> bool:
+    """``name`` 是否是 PATH 里真实存在的可执行文件（嵌在脚本里的词用它过滤）。"""
+    try:
+        return bool(shutil.which(name))
+    except Exception:  # pragma: no cover - 依赖 PATH 环境
+        return False
+
+
+def _script_hints(text: str) -> list[str]:
+    """在解释器参数（``-c`` 的脚本正文）里找真正的程序名。
+
+    只认能在 PATH 里解析到、且不是 shell 内建 / shell 解释器的词：
+    ``bash -c 'mintty -t x'`` → ``mintty``；``python -c "Popen(['mintty'])"``
+    → ``mintty``；而 ``python script.py`` 里的 ``script.py``（数据文件，
+    PATH 里找不到）不算。
+    """
+    candidates: list[str] = []
+    for segment in _split_segments(text):
+        try:
+            tokens = shlex.split(segment, comments=False, posix=True)
+        except ValueError:
+            tokens = segment.split()
+        program, _index = _program_token(tokens)
+        if program is not None and _hint_stem(program) in _SHELL_BUILTINS:
+            # shell 内建命令（``echo`` / ``cd`` …）：参数只是数据
+            program = None
+        if program:
+            if not is_shell_like_exe(program):
+                candidates.append(program)
+                if _resolvable_program(program):
+                    # 明确的程序位：后面都是它的参数，不做逐词猜测
+                    # （否则 ``mintty -t x -e sleep 5`` 会把 x / sleep 也
+                    # 当成程序名）
+                    continue
+        # ``python -c`` / ``perl -e`` 的代码片段没有命令结构：退回按词扫描
+        for word in _WORD_RE.findall(segment):
+            if is_shell_like_exe(word) or _hint_stem(word) in _SHELL_BUILTINS:
+                continue
+            candidates.append(word)
+    result: list[str] = []
+    checked = 0
+    for name in candidates:
+        if name in result:
+            continue
+        if checked >= _HINT_MAX_WORDS:
+            break
+        checked += 1
+        if _resolvable_program(name):
+            result.append(name)
+    return result
+
+
+def _segment_hints(tokens: list[str]) -> list[str]:
+    """一段简单命令里的程序名候选（shell / 解释器包装会继续解析其脚本参数）。"""
+    program, index = _program_token(tokens)
+    if program is None:
+        return []
+    if _hint_stem(program) in _SHELL_BUILTINS:
+        return []
+    if not is_shell_like_exe(program):
+        return [program]
+    # shell / 解释器包装：真正的程序在其后的脚本参数里
+    # （``bash -c 'mintty ...'``、``python -c "Popen(['mintty'])"``）。
+    hints: list[str] = []
+    for raw in tokens[index + 1:]:
+        token = _hint_token(raw)
+        if not token or token.startswith("-"):
+            continue
+        hints.extend(_script_hints(token))
+    return hints
+
+
+def _command_exe_hints(command: str) -> list[str]:
+    """从命令行提取全部可执行名提示（小写 basename，去重保序）。
+
+    与 :func:`_command_exe_hint` 的区别是返回**所有**候选，供 ``op=kill``
+    的按名兜底使用：Cygwin 下 mintty 等 GUI 程序启动后会 daemon 化，进程树
+    与 Job 都够不着它，只有「命令里出现过的程序名 + 任务启动时间窗」这条
+    通道还能定位到它。
+
+    ★ shell / 解释器名不作为提示：Cygwin / MSYS2 下每个后台任务都有
     ``bash.exe``，用 ``bash`` 这类通用名做「同名进程」兜底会把其它任务的
     shell（及其 Windows 后代窗口）算进当前任务，实测导致 op=windows /
-    screenshot / 输入注入串到别的任务窗口。这类名字返回 ``None``，窗口
-    归属只走根 WINPID / Job / 进程树。
+    screenshot / 输入注入串到别的任务窗口。这类名字被丢弃，窗口归属只走
+    根 WINPID / Job / 进程树。
     """
     text = str(command or "")
-    matches = _EXE_TOKEN_RE.findall(text)
-    hint: str | None = None
-    if matches:
-        base = os.path.basename(matches[-1].strip("\"'"))
-        hint = base.lower() or None
-    else:
-        # 没有 .exe：取首个非赋值 token 的 basename（如 ``python script.py``）
-        for token in text.split():
-            if not token or token.startswith("-") or "=" in token:
-                continue
-            base = os.path.basename(token.strip("\"'"))
-            if base:
-                hint = base.lower()
-                break
-    if hint and is_shell_like_exe(hint):
-        return None
-    return hint
+    hints: list[str] = []
+    # 1) 显式 ``.exe`` token 优先：覆盖 ``cmd /c notepad.exe``、
+    #    ``powershell -Command 'Start-Process notepad.exe'``。
+    for match in _EXE_TOKEN_RE.findall(text):
+        base = _hint_token(match)
+        if base and not is_shell_like_exe(base):
+            hints.append(base)
+    # 2) 按「简单命令」分段取程序位：``cd /tmp && mintty ...`` 里的 mintty
+    for segment in _split_segments(text):
+        try:
+            tokens = shlex.split(segment, comments=False, posix=True)
+        except ValueError:
+            tokens = segment.split()
+        hints.extend(_segment_hints(tokens))
+    # 统一成小写 basename 并去重（保持首次出现的顺序）
+    ordered: list[str] = []
+    for hint in hints:
+        name = _hint_name(hint)
+        if not name or is_shell_like_exe(name) or name in ordered:
+            continue
+        ordered.append(name)
+    return ordered
+
+
+def _command_exe_hint(command: str) -> str | None:
+    """从命令行提取**首选**可执行名提示（小写 basename；提取不到返回 None）。
+
+    取 :func:`_command_exe_hints` 的首个候选：窗口归属（``op=windows`` /
+    screenshot / 输入注入）与 ``op=kill`` 的按名兜底都用它。Cygwin 下 GUI
+    程序常出现在命令后半段（``cd /tmp && mintty ...``），这里同样能取到。
+    """
+    hints = _command_exe_hints(command)
+    return hints[0] if hints else None
 
 # 尝试探测平台 PTY 可用性（不实际导入模块，避免无谓开销）
 try:
@@ -1650,6 +1874,10 @@ class BashFunc(Func):
                     holder["winpid"] = None
                     holder["win_start_time"] = None
                 holder["win_hint"] = _command_exe_hint(self.command)
+                # 全部候选（``cd /tmp && mintty ...`` 里的 mintty 也要能被
+                # op=kill 的按名兜底找到——它在启动后 daemon 化，进程树 /
+                # Job 都可能够不着）。
+                holder["win_hints"] = _command_exe_hints(self.command)
 
         # ★ 行回调代理（可变引用）：自动转后台后把 fn 置 None，断开实时输出，
         #   避免转后台后命令输出继续污染已闭合的工具卡片（工具已返回
@@ -1787,6 +2015,9 @@ class BashFunc(Func):
             # 任务启动时间 / 可执行名提示（Store 应用窗口归属兜底）
             "win_start_time": holder.get("win_start_time"),
             "win_hint": holder.get("win_hint"),
+            # 命令行里出现的全部可执行名候选（op=kill 按名兜底：daemon 化的
+            # GUI 如 mintty 不在进程树 / Job 里，只能按名 + 启动时窗定位）
+            "win_hints": holder.get("win_hints") or [],
             # Windows Job 句柄（杀整棵进程树；记录移除时关闭）
             "job_handle": holder.get("job_handle"),
             # 运行期采样累积的后代（见 BashFunc._sample_process_tree）
@@ -1960,6 +2191,10 @@ class BashFunc(Func):
             "winpid": None,
             "win_start_time": None,
             "win_hint": _command_exe_hint(self.command),
+            # 命令行里出现的全部 exe 名候选：op=kill 的按名兜底要用
+            # （Cygwin 下 mintty 等 GUI 启动后 daemon 化，进程树 / Job 都
+            # 够不着，只能按名 + 启动时窗定位）
+            "win_hints": _command_exe_hints(self.command),
             # Windows Job 句柄（杀整棵进程树用；任务记录移除时关闭）
             "job_handle": None,
             # 运行期采样累积的后代（Python 断链 / Store 应用不继承 Job 时
@@ -2030,6 +2265,8 @@ class BashFunc(Func):
                     rec["winpid"] = _win_proc.to_winpid(process.pid, retries=5)
                     rec["win_start_time"] = now_filetime()
                     rec.setdefault("win_hint", _command_exe_hint(self.command))
+                    rec.setdefault(
+                        "win_hints", _command_exe_hints(self.command))
                     register(process.pid, rec.get("winpid"),
                              job=job_handle,
                              hint=rec.get("win_hint"),
