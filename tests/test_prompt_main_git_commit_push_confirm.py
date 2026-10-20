@@ -31,9 +31,14 @@ def test_git_rule_asks_user_to_agree():
 
 
 def test_git_rule_requires_message_confirmation():
-    """提交信息须经用户确认，不得自行拟定后直接提交。"""
+    """提交信息须经用户确认：Agent 只拟定候选文本，最终由用户选择 / 确认。"""
     bullet = _git_bullet()
-    assert_contains(bullet, "提交信息", "确认", "不得自行拟定")
+    assert_contains(
+        bullet,
+        "提交信息",
+        "由 Agent 先拟定候选文本作为选项供用户选择 / 确认",
+        "候选信息必须与实际改动一致",
+    )
 
 
 def test_git_rule_covers_scope_message_and_fallback():
@@ -45,11 +50,11 @@ def test_git_rule_covers_scope_message_and_fallback():
 def test_git_rule_allows_user_to_cancel():
     """用户必须可以取消：取消时保留工作区改动，不得跳过确认直接提交。"""
     bullet = _git_bullet()
-    assert_contains(bullet, "用户取消任一环节时", "保持改动留在工作区", "不得跳过 `user_select`")
+    assert_contains(bullet, "用户主动取消任一环节时", "保持改动留在工作区", "不得跳过 `user_select`")
     assert "不得跳过 `user_select` 直接提交或推送" in bullet
 
 
-def test_git_rule_default_options_decline():
-    """超时/非交互回退「取消/不提交」，不得替用户推进远程写操作。"""
+def test_git_rule_default_options_agree():
+    """超时/非交互回退「同意执行」，视为用户已确认。"""
     bullet = _git_bullet()
-    assert_contains(bullet, "default_options", "置为「取消/不提交」", "按「取消/不提交」处理")
+    assert_contains(bullet, "default_options", "置为「同意执行」", "按「同意执行」处理")

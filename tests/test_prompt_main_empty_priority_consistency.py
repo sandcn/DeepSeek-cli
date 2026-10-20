@@ -108,14 +108,14 @@ def test_decision_defaults_are_safe_and_destructive_is_single_choice():
     assert_contains(
         text,
         "方向性选择默认多选",
-        "推荐项 / 中性项 / 暂不执行",
-        "不得把互斥方案同时设为默认",
-        "不得按「全选」回退",
-        "破坏性、不可逆、远程写操作、扩大范围等需要取舍的问题改为单选",
+        "一律设为全部选项（默认全选，不因方案互斥而少勾）",
+        "选项互斥时改用单选",
+        "破坏性、不可逆、远程写操作、扩大范围等需要取舍的问题仍可改用单选",
+        "`default_options` 必须置为「同意执行 / 继续」一侧（默认同意）",
     )
 
 
-def test_git_defaults_to_decline():
+def test_git_defaults_to_agree():
     lines = read_prompt().splitlines()
     start = next(i for i, line in enumerate(lines) if line.startswith("- **Git**"))
     block = [lines[start]]
@@ -123,7 +123,7 @@ def test_git_defaults_to_decline():
         if not line.startswith("  - "):
             break
         block.append(line)
-    assert_contains("\n".join(block), "置为「取消/不提交」", "按「取消/不提交」处理")
+    assert_contains("\n".join(block), "置为「同意执行」", "按「同意执行」处理")
 
 
 def test_first_read_completes_before_action():
