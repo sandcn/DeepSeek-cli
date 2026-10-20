@@ -93,7 +93,6 @@ class _SessionFrameMixin:
 
     # ── 类型标注（InkSession.__init__ 初始化） ──
     _build_tree: Any
-    _host: Any
     _model: Any
     _apply_fn: Any
     _reconciler: Any
@@ -134,7 +133,8 @@ class _SessionFrameMixin:
         if self._apply_fn is None:
             return
         try:
-            merged = self._host.coalesce_commands(commands)
+            from src.tui.app.apply import coalesce_commands
+            merged = coalesce_commands(commands)
         except Exception:
             _logger.debug("命令合并失败，按原批应用", exc_info=True)
             merged = commands
@@ -152,12 +152,6 @@ class _SessionFrameMixin:
                 #   丢失、内容错位）。
                 if _get_cmd_id(cmd) == RenderCommand.CLEAR_MSGS:
                     self._resize_pending = True
-                    # ★ P2-3：清屏属于结构性变更——帧复用/历史缓存统一失效。
-                    registry = getattr(self, "_cache_registry", None)
-                    if registry is not None:
-                        registry.invalidate(
-                            "clear", names=["frame", "model"],
-                        )
                     # ★ 输出历史基线同步（清屏/重放）：committed_lines 被清空，
                     #   文档行号空间重建——旧基线（已回调内容行数）失效，必须
                     #   归零，否则清屏后重放/新内容会按旧行号区间错位回调
@@ -282,53 +276,99 @@ class _SessionFrameMixin:
         #   _last_render_width`` 分支触发 reflow + 全量重绘。
         self._poll_terminal_size()
         width = self._width_cache.get_width()
-        height = self._width_cache.get_height()
-        # ★ P0-3：宿主状态同步收敛为 HostAdapter（reflow / 工具标题 / 开放通道
-        #   宽度传播）——框架不再 getattr 探测宿主字段。
         if self._model is not None:
-            try:
-                self._host.prepare_frame(self._model, width, height)
-            except Exception:
-                _logger.debug("HostAdapter.prepare_frame 异常", exc_info=True)
-        # ★ 方向3（resize 全量刷新）：宽度/高度变化置 ``_resize_pending``——
-        #   终端尺寸变化后旧帧与物理屏幕内容不对齐，须全量重写而非增量 diff。
-        width_changed = width != self._last_render_width
-        if width_changed:
-            try:
-                self._ink_renderer.set_width(width)
-            except Exception:
-                _logger.debug("InkRenderer set_width 传播异常", exc_info=True)
-            self._last_render_width = width
-            # ★ 2026-10-20：首帧只记录尺寸基准，不当作 resize。
-            if not getattr(self, "_first_frame_pending", False):
-                self._resize_pending = True
-        height_changed = height != self._last_render_height
-        if height_changed:
-            try:
-                self._ink_renderer.set_height(height)
-            except Exception:
-                _logger.debug("set_height 传播异常", exc_info=True)
-            self._last_render_height = height
-            if not getattr(self, "_first_frame_pending", False):
-                self._resize_pending = True
-        size_changed = width_changed or height_changed
-        if size_changed:
-            # ★ React Ink useWindowSize：宽/高任一变化都通知订阅组件重渲染。
-            try:
-                _hooks._notify_window_size(ctx=getattr(self, "_hook_ctx", None))
-            except Exception:
-                _logger.debug("notify_window_size 异常", exc_info=True)
+            # ★ 终端 resize：宽度变化时重排已提交历史（committed_lines 提交时
+            #   按旧宽度 wrap，宽度变化后需按新宽度重建——重排产出新列表对象，
+            #   前缀缓存自动失效）。幂等（宽度未变直接返回）；桩模型无
+            #   reflow_committed 时跳过（兼容）。
+            reflow = getattr(self._model, "reflow_committed", None)
+            if reflow is not None:
+                try:
+                    reflow(width)
+                except Exception:
+                    _logger.debug("reflow_committed 异常", exc_info=True)
+            self._model.width = width  # 渲染器 TOC 边框宽度
+            # ★ 2026-10-09（用户需求：运行中的工具实时刷新运行时间）：运行中
+            #   工具卡的标题行 = 实时运行时间（替代 ●）。未增量提交的卡由
+            #   ``ToolCard`` 组件每帧渲染自动刷新；**已增量提交**（标题行进入
+            #   committed_lines）的卡由宿主主动刷新该静态行——否则时间冻结在
+            #   提交时刻。宿主无此方法（桩模型）时跳过。
+            refresh_titles = getattr(
+                self._model, "refresh_running_tool_titles", None,
+            )
+            if refresh_titles is not None:
+                try:
+                    refresh_titles()
+                except Exception:
+                    _logger.debug("refresh_running_tool_titles 异常", exc_info=True)
+            # ★ 方向6（resize 后流式渲染宽度陈旧）：宽度变化时向开放通道
+            #   renderer（AnsiStreamRenderer.set_width 已实现）传播新宽度——
+            #   TOC 边框/表格宽度在 resize 后刷新；已关闭通道 renderer 为
+            #   None 跳过。set_width 幂等（重复调用无副作用）。
+            # ★ 方向3（resize 全量刷新）：宽度变化置 ``_resize_pending``——
+            #   终端尺寸变化后旧帧与物理屏幕内容不对齐，须全量重写而非增量 diff。
+            width_changed = False
+            if width != self._last_render_width:
+                for renderer in (
+                    getattr(self._model, "reasoning_renderer", None),
+                    getattr(self._model, "content_renderer", None),
+                ):
+                    if renderer is not None:
+                        try:
+                            renderer.set_width(width)
+                        except Exception:
+                            _logger.debug("set_width 传播异常", exc_info=True)
+                # ★ P3（review 2026-08-18）：同步向 InkRenderer 传播宽度
+                #   （set_width）——place_cursor 列上限防御钳制需要终端宽度
+                #   （与下方 set_height 传播同模式；幂等，宽度未变不触发）。
+                try:
+                    self._ink_renderer.set_width(width)
+                except Exception:
+                    _logger.debug("InkRenderer set_width 传播异常", exc_info=True)
+                self._last_render_width = width
+                # ★ 2026-10-20：首帧只记录尺寸基准，不当作 resize（否则
+                #   ``reset(full=True)`` 会清屏并关掉起始行锚定——见
+                #   ``InkSession._first_frame_pending`` 注释）。
+                if not getattr(self, "_first_frame_pending", False):
+                    self._resize_pending = True
+                width_changed = True
+            # ★ 增量渲染屏幕高度传播（方向1）：高度变化（resize）时更新
+            #   InkRenderer.set_height——渲染器按新屏幕高度钳制光标/跳过不可达行。
+            height = self._width_cache.get_height()
+            height_changed = False
+            if height != self._last_render_height:
+                try:
+                    self._ink_renderer.set_height(height)
+                except Exception:
+                    _logger.debug("set_height 传播异常", exc_info=True)
+                self._last_render_height = height
+                # 高度变化与宽度变化共用同一次重置（全量刷新标志由宽度/高度
+                # 分支任一置位，下方消费）。
+                # ★ 2026-10-20：首帧不视为 resize（同上，见
+                #   ``InkSession._first_frame_pending``）。
+                if not getattr(self, "_first_frame_pending", False):
+                    self._resize_pending = True
+                height_changed = True
+            size_changed = width_changed or height_changed
+            if width_changed or height_changed:
+                # ★ React Ink useWindowSize（方向 E）+ P3-19（review 方向）：
+                #   宽度/高度任一变化都通知订阅组件重渲染——修复前仅在宽度
+                #   分支调用 ``_notify_window_size()``：高度单独变化（resize
+                #   只改高度）时 useWindowSize 订阅者不重渲染，窗口尺寸状态
+                #   陈旧（useWindowSize 返回 columns/rows 双值，rows 变化须
+                #   通知）。宽高同时变化时合并为一次通知（版本只递增一次，
+                #   订阅者单次重渲染，避免双帧重绘）。
+                try:
+                    _hooks._notify_window_size(ctx=getattr(self, "_hook_ctx", None))
+                except Exception:
+                    _logger.debug("notify_window_size 异常", exc_info=True)
         # ★ 方向3（resize 全量刷新消费）：尺寸变化后本帧即全量重建（不等待
         #   下一帧 diff）——重置渲染器 prev（full=True），使 render() 走全量
         #   写入路径（并在写入前清屏，清掉旧尺寸帧的残留）。仅 resize 使用
         #   full=True；其余路径均走增量 diff。
         if getattr(self, "_resize_pending", False):
             self._resize_pending = False
-            registry = getattr(self, "_cache_registry", None)
-            if registry is not None:
-                registry.invalidate("resize", names=["renderer", "frame"])
-            else:
-                self._ink_renderer.reset(full=True)
+            self._ink_renderer.reset(full=True)
             # ★ 2026-10-20（resize 布局不跟随修复）：本帧禁止空闲帧复用。
             #   修复前 ``_resize_pending`` 在此即被清除，下方
             #   ``_should_reuse_idle_frame`` 看不到 resize 标志；静态状态
@@ -356,36 +396,26 @@ class _SessionFrameMixin:
             self._reconciler.render(self._root_fiber, element, width, self._width_cache.get_height())
             frame = _components.render_frame(self._root_fiber, width)
             self._last_frame = frame
-        # ★ 输出历史接线（P0-3）：内容行数与静态区起始行全部经 HostAdapter
-        #   获取——框架不再直接读宿主 ``committed_lines`` / static-lines fiber。
+        # ★ 输出历史接线（committed 内容行数）：InkRenderer 只回调 committed
+        #   区的**新增内容行**（修复前用文档末尾行区间推断 → 状态栏/输入区/
+        #   时间线被反复写入输出历史且真正内容行漏记）。committed_lines 为
+        #   卡片行（角色头 + 正文 + 尾空行），自文档第 1 行（TopHeader 之后）
+        #   连续排布；未注入时渲染器不产生任何回调（安全）。
+        # ★ 内容区起始行显式注入（架构修复）：修复前渲染器硬编码
+        #   ``_CONTENT_LINE_OFFSET``（假设 App 树第 0 行恒为 TopHeader）——
+        #   此处从 committed host fiber 的 ``layout_box.y`` 读取真实起始行
+        #   （``_find_committed_chat`` 结果已由 ``render_frame`` 缓存于 root，
+        #   O(1)）；App 顶部增删元素后输出历史不再错位。
+        committed_fiber = _components._find_committed_chat(self._root_fiber)
         content_start = None
-        try:
-            content_start = self._host.static_region_start(self._root_fiber)
-        except Exception:
-            _logger.debug("static_region_start 异常", exc_info=True)
-        try:
-            content_count = self._host.content_line_count(self._model)
-        except Exception:
-            content_count = 0
-        # ★ P2-5：历史窗口丢弃头部行后重置输出历史基线（行号空间重建）。
-        trimmed = int(getattr(self._model, "_history_trimmed_total", 0) or 0)
-        if trimmed != int(getattr(self, "_last_history_trimmed", 0) or 0):
-            self._last_history_trimmed = trimmed
-            try:
-                self._ink_renderer.reset_content_lines()
-            except Exception:
-                _logger.debug("reset_content_lines 异常", exc_info=True)
+        if committed_fiber is not None and committed_fiber.layout_box is not None:
+            content_start = max(0, committed_fiber.layout_box.y)
         self._ink_renderer.set_content_line_count(
-            content_count,
+            len(getattr(self._model, "committed_lines", None) or []),
             start=content_start,
             resync=size_changed,
         )
         self._ink_renderer.render(frame)
-        # ★ P1-4：passive effects 在帧输出后执行（单帧预算，超预算留到下一帧）。
-        try:
-            self._reconciler.flush_passive_effects()
-        except Exception:
-            _logger.debug("flush_passive_effects 异常", exc_info=True)
         # ★ render({onRender})：每帧渲染后回调（官方 RenderMetrics 语义）——
         #   回调异常仅记录日志，不中断渲染循环。
         if self._on_render_callback is not None:

@@ -416,18 +416,6 @@ class Input:
         """单次非阻塞 stdin 读取 + 直接分发（委托 InputDispatcher）。"""
         return self._dispatcher.read_stdin_once()
 
-    def set_pump_active(self, active: bool) -> None:
-        """启用/停用 InputPump 模式（P1-1）。"""
-        self._dispatcher.set_pump_active(active)
-
-    def poll_raw(self, timeout: float = 0.05) -> bytes:
-        """InputPump：读取原始字节（不解析）。"""
-        return self._dispatcher.poll_raw(timeout)
-
-    def feed_raw(self, data: bytes) -> None:
-        """InputPump：投递原始字节（render 线程解析）。"""
-        self._dispatcher.feed_raw(data)
-
     def process_events(self) -> None:
         """处理所有输入事件（委托 InputDispatcher）。"""
         self._dispatcher.process_events()

@@ -238,7 +238,6 @@ def test_dispatcher_inserts_bracketed_paste_without_use_paste():
 
     class _Stub:
         _dispatch_key_event = InputDispatcher._dispatch_key_event
-        _dispatch_key_event_legacy = InputDispatcher._dispatch_key_event_legacy
         _router_consume = InputDispatcher._router_consume
         _mouse_fallback_callback = None
         _input_hook_router = None
@@ -324,7 +323,6 @@ def test_dispatcher_mouse_fallback_called():
 
     class _Stub:
         _dispatch_key_event = InputDispatcher._dispatch_key_event
-        _dispatch_key_event_legacy = InputDispatcher._dispatch_key_event_legacy
         _router_consume = InputDispatcher._router_consume
         _input_hook_router = None
 

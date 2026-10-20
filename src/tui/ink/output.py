@@ -321,11 +321,7 @@ class Frame:
         _stable_prefix_len: 稳定前缀覆盖的行数。
     """
 
-    __slots__ = (
-        "lines",
-        "_stable_prefix", "_stable_prefix_offset", "_stable_prefix_len",
-        "_history_ref", "_history_len", "_history_offset",
-    )
+    __slots__ = ("lines", "_stable_prefix", "_stable_prefix_offset", "_stable_prefix_len")
 
     def __init__(
         self,
@@ -333,9 +329,6 @@ class Frame:
         stable_prefix: list | None = None,
         stable_prefix_offset: int = 0,
         stable_prefix_len: int = 0,
-        history_ref: object | None = None,
-        history_len: int = 0,
-        history_offset: int = 0,
     ) -> None:
         # ★ 性能（PERF-7）：传入 list 时直接复用引用（免 O(n) 拷贝）——
         #   ``render_frame`` 的 ``Frame(prefix + tail)`` 等调用方传入的均为
@@ -355,36 +348,6 @@ class Frame:
         self._stable_prefix = stable_prefix
         self._stable_prefix_offset = stable_prefix_offset
         self._stable_prefix_len = stable_prefix_len
-        # ★ P1-3：历史段（committed 区）与 live 段分离——历史引用 + 长度 +
-        #   起始行完全一致时，diff 可整段跳过（不再逐行比较）。
-        self._history_ref = history_ref
-        self._history_len = max(0, int(history_len))
-        self._history_offset = max(0, int(history_offset))
-
-    # ── P1-3 历史 / live 分段 ─────────────────────────
-
-    @property
-    def history_lines(self) -> list:
-        """历史段（committed 内容区）行列表。"""
-        if self._history_len <= 0:
-            return []
-        start = self._history_offset
-        return self.lines[start:start + self._history_len]
-
-    @property
-    def live_lines(self) -> list:
-        """live 段（状态栏/输入区/流式尾部）行列表。"""
-        start = self._history_offset + self._history_len
-        return self.lines[start:]
-
-    def history_unchanged(self, other: "Frame") -> bool:
-        """两帧历史段是否可判定为完全一致（引用 + 长度 + 偏移）。"""
-        return (
-            self._history_ref is not None
-            and self._history_ref is other._history_ref
-            and self._history_len == other._history_len
-            and self._history_offset == other._history_offset
-        )
 
     @property
     def height(self) -> int:

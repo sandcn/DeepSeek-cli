@@ -81,12 +81,7 @@ from src.tui.app._model_helpers import (
 #   （open/append/trim/close/已提交行替换）迁至 _tool_output_mixin.py；
 #   AppModel 组合该 mixin，对外 API 不变。
 from src.tui.app._tool_output_mixin import _ToolOutputMixin
-from .views import AppViews
-from .history_store import HistoryBuffer
-
-#: 视图字段归属（P0-2）：字段名 → (AppViews 属性, 子字段)。
-_VIEW_FIELD_OWNERS = AppViews.field_owners()
-# ★ 工具卡 React Ink 组件化：工具卡行生成收敛到 app/toolcard.py
+# ★ ToolCard React Ink 组件化：工具卡行生成收敛到 app/toolcard.py
 #   （模块级零依赖，函数内惰性 import——无循环风险）。
 from src.tui.app.toolcard import tool_card_lines
 
@@ -130,12 +125,6 @@ class AppModel(_ToolOutputMixin):
     """聊天 UI 应用模型。"""
 
     def __init__(self) -> None:
-        # ★ P0-2：视图状态所有权容器——必须先于任何视图字段赋值创建
-        #   （``__setattr__`` 会把 fullscreen/trace_*/各 view 转发到本对象）。
-        self.views = AppViews()
-        # ★ P2-5：历史窗口（0=不限制；装配后由 TuiConfig 注入）。
-        self._history_max_lines: int = 0
-        self._history_trimmed_total: int = 0
         # 未声明字段告警去重（同名只 warning 一次——getattr 探测可能高频）。
         self._unknown_attr_warned: set = set()
         # ── 聊天块 ──
@@ -428,34 +417,6 @@ class AppModel(_ToolOutputMixin):
         self.active_tool: dict | None = None
 
     # ── 块管理 ──────────────────────────────────────
-
-    def set_history_window(self, max_lines: int) -> None:
-        """设置已提交历史内存窗口（0=不限制；超出从头部丢弃最旧行）。"""
-        self._history_max_lines = max(0, int(max_lines or 0))
-        buffer = self.committed_lines
-        if isinstance(buffer, HistoryBuffer):
-            buffer.max_lines = self._history_max_lines
-            buffer._trim()
-        else:
-            self.committed_lines = HistoryBuffer(
-                buffer or [],
-                max_lines=self._history_max_lines,
-                on_trim=self._on_history_trimmed,
-            )
-
-    def _on_history_trimmed(self, drop: int) -> None:
-        """历史窗口丢弃头部行后平移各块的 committed 偏移。"""
-        self._history_trimmed_total += drop
-        for block in self.blocks:
-            try:
-                offset = block.extra.get("_first_committed_offset")
-            except Exception:
-                continue
-            if offset is None:
-                continue
-            block.extra["_first_committed_offset"] = (
-                offset - drop if offset >= drop else None
-            )
 
     def append_block(self, kind: str, lines=None) -> ChatBlock:
         """追加聊天块（不自动提交，供流式累积）。"""
@@ -1295,28 +1256,14 @@ class AppModel(_ToolOutputMixin):
     # 私有/协议名（``_`` 开头，如 ``hasattr(model, "_ipython_canary...")`` 探测、
     # ``copy``/``pickle`` 的 dunder 查询）不告警，避免噪音。
 
-    # ── P0-2 视图字段路由（兼容访问器） ──
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        """视图字段路由到 ``AppViews``；committed_lines 包装为窗口缓冲。"""
-        if name == "committed_lines" and isinstance(value, list) and not isinstance(value, HistoryBuffer):
-            value = HistoryBuffer(
-                value,
-                max_lines=getattr(self, "_history_max_lines", 0),
-                on_trim=self._on_history_trimmed,
-            )
-        if not name.startswith("_") and name in _VIEW_FIELD_OWNERS:
-            views = self.__dict__.get("views")
-            if views is not None and views.set_field(name, value):
-                return
-        object.__setattr__(self, name, value)
-
     def __getattr__(self, name: str):
-        """未知属性访问：先查视图状态容器，再按未声明字段告警并抛错。"""
+        """未知属性访问：同名首次 warning 后抛 ``AttributeError``。
+
+        ``getattr(model, 名称, 默认值)`` 在组件/插件中大量用于可选字段探测；
+        公开名缺失可能是拼写错误，也可能是可选字段探测。告警按名称去重，
+        既保留可观测性又避免同一探测每帧刷屏（修复前每次访问都 warning）。
+        """
         if not name.startswith("_"):
-            views = self.__dict__.get("views")
-            if views is not None and name in _VIEW_FIELD_OWNERS:
-                return views.get_field(name)
             warned = self.__dict__.get("_unknown_attr_warned")
             if warned is None:
                 warned = set()

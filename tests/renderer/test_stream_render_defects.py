@@ -17,6 +17,8 @@
 """
 from __future__ import annotations
 
+import itertools
+import queue
 import threading
 
 import pytest
@@ -331,12 +333,12 @@ def test_source_text_accumulates_within_limit():
 def _make_session(maxsize: int = 10000):
     """构造仅含队列依赖的 InkSession 桩（不启动渲染线程）。"""
     from src.tui._config import TuiConfig
-    from src.tui.ink.command_buffer import CommandBuffer
     from src.tui.ink.session import InkSession
 
     cfg = TuiConfig.defaults().with_overrides(cmd_queue_maxsize=maxsize)
     s = object.__new__(InkSession)
-    s._cmd_queue = CommandBuffer(maxsize=cfg.cmd_queue_maxsize)
+    s._cmd_queue = queue.PriorityQueue(maxsize=cfg.cmd_queue_maxsize)
+    s._cmd_seq = itertools.count()
     s._cmd_event = threading.Event()
     s._consecutive_full = 0
     s._cmd_queue_dropped = 0

@@ -20,7 +20,6 @@ import queue
 import sys
 import threading
 import time
-from collections import deque
 from enum import Enum
 from typing import Callable
 
@@ -38,15 +37,7 @@ from src.tui._screen import (
 )
 from .reconciler import Reconciler
 from .renderer import InkRenderer
-from .terminal import RawModeController
-from .terminal_control import TerminalController
-from .host import DefaultHostAdapter
-from .scheduler import RenderScheduler
-from .render_loop import RenderLoop
-from .input_pump import InputPump
-from .command_buffer import CommandBuffer
-from .cache_registry import CacheRegistry
-from .error_policy import RenderErrorPolicy
+from .terminal import RawModeController, TerminalModeManager
 from . import hooks as _hooks
 # ★ 命令优先级策略（方向B 拆分，2026-08-05）：优先级常量与映射函数自
 #   ._cmd_priority 导入（模块级 re-export——旧导入路径
@@ -107,8 +98,66 @@ _FLUSH_HARD_CEILING = 60.0
 #: ``timeBeginPeriod(1)`` 后仍约 1ms；等待到「还剩 ≤1ms」后自旋补齐，
 #: 避免 wait 粒度把 16.67ms 的 60Hz 节拍拉低到 ~58Hz。
 _TICK_SPIN_GUARD = 0.001
-# ★ P2-2：高分辨率定时器逻辑在 ``timer_resolution`` 模块（render_loop 直接
-#   依赖它，避免 session ↔ render_loop 循环）。
+#: 高分辨率定时器请求（仅 Windows/Cygwin）：线程所有者集合 + winmm 句柄。
+#: 每个渲染线程在进入 ``_render`` 时申请、退出时释放；多个渲染线程/会话
+#: 并存时只申请一次，最后一个线程退出时恢复系统默认分辨率。
+_high_res_timer_lock = threading.Lock()
+_high_res_timer_owners: set[int] = set()
+_high_res_timer_lib = None
+
+
+def _supports_high_resolution_timer() -> bool:
+    """当前平台是否支持 ``timeBeginPeriod``（Windows 原生 / Cygwin）。"""
+    return sys.platform == "win32" or sys.platform.startswith("cygwin")
+
+
+def _acquire_high_resolution_timer() -> None:
+    """为当前渲染线程申请 1ms 系统定时器分辨率（幂等，按线程标识）。
+
+    ★ 2026-10-20（用户需求：60Hz 不能降减少和降级）：Windows/Cygwin 默认
+    定时器粒度约 15.6ms，``Event.wait(16.67ms)`` 实测会睡 ~31ms（30Hz 时代
+    实测目标 30Hz 实际仅 ~23Hz）。``timeBeginPeriod(1)`` 把粒度降到 ~1ms，
+    使 60Hz 节拍可达；非 Windows 平台无此问题，直接跳过。申请失败仅记
+    debug（回退平台默认节拍，不阻断渲染）。
+    """
+    if not _supports_high_resolution_timer():
+        return
+    tid = threading.get_ident()
+    global _high_res_timer_lib
+    with _high_res_timer_lock:
+        if tid in _high_res_timer_owners:
+            return
+        if not _high_res_timer_owners:
+            try:
+                import ctypes
+                lib = ctypes.CDLL("winmm.dll")
+                lib.timeBeginPeriod(1)
+                _high_res_timer_lib = lib
+            except Exception:
+                _logger.debug(
+                    "申请 1ms 定时器分辨率失败（回退系统默认节拍）", exc_info=True,
+                )
+                _high_res_timer_lib = None
+                return
+        _high_res_timer_owners.add(tid)
+
+
+def _release_high_resolution_timer() -> None:
+    """释放当前渲染线程申请的定时器分辨率（幂等；最后一个线程恢复默认）。"""
+    if not _supports_high_resolution_timer():
+        return
+    tid = threading.get_ident()
+    global _high_res_timer_lib
+    with _high_res_timer_lock:
+        if tid not in _high_res_timer_owners:
+            return
+        _high_res_timer_owners.discard(tid)
+        if not _high_res_timer_owners and _high_res_timer_lib is not None:
+            try:
+                _high_res_timer_lib.timeEndPeriod(1)
+            except Exception:
+                _logger.debug("恢复系统定时器分辨率异常", exc_info=True)
+            _high_res_timer_lib = None
 
 # ★ 架构改进方向 A：``_KEEP_CONTENT_CMDS`` / ``_PUT_NO_DROP_TIMEOUT`` 定义已
 #   迁至 ``_session_queue_mixin``（唯一使用方），本模块 re-export 保持旧导入
@@ -174,39 +223,14 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         width_cache: TerminalWidthCache | None = None,
         config: TuiConfig | None = None,
         stream=None,
-        host_adapter=None,
     ):
         self._model = model
         self._apply_fn = apply_cmd
         self._build_tree = build_tree
         self._config: TuiConfig = config or TuiConfig.defaults()
         self._width_cache = width_cache or TerminalWidthCache.get_default()
-        # ★ P0-3：宿主能力协议（默认空实现——render() 独立会话/测试无需宿主）。
-        self._host = host_adapter if host_adapter is not None else DefaultHostAdapter()
-        # ★ P0-1：按需渲染调度器（空闲阻塞、请求/动画按 max_fps 节流）。
-        self._scheduler = RenderScheduler(
-            max_fps=(1.0 / self._config.render_interval) if self._config.render_interval > 0 else 60.0,
-        )
-        self._render_loop = RenderLoop(self)
-        self._animating: bool = False
-        self._force_render: bool = True
-        # ★ P2-3/P2-4：缓存失效注册表 + 渲染错误策略。
-        self._cache_registry = CacheRegistry()
-        self._error_policy = RenderErrorPolicy(
-            strict=self._config.strict_render,
-            max_recover=self._config.max_recover_attempts,
-        )
-        # ★ P1-1：stdin 原始读取线程（渲染线程只解析/分发）。
-        self._input_pump: InputPump | None = None
-        # ★ P1-1：跨线程模型写操作队列（单写者收敛）——外部线程经
-        #   ``post_mutation`` 投递，渲染线程在 APPLY 阶段统一执行。
-        self._mutations: deque = deque()
-        self._mutation_lock = threading.Lock()
 
-        self._reconciler = Reconciler(
-            schedule_callback=self._schedule_render,
-            defer_passive_effects=True,
-        )
+        self._reconciler = Reconciler(schedule_callback=self._schedule_render)
         #: 本会话的 hooks 上下文（P0 架构修复·多会话隔离）：注入接线写入它，
         #: 渲染线程整个生命周期激活它（``_render`` push/pop）——同一进程可
         #: 并存多个 InkSession / render() 会话而互不覆盖状态。
@@ -218,23 +242,9 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._ink_renderer = InkRenderer(
             stream=stream, height=self._width_cache.get_height(),
         )
-        # ★ P2-3：渲染器 prev 缓存统一经注册表失效（resize/清屏/主题）。
-        self._cache_registry.register(
-            "renderer", lambda: self._ink_renderer.reset(full=True),
-        )
-        # ★ P2-3：帧复用缓存 / 已提交历史缓存统一登记——结构性变更
-        #   （resize/清屏/主题）经同一个注册表失效，避免漏失效。
-        self._cache_registry.register(
-            "frame", lambda: setattr(self, "_last_frame", None),
-        )
-        if model is not None:
-            self._cache_registry.register(
-                "model",
-                lambda: model.reflow_committed(getattr(model, "width", 0)),
-            )
 
         # ── 队列 / 线程 ──
-        self._cmd_queue = CommandBuffer(maxsize=self._config.cmd_queue_maxsize)
+        self._cmd_queue: queue.PriorityQueue = queue.PriorityQueue(maxsize=self._config.cmd_queue_maxsize)
         self._cmd_event = threading.Event()
         self._render_thread: threading.Thread | None = None
         self._render_running = False
@@ -358,15 +368,19 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._last_frame_lines: int = 0
         #: stderr 流（render() stderr 选项；useStderr().stderr 与 debug 帧统计共用）
         self._stderr_stream = sys.__stderr__
-        # ── 终端能力（P2-2：TerminalController 统一管理） ──
-        self._terminal = TerminalController(self._ink_renderer.stream)
-        # 兼容访问器（既有测试/子模块直读私有字段）。
-        self._terminal_modes = self._terminal.modes
+        # ── 终端能力（React Ink v7 对齐 + 框架扩展） ──
+        # 备用屏/括号粘贴/鼠标模式经 TerminalModeManager 统一开关（写序列 +
+        # 幂等还原）；raw 模式经 RawModeController（termios，不可用时降级）。
+        # 由 render() 选项（alternateScreen / interactive / mouse）配置，
+        # useStdin()/usePaste()/useMouseInput() 在组件侧读取能力状态。
+        self._terminal_modes = TerminalModeManager(self._ink_renderer.stream)
         self._raw_mode: RawModeController | None = None
         self._interactive: bool = False
         self._raw_mode_supported: bool = False
         self._bracketed_paste_active: bool = False
+        #: 鼠标上报是否启用（render() mouse 选项；mouse 事件路由据此放行）
         self._mouse_enabled: bool = False
+        #: 已请求的终端模式（resume 时重新启用；exit_terminal_modes 只关不删）
         self._requested_modes: dict[str, bool] = {}
         # ── 空闲帧复用（2026-10-07 性能优化） ──
         #: 最近一帧（复用路径直接重放；None = 尚未渲染过任何帧）
@@ -434,9 +448,6 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                 self._pending_input_router = None
             except Exception:
                 _logger.debug("set_input 补发 input router 异常", exc_info=True)
-        # ★ P1-1：会话运行中注入 input 时立即启动 pump。
-        if getattr(self, "_render_running", False):
-            self._start_input_pump()
 
     def set_stderr(self, stream) -> None:
         """注入 stderr 流（render() stderr 选项；useStderr().stderr 读取）。
@@ -466,53 +477,63 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
 
     def set_terminal_modes(self, *, alternate_screen: bool = False, mouse: bool = False,
                            bracketed_paste: bool | None = None) -> None:
-        """配置并启用终端模式（render() 选项；委托 TerminalController）。"""
+        """配置并启用终端模式（render() 选项）。
+
+        Args:
+            alternate_screen: 启用备用屏缓冲（退出时还原）。
+            mouse: 启用鼠标上报（SGR 扩展坐标）。
+            bracketed_paste: 括号粘贴（None=按 interactive 自动决定）。
+        """
         if bracketed_paste is None:
             bracketed_paste = self._interactive
-        self._terminal.set_modes(
-            alternate_screen=alternate_screen,
-            mouse=mouse,
-            bracketed_paste=bracketed_paste,
-            interactive=self._interactive,
-        )
-        self._sync_terminal_aliases()
-
-    def _sync_terminal_aliases(self) -> None:
-        """兼容字段同步（测试/子模块直读私有字段）。"""
-        terminal = getattr(self, "_terminal", None)
-        if terminal is None:
-            return
-        self._requested_modes = dict(terminal.requested)
-        self._mouse_enabled = terminal.mouse_enabled
-        self._bracketed_paste_active = terminal.bracketed_paste_active
+        self._requested_modes = {
+            "alternateScreen": bool(alternate_screen),
+            "mouse": bool(mouse),
+            "bracketedPaste": bool(bracketed_paste),
+        }
+        self._apply_requested_modes()
 
     def _apply_requested_modes(self) -> None:
-        """按已记录请求启用终端模式（set_terminal_modes / resume 共用）。"""
-        terminal = getattr(self, "_terminal", None)
-        if terminal is None:
+        """按已记录请求启用终端模式（set_terminal_modes / resume 共用）。
+
+        ★ 防御：``_LifecycleStub``（``object.__new__(InkSession)`` 借用生命周期
+        方法的测试桩）无本字段——缺失时跳过（与 ``_hook_ctx`` 同模式）。
+        """
+        modes = getattr(self, "_terminal_modes", None)
+        requested = getattr(self, "_requested_modes", None) or {}
+        if modes is None:
             return
-        terminal.apply()
-        self._sync_terminal_aliases()
+        for name, wanted in requested.items():
+            if wanted:
+                modes.enable(name)
+        self._mouse_enabled = bool(requested.get("mouse"))
+        self._bracketed_paste_active = bool(
+            requested.get("bracketedPaste")
+        ) and modes.is_enabled("bracketedPaste")
 
     def exit_terminal_modes(self) -> None:
         """还原全部终端模式（stop/suspend/unmount 路径，幂等）。"""
-        terminal = getattr(self, "_terminal", None)
-        if terminal is not None:
-            terminal.exit_modes()
+        modes = getattr(self, "_terminal_modes", None)
+        if modes is not None:
+            modes.disable_all()
         self._bracketed_paste_active = False
 
     def write_terminal_sequence(self, data: str) -> None:
         """写入一次性终端序列（窗口标题/光标形状等）。"""
-        self._terminal.write_raw(data)
+        self._terminal_modes.write_raw(data)
 
     def set_interactive(self, enabled: bool, stdin_fd: int | None = None) -> None:
-        """声明本会话是否交互模式（render() ``interactive`` 选项解析结果）。"""
+        """声明本会话是否交互模式（render() ``interactive`` 选项解析结果）。
+
+        interactive=True 时：进入 raw 模式（termios cbreak，stdin 为 TTY 时）
+        并把 ``useStdin().isRawModeSupported`` 置 True；False 时不触碰终端
+        （非交互环境/管道输入安全降级）。
+        """
         self._interactive = bool(enabled)
         if stdin_fd is None and self._input is not None:
             stdin_fd = self._input_fd()
-        self._terminal.set_interactive(enabled, stdin_fd)
-        self._raw_mode = self._terminal.raw_mode
-        self._raw_mode_supported = self._terminal.raw_mode_supported
+        self._raw_mode = RawModeController(stdin_fd) if (enabled and stdin_fd is not None) else None
+        self._raw_mode_supported = bool(self._raw_mode is not None and self._raw_mode.supported)
         _hooks.set_raw_mode_accessor(
             lambda: self._raw_mode_supported,
             self.set_raw_mode,
@@ -742,9 +763,6 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._bottom_redraw_requested.set()
         self._dirty = True
         self._cmd_event.set()
-        scheduler = getattr(self, "_scheduler", None)
-        if scheduler is not None:
-            scheduler.request("bottom_redraw")
         # ★ render 线程停止时（suspend 期间交互工具如 user_select），
         #   同步渲染一帧使补全弹窗立即可见——否则模型更新无人渲染。
         #   方向1（suspend 同步渲染竞态修复）：同步渲染路径与 _drain_queue
@@ -1052,13 +1070,10 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._request_render()
 
     def _request_render(self) -> None:
-        """请求下一帧渲染（标记脏 + 唤醒按需调度器）。"""
+        """请求下一帧渲染（标记脏 + 唤醒循环）。"""
         self._bottom_redraw_requested.set()
         self._dirty = True
         self._cmd_event.set()
-        scheduler = getattr(self, "_scheduler", None)
-        if scheduler is not None:
-            scheduler.request("request_render")
 
     def _schedule_render(self) -> None:
         """hooks 状态更新回调：请求重渲染。"""
@@ -1081,13 +1096,6 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   自行终止（状态不一致）。
         self._exit_requested = False
         self._render_running = True
-        # ★ P0-1：调度器启动 + 请求首帧；P1-1：启动 stdin 读取 pump。
-        scheduler = getattr(self, "_scheduler", None)
-        if scheduler is not None:
-            scheduler.start()
-            scheduler.request("start")
-        self._force_render = True
-        self._start_input_pump()
         # ★ 交互模式：进入 raw 模式（render() interactive=True 且 stdin 为 TTY
         #   时；termios 不可用/非 TTY 自动降级，不影响渲染循环）。
         raw_mode = getattr(self, "_raw_mode", None)
@@ -1099,35 +1107,6 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._cmd_event.set()
         self._render_thread = threading.Thread(target=self._render, daemon=True)
         self._render_thread.start()
-
-    def _start_input_pump(self) -> None:
-        """启动 InputPump（幂等；无 input 注入时跳过）。"""
-        input_instance = getattr(self, "_input", None)
-        if input_instance is None:
-            return
-        pump = getattr(self, "_input_pump", None)
-        if pump is not None and pump.is_alive():
-            return
-        try:
-            input_instance.set_pump_active(True)
-        except Exception:
-            _logger.debug("set_pump_active 注入异常", exc_info=True)
-        self._input_pump = InputPump(input_instance, self._request_render)
-        self._input_pump.start()
-
-    def _stop_input_pump(self) -> None:
-        pump = getattr(self, "_input_pump", None)
-        if pump is not None:
-            try:
-                pump.stop()
-            except Exception:
-                _logger.debug("InputPump 停止异常", exc_info=True)
-        self._input_pump = None
-        input_instance = getattr(self, "_input", None)
-        try:
-            input_instance.set_pump_active(False)
-        except Exception:
-            _logger.debug("set_pump_active 复位异常", exc_info=True)
 
     def prepare_exit(self) -> None:
         """退出前刷出最后一帧（**保留 TUI 内容，不清屏**）。
@@ -1159,13 +1138,6 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
 
     def stop(self) -> None:
         self._render_running = False
-        # ★ P0-1：唤醒阻塞在调度器上的渲染线程；P1-1：停止 stdin pump。
-        scheduler = getattr(self, "_scheduler", None)
-        if scheduler is not None:
-            scheduler.stop()
-        stop_pump = getattr(self, "_stop_input_pump", None)
-        if stop_pump is not None:
-            stop_pump()
         # ★ 单帧耗时无上界（2026-08-19）：自适应 join——渲染线程正在执行
         #   超长单帧（>2s 的 markdown 重放等）时不再按固定 2s 误判「卡住」
         #   强制清理（与仍在写 stream 的线程并发 → 输出撕裂）。线程活着
@@ -1397,91 +1369,121 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
     # ── 渲染循环 ─────────────────────────────────────
 
     def _render(self) -> None:
-        loop = getattr(self, "_render_loop", None)
-        if loop is None:
-            from .render_loop import RenderLoop
-
-            loop = RenderLoop(self)
-            self._render_loop = loop
-        loop.run()
-
-    def post_mutation(
-        self,
-        fn: Callable[[], object],
-        wait: bool = True,
-        timeout: float = 2.0,
-    ):
-        """在渲染线程执行模型写操作（P1-1 单写者收敛）。
-
-        - 渲染线程/未运行：直接在当前锁内执行（测试、suspend、同步路径）；
-        - 其他线程：入队，由渲染线程 APPLY 阶段执行；``wait=True`` 时阻塞
-          等待（默认 2s，超时降级为当前线程持锁执行，避免调用方永久挂起）。
-
-        这样 ``InkBridge`` / 插件 / 工具线程对 ``AppModel`` 的写操作不再与
-        渲染帧并发，模型变更统一由渲染线程串行应用。
-        """
-        render_thread = getattr(self, "_render_thread", None)
-        current = threading.current_thread()
-        lock = getattr(self, "_render_lock", None)
-        if (
-            render_thread is None
-            or current is render_thread
-            or not getattr(self, "_render_running", False)
-        ):
-            if lock is None:
-                return fn()
-            with lock:
-                return fn()
-
-        done = threading.Event()
-        holder: dict = {}
-
-        def _job() -> None:
-            try:
-                if lock is None:
-                    holder["value"] = fn()
-                else:
-                    with lock:
-                        holder["value"] = fn()
-            except BaseException as exc:  # noqa: BLE001 - 透传给调用方
-                holder["error"] = exc
-            finally:
-                done.set()
-
-        with self._mutation_lock:
-            self._mutations.append(_job)
-        self._request_render()
-        if not wait:
-            return None
-        if not done.wait(timeout):
-            _logger.warning("post_mutation 等待渲染线程超时 %.1fs，降级同步执行", timeout)
-            if lock is None:
-                return fn()
-            acquired = lock.acquire(timeout=1.0)
-            try:
-                return fn()
-            finally:
-                if acquired:
-                    lock.release()
-        if "error" in holder:
-            raise holder["error"]
-        return holder.get("value")
-
-    def _process_mutations(self) -> None:
-        """渲染线程 APPLY 阶段：执行全部待处理模型写操作。"""
-        while True:
-            with self._mutation_lock:
-                if not self._mutations:
-                    return
-                job = self._mutations.popleft()
-            try:
-                job()
-            except Exception:
-                _logger.warning("post_mutation 任务执行异常", exc_info=True)
-
-    def _sync_scheduler_state(self) -> None:
-        """把本拍动画状态同步给调度器并推进节流窗口（P0-1/P2-2）。"""
-        self._render_loop.sync_scheduler_state()
+        entry_version = self._render_version
+        # ★ 2026-10-20（用户需求：60Hz 节拍）：Windows/Cygwin 申请 1ms 定时器
+        #   分辨率——默认 15.6ms 粒度无法表达 16.67ms 的 60Hz 帧间隔。按渲染
+        #   线程标识申请（崩溃恢复新线程会重新申请），线程退出时释放。
+        _acquire_high_resolution_timer()
+        # ★ PERF-8（防忙循环）：下次允许唤醒的时刻（monotonic）——subagent
+        #   执行工具期间高频命令（ToolCountInc/DecCmd、SUBAGENT_FRAME、
+        #   ParseInfoCmd 等）持续 ``_cmd_event.set()``：原 ``_cmd_event.wait
+        #   (timeout=0.1)`` 被 set 立即唤醒 → 渲染循环失去 60Hz 节流变成
+        #   忙循环（每轮循环固定开销 × 高频唤醒 → CPU 100%，实测 5ms 事件
+        #   频率下 174Hz/27% CPU）。修复：节流时刻跨循环持久，wait 即使被
+        #   唤醒也等到 ``next_loop``——高频命令在队列中堆积，每
+        #   render_interval 一轮全量排空（无批处理长度上限），渲染循环稳定
+        #   60Hz；用户输入/关键命令仍经 ``_drain_queue`` 每轮处理（延迟
+        #   ≤ render_interval，与空闲 60Hz 行为一致）。
+        next_loop: float = time.monotonic()
+        # ★ 多会话隔离（P0 架构修复）：渲染线程整个生命周期激活本会话的
+        #   HookContext——INPUT 阶段（_phase_process_input）的输入分发、
+        #   use_input router 回调、key pressed 标志、焦点切换都发生在
+        #   reconciler.render 之外，需要
+        #   「当前上下文」是本会话（否则多会话下串台 / 落到默认上下文）。
+        #   stub（``object.__new__(InkSession)`` 借用本方法的测试）无
+        #   ``_hook_ctx`` → 跳过激活（走默认上下文，行为同旧）。
+        _ctx = getattr(self, "_hook_ctx", None)
+        if _ctx is not None:
+            _hooks.push_context(_ctx)
+        try:
+            while self._render_running:
+                # ── 节流等待（PERF-8）：等待到 next_loop 才处理 ──
+                # event 被高频命令 set 唤醒后**消费并继续等剩余时间**（防
+                # 忙循环）；已到 next_loop 或 _drain_queue 本身耗时超间隔时
+                # 立即进入处理（渲染跟不上时保持连续运转，不额外等待）。
+                now = time.monotonic()
+                if now < next_loop:
+                    remaining = next_loop - now
+                    while remaining > 0:
+                        # ★ 尾段 ≤1ms 自旋（2026-10-20 用户需求：60Hz）：Windows/
+                        #   Cygwin 的 Event.wait 粒度约 1ms（timeBeginPeriod(1)
+                        #   后），纯 wait 会把 16.67ms 节拍拉低；仅最后 1ms 忙等，
+                        #   CPU 开销可控，且不减少任何渲染/输入处理工作。
+                        if remaining <= _TICK_SPIN_GUARD:
+                            while time.monotonic() < next_loop:
+                                pass
+                            break
+                        self._cmd_event.wait(
+                            timeout=remaining - _TICK_SPIN_GUARD,
+                        )
+                        self._cmd_event.clear()
+                        now = time.monotonic()
+                        remaining = next_loop - now
+                        # ★ 恒定 60Hz（2026-10-20 用户需求）：不因重绘请求提前
+                        #   退出节流——任何请求都等到下一 60Hz 拍处理（帧率恒
+                        #   定不超频）；用户可感知更新在 ≤1/60s 内完成。
+                # ★ 固定节拍（2026-10-20）：下一拍 = 上一拍 deadline + 帧间隔，
+                #   不把本帧处理耗时叠加到周期上（旧实现
+                #   ``max(next_loop, now)+interval`` 使每帧周期 = interval +
+                #   帧耗时，60Hz 实际只有 ~50Hz）。若本帧处理已越过下一拍
+                #   （渲染跟不上），下一次循环的 ``now < next_loop`` 为假 →
+                #   不等待、连续运转，不丢帧也不降级。
+                next_loop += self._config.render_interval
+                try:
+                    # 方向5（死代码清理）：返回值未使用——has_content 删除。
+                    self._drain_queue()
+                    self._cmd_event.clear()
+                    # ★ 重绘请求未消费时保持唤醒（下一轮节流等待立即返回后仍
+                    #   等到 ``next_loop``，帧率恒定 60Hz）。
+                    if self._bottom_redraw_requested.is_set():
+                        self._cmd_event.set()
+                    # ★ BUG-39：稳定运行复位崩溃恢复计数——上次恢复后持续运行
+                    #   超过阈值视为已稳定（偶发崩溃重新从头计数），防长时间
+                    #   运行后 max_recover_attempts 耗尽导致 UI 永久冻结。
+                    if self._recover_attempts > 0 and self._last_recover_time > 0:
+                        if time.monotonic() - self._last_recover_time >= _RECOVER_STABLE_SECS:
+                            self._recover_attempts = 0
+                            self._last_recover_time = 0.0
+                    # ★ P3-2：渲染线程内 request_exit 的延迟退出语义——
+                    #   仅置位后本帧结束检查此处退出（stop 由外部线程调用或
+                    #   自然结束；渲染线程自身不 join）。
+                    #   ★ BUG-12：exit 路径渲染线程自置 ``_render_running=False``
+                    #   ——request_exit 在渲染线程内不调用 stop（防 join 自身
+                    #   死锁），若不置位则线程退出后 ``_render_running`` 恒 True，
+                    #   ``start()`` 判 ``_render_running`` 为 True 直接 return →
+                    #   无法重启（exit 语义下用户不应重启，但状态一致性应保持：
+                    #   exit 后 stop()/start() 行为与「线程已停止」一致）。
+                    if self._exit_requested:
+                        self._render_running = False
+                        break
+                except Exception as exc:
+                    if self._handle_render_crash(exc):
+                        return
+                    else:
+                        break
+        finally:
+            if _ctx is not None:
+                _hooks.pop_context()
+            # ★ 2026-10-20（用户需求：60Hz 节拍）：渲染线程退出（stop /
+            #   request_exit / 崩溃结束）时释放 1ms 定时器分辨率——覆盖
+            #   render() 独立会话 unmount 不调用 stop() 的路径（幂等）。
+            _release_high_resolution_timer()
+            if self._render_version != entry_version:
+                _logger.debug("render 线程版本已更新（新线程已启动），跳过排空")
+            else:
+                # ★ 2026-08-15（短内容丢失修复）：渲染线程退出时保留内容命令
+                #   （思考/回答/工具卡等）——suspend 流程中 ``_render_thread.join()``
+                #   等待本线程退出，若 finally 以 keep_content=False 排空，会丢弃
+                #   suspend 清理刚保留的内容命令（模型输出短内容永久丢失）；统一
+                #   保留，resume 后新线程处理显示。stop() 的排空仍会清空全部。
+                dropped = self._drain_queue_safe(keep_content=True)
+                _logger.debug("render 线程 finally 排空 %d 条命令", dropped)
+                if dropped > 0:
+                    self._write_emergency(
+                        f"{ANSI_EMERGENCY_RED}[ChatUI] render 线程已终止，"
+                        f"丢弃 {dropped} 条待处理命令{ANSI_EMERGENCY_RESET}\n",
+                        stream="stderr",
+                    )
 
     def _drain_queue(self) -> bool:
         """单帧处理：七阶段显式状态机（架构改进方向 E，2026-08-16）。
@@ -1525,9 +1527,6 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                     return False  # 锁超时：跳过本帧（不渲染），与旧行为一致
                 phase = RenderLoopPhase.APPLY
             elif phase is RenderLoopPhase.APPLY:
-                # ★ P1-1：先执行外部线程投递的模型写操作（单写者收敛），
-                #   再应用本帧命令——两者都在渲染线程串行执行。
-                self._process_mutations()
                 # 锁外应用命令（review 方向）：apply_cmd 是纯模型状态变更
                 # （AppModel），不直接写终端——移出输出锁避免 markdown 渲染
                 # 等耗时操作持锁阻塞其他写入方。模型仅 render 线程修改
@@ -1559,22 +1558,21 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                 if self._should_render():
                     try:
                         self._render_frame()
-                    except Exception as exc:
+                    except Exception:
+                        # P3-16（设计说明）：无 boundary 异常端到端不触发崩溃
+                        # 恢复——reconciler 层对无边界异常 re-raise 保留，但
+                        # session 层在此吞掉仅记 warning：**单帧失败 + 60Hz
+                        # 重试**（render 线程不崩溃不重启）。reconciler.
+                        # _handle_render_crash 崩溃恢复仅服务 render 循环级异常
+                        # （队列/输入/面板回调等）。
+                        # P7（方向2）：持久性渲染异常从 60Hz 无限重试降为指数
+                        # 退避（0.1→0.2→0.4→…→1.0 封顶，≤1Hz），日志刷屏缓解；
+                        # 正常路径无 sleep（渲染帧率 60Hz 不降低）。
+                        # 方向1（渲染失败帧不重试修复）：_should_render 已清
+                        # _dirty，失败帧若不补置脏标记下一拍不会重试（仅退避
+                        # 等待）——补置 _dirty = True，下一 60Hz 拍重试，配合
+                        # 既有指数退避防刷屏（退避封顶 1s，不会无限重试）。
                         self._consecutive_render_failures += 1
-                        # ★ P2-4：严格模式 fail fast；生产模式连续失败后显式降级。
-                        decision = self._error_policy.on_frame_error(
-                            exc, self._consecutive_render_failures,
-                        )
-                        if decision == "raise":
-                            raise
-                        if decision == "degrade":
-                            note = self._error_policy.take_announcement()
-                            if note:
-                                self._write_emergency(
-                                    f"{ANSI_EMERGENCY_RED}{note}{ANSI_EMERGENCY_RESET}\n",
-                                    stream="stderr",
-                                )
-                            return changed
                         delay = min(0.1 * 2 ** (self._consecutive_render_failures - 1), 1.0)
                         time.sleep(delay)
                         self._dirty = True
@@ -1650,36 +1648,33 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         return commands, bool(commands), True
 
     def _should_render(self) -> bool:
-        """是否需渲染本帧：按需（脏标记 / 重绘请求 / 动画 / 首次帧）。
+        """是否需渲染本帧：**恒定 True**——渲染线程每拍都渲染。
 
-        ★ P0-1（按需渲染修复）：修复前本方法恒定返回 True——空闲也每拍
-        全量重建/调和/布局/绘制。现在渲染由 ``RenderScheduler`` 唤醒，且仅在
-        以下任一条件成立时执行：
+        ★ 2026-10-20（用户需求「render 线程跟 input 处理改成 60hz，不能降减少
+        和降级」）：移除「空闲按需渲染」与「force 提前渲染」——任何状态
+        （空闲/无命令/无动画）都恰按 ``render_interval``（1/60s）节拍渲染
+        一帧，既不跳过也不提前，帧率严格 60Hz 且不可被配置/参数改变
+        （``TuiConfig`` 的 ``__post_init__`` 强制 ``render_interval`` 及帧率
+        派生节流参数恒为 60Hz 真源；``render(maxFps=...)`` 不再改变帧率）。
+        输入处理 ``_phase_process_input`` 位于同一帧的 INPUT 阶段，因此输入
+        轮询频率随本方法保证的节拍同步为 60Hz（不降低、不降级）。
 
-          - ``_force_render``：首帧 / start / resume 后的强制全量帧；
-          - ``_dirty``：命令应用、输入、hooks setState、系统统计等变更；
-          - ``_bottom_redraw_requested``：显式重绘请求（resize/theme/清屏）；
-          - ``_animating``：存在 ``useAnimation`` 等时间驱动内容。
-
-        重绘请求消费为脏标记，供等待方（``waitUntilRenderFlush`` /
-        ``flush``）判断「待渲染变更是否已消费」。
+        节拍由 ``_render`` 循环的 ``next_loop``（``render_interval``）保证，
+        本方法不再重复节流。重绘请求（``_bottom_redraw_requested``）消费为
+        脏标记，供等待方（``waitUntilRenderFlush`` / ``flush``）判断「待渲染
+        变更是否已消费」。
 
         Returns:
-            True — 本拍需要执行 ``_render_frame``。
+            True — 固定渲染本拍。
         """
         redraw_requested = self._bottom_redraw_requested.is_set()
-        if redraw_requested:
-            self._bottom_redraw_requested.clear()
+        self._bottom_redraw_requested.clear()
+        # ★ 空闲帧复用（2026-10-07）：捕获「本拍是否有变更」——``_dirty`` 在此
+        #   清除（供等待方判断变更已消费），空闲复用判定在 ``_render_frame_impl``
+        #   内需读取清除前的语义，故显式落位 ``_idle_ok``。
         self._idle_ok = not self._dirty and not redraw_requested
-        should = bool(
-            getattr(self, "_force_render", False)
-            or self._dirty
-            or redraw_requested
-            or getattr(self, "_animating", False)
-        )
-        self._force_render = False
         self._dirty = False
-        return should
+        return True
 
     # ── 阶段 ─────────────────────────────────────────
 
@@ -1738,20 +1733,6 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
 
     def _handle_render_crash(self, exc: Exception) -> bool:
         self._render_crashed.set()
-        # ★ P2-4：循环级错误分级（strict=raise；超过 max_recover=降级）。
-        decision = self._error_policy.on_loop_error(exc, self._recover_attempts + 1)
-        if decision == "raise":
-            raise exc
-        if decision == "degrade":
-            note = self._error_policy.take_announcement()
-            if note:
-                self._write_emergency(
-                    f"{ANSI_EMERGENCY_RED}{note}{ANSI_EMERGENCY_RESET}\n",
-                    stream="stderr",
-                )
-            self._render_running = False
-            self._cmd_event.set()
-            return False
         try:
             _logger.critical("cmd_queue.qsize=%d", self._cmd_queue.qsize())
             _logger.critical("render 线程异常崩溃", exc_info=True)

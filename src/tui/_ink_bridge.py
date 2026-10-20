@@ -50,62 +50,49 @@ class InkBridge(_BottomBarCompatMixin):
 
     # ── 状态域 ─────────────────────────────────────
 
-    def _apply(self, fn):
-        """模型写操作统一入口（P1-1：渲染线程串行执行）。"""
-        post = getattr(self._session, "post_mutation", None)
-        if callable(post):
-            return post(fn)
-        return fn()
-
     def set_model_name(self, name: str) -> None:
-        self._apply(lambda: setattr(self._model.status, "model_name", name))
+        self._model.status.model_name = name
         self._request_redraw()
 
     def enable_status(self) -> None:
-        self._apply(lambda: setattr(self._model.status, "status_active", True))
+        self._model.status.status_active = True
         self._request_redraw()
 
     def disable_status(self) -> None:
-        self._apply(lambda: setattr(self._model.status, "status_active", False))
+        self._model.status.status_active = False
         self._request_redraw()
 
     def reset_tool_count(self) -> None:
-        def _reset():
-            st = self._model.status
-            st.tool_count = 0
-            st.tool_fail = 0
-            st.tool_total = 0
-            st.tool_phase_start = 0.0
-
-        self._apply(_reset)
+        st = self._model.status
+        st.tool_count = 0
+        st.tool_fail = 0
+        st.tool_total = 0
+        st.tool_phase_start = 0.0
         self._request_redraw()
 
     def increment_tool(self) -> None:
         # ★ 方向5（工具计数收敛）：委托 app.apply.tool_count_inc 单一真源。
         from src.tui.app.apply import tool_count_inc
-        self._apply(lambda: tool_count_inc(self._model.status))
+        tool_count_inc(self._model.status)
         self._request_redraw()
 
     def decrement_tool(self) -> None:
         # ★ 方向5（工具计数收敛）：委托 app.apply.tool_count_dec 单一真源。
         from src.tui.app.apply import tool_count_dec
-        self._apply(lambda: tool_count_dec(self._model.status))
+        tool_count_dec(self._model.status)
         self._request_redraw()
 
     def increment_tool_fail(self) -> None:
         # ★ 方向5（工具计数收敛）：委托 app.apply.tool_fail_inc 单一真源。
         from src.tui.app.apply import tool_fail_inc
-        self._apply(lambda: tool_fail_inc(self._model.status))
+        tool_fail_inc(self._model.status)
         self._request_redraw()
 
     def set_main_phase(self, phase: str) -> None:
-        def _set():
-            st = self._model.status
-            if phase != st.main_phase:
-                st.main_phase_start = time.monotonic()
-            st.main_phase = phase
-
-        self._apply(_set)
+        st = self._model.status
+        if phase != st.main_phase:
+            st.main_phase_start = time.monotonic()
+        st.main_phase = phase
         self._request_redraw()
 
     def get_status_elapsed(self) -> float:
@@ -134,18 +121,6 @@ class InkBridge(_BottomBarCompatMixin):
                          orig_prefix="", title="补全", types=None,
                          match_prefix="", descriptions=None,
                          split_desc=False, loading=False) -> None:
-        self._apply(
-            lambda: self._show_completions_impl(
-                items, selected_idx, texts, start_pos, orig_prefix, title,
-                types, match_prefix, descriptions, split_desc, loading,
-            )
-        )
-        self._request_redraw()
-
-    def _show_completions_impl(self, items, selected_idx, texts=None, start_pos=0,
-                               orig_prefix="", title="补全", types=None,
-                               match_prefix="", descriptions=None,
-                               split_desc=False, loading=False) -> None:
         # loading=True：异步数据源未就绪——允许空 items（弹窗显示「加载中…」
         # 占位，数据就绪后经 ``show_completions`` 再次调用刷新为真实候选）。
         if not items and not loading:
@@ -185,10 +160,6 @@ class InkBridge(_BottomBarCompatMixin):
         self._request_redraw()
 
     def hide_completions(self) -> None:
-        self._apply(self._hide_completions_impl)
-        self._request_redraw()
-
-    def _hide_completions_impl(self) -> None:
         if not self._model.completion.visible:
             return
         # 保存隐藏前选中索引（兼容 _BottomBar.get_selected_completion_index）
@@ -206,11 +177,6 @@ class InkBridge(_BottomBarCompatMixin):
         return getattr(self, "_last_completion_idx", 0)
 
     def cycle_completion(self, delta: int = 1) -> int:
-        result = self._apply(lambda: self._cycle_completion_impl(delta))
-        self._request_redraw()  # 高亮移动需重绘
-        return int(result or 0)
-
-    def _cycle_completion_impl(self, delta: int = 1) -> int:
         c = self._model.completion
         if not c.visible or not c.items:
             return 0
@@ -219,6 +185,7 @@ class InkBridge(_BottomBarCompatMixin):
         # 方向A 步骤1：cycle 后同步 _last_completion_idx（修复陈旧索引——
         # 新补全会话不再读到 hide 保留的旧索引；hide 语义保留，message_editor 依赖）。
         self._last_completion_idx = c.selected
+        self._request_redraw()  # 高亮移动需重绘
         return c.selected
 
     def get_selected_completion(self) -> tuple[str, int, str]:
@@ -231,17 +198,14 @@ class InkBridge(_BottomBarCompatMixin):
     # ── 输入 ────────────────────────────────────────
 
     def set_input_state(self, text: str, cursor_pos: int) -> None:
-        def _set():
-            self._model.input_text = text
-            self._model.input_cursor = cursor_pos
-
-        self._apply(_set)
+        self._model.input_text = text
+        self._model.input_cursor = cursor_pos
         self._request_redraw()
 
     # ── subagent（兼容旧路径） ──────────────────────
 
     def set_subagent_frame(self, lines) -> None:
-        self._apply(lambda: setattr(self._model, "subagent_lines", list(lines)))
+        self._model.subagent_lines = list(lines)
         self._request_redraw()
 
     # ── 内部 ───────────────────────────────────────

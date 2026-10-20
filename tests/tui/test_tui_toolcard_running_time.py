@@ -392,10 +392,11 @@ class TestRenderFrameInvokesRefresh:
             width_cache=TerminalWidthCache(),
             config=TuiConfig.defaults(),
         )
-        # P0-1 按需渲染：直接驱动 5 帧，验证刷新钩子逐帧调用。
-        for _ in range(5):
-            session._dirty = True
-            session._render_frame()
+        session.start()
+        try:
+            time.sleep(0.3)
+        finally:
+            session.stop()
         assert len(calls) >= 5, f"刷新钩子未按帧调用：{len(calls)}"
 
 

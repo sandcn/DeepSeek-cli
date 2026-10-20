@@ -1,28 +1,40 @@
-"""_SessionQueueMixin — InkSession 命令队列管理子域（P1-2 重写）。
+"""_SessionQueueMixin — InkSession 命令队列管理子域（架构改进方向 A，2026-08-16）。
 
-背景：修复前本 mixin 直接操作 ``queue.PriorityQueue`` 的 ``mutex`` 与底层
-``queue`` 堆数组做合并/覆盖/腾位/排空，并手工维护 ``unfinished_tasks``——
-与 stdlib 私有契约强耦合（BUG-31：任意下标 pop 破坏堆序；task_done 遗漏
-导致 ``join`` 永久等待）。
+拆分背景：InkSession（原 ~1540 行）为「上帝类」——命令队列/线程生命周期/
+渲染循环/崩溃恢复/hooks 等职责混杂。方向 A 按**可独立测试的职责边界**
+拆分：命令入队/背压/排空安全收敛为本 mixin，渲染帧执行为
+``_session_frame_mixin._SessionFrameMixin``，session 保留渲染循环调度/
+生命周期/崩溃恢复/注入/访问器。
 
-现在全部语义收敛到 ``CommandBuffer``（自建有序缓冲，公开契约）：
+本 mixin 承载：
+  - ``push_cmd`` / ``push_cmd_critical`` — 命令入队（优先级/阻塞/腾位/背压/紧急直写）；
+  - ``_put_no_drop`` — 内容命令背压等待（有上限，防渲染线程卡死时调用方永久阻塞）；
+  - ``_drain_queue_safe`` — 清空队列（可保留内容命令，供 suspend/崩溃恢复/超时兜底）。
 
-  - 入队：``put``（满队列返回 False，阻塞路径带超时）；
-  - 同类型最新值覆盖：``replace_same_kind``；
-  - 流式命令尾部合并：``append_stream``；
-  - 满队列腾位：``evict_low``（只移除低优先级）；
-  - 排空保留内容命令：``drain``；
-  - ``get_nowait`` / ``task_done`` / ``join`` 与 queue.Queue 语义一致。
+依赖约定（由 InkSession.__init__ 初始化，运行时经 ``self`` 访问）：
+  - ``_cmd_queue``/``_cmd_seq``/``_consecutive_full``/``_cmd_queue_dropped``
+  - ``_cmd_event``（threading.Event，入队唤醒渲染循环）
+  - ``_render_running``（渲染线程存活标志，背压/丢弃判定）
+  - ``_config``（cmd_queue_maxsize / consecutive_full_threshold）
+  - ``_write_emergency``（紧急直写 stderr 兜底）
 
-本 mixin 不再 import ``heapq`` / 不再触碰 stdlib 私有字段。
+★ 常量归属：``_KEEP_CONTENT_CMDS`` / ``_PUT_NO_DROP_TIMEOUT`` 随方法迁至
+本模块（唯一使用方）——session 模块 re-export 保持旧导入路径兼容
+（``src.tui.ink.session._PUT_NO_DROP_TIMEOUT`` 仍可访问，测试 patch 目标
+已同步更新至本模块）。
 """
 
 from __future__ import annotations
 
-import dataclasses
-import logging
-import time
 from typing import TYPE_CHECKING, Any
+
+import dataclasses
+import heapq
+import itertools
+import logging
+import queue
+import threading
+import time
 
 from src.tui._const import (
     RenderCmd,
@@ -30,7 +42,8 @@ from src.tui._const import (
     ANSI_EMERGENCY_RED,
     ANSI_EMERGENCY_RESET,
 )
-from ._cmd_priority import (
+# ★ 命令优先级策略（方向B 拆分）：优先级常量/映射自 ._cmd_priority 导入
+from src.tui.ink._cmd_priority import (
     _CMD_PRIORITY_CRITICAL,
     _CMD_PRIORITY_LOW,
     _COALESCE_CMDS,
@@ -43,22 +56,37 @@ from ._cmd_priority import (
 
 _logger = logging.getLogger(__name__)
 
-#: 可追加合并的流式内容命令（同类型、且为队列最新条目时合并文本）
+#: 可追加合并的流式内容命令（同类型、且为队列**最新条目**时合并文本）：
+#: 高频流式输出下减少队列条目增长，降低「队列满 → 内容命令背压等待/丢弃」
+#: 的概率（丢弃即用户可见内容缺失）。仅追加到队尾同类条目，保证渲染顺序。
 _APPEND_STREAM_CMDS = frozenset({
     RenderCommand.CONTENT,
     RenderCommand.REASONING,
+    # 工具卡内 markdown 输出（拼接语义等价——渲染器按序写入同一源文本）。
     RenderCommand.TOOL_MARKDOWN,
 })
 
-#: 流式命令合并后的文本上限（字符）
+#: 流式命令合并后的文本上限（字符）：超过后不再合并，避免单条命令无限膨胀
+#: （渲染线程长期不消费时文本持续累积）；此时退回背压等待路径。
 _STREAM_MERGE_MAX_CHARS = 65536
 
-#: 暂停/恢复保留命令集合（用户可见核心内容不丢弃）
+#: 暂停/恢复保留命令集合（2026-08-15 短内容丢失修复）：
+#: suspend（交互工具独占终端）/ 崩溃恢复 / flush 超时兜底经 ``_drain_queue_safe``
+#: 清空队列时，**用户可见核心内容命令**（思考/回答/工具卡/阶段/错误等）不丢弃、
+#: 保留在队列中，resume 后渲染线程处理——修复前这些命令被无条件丢弃，模型
+#: 在交互工具挂起 / 渲染暂停期间输出的短思考/短回答**永久丢失**（模型状态也
+#: 未应用），视觉上「很短的回答跟思考没显示」（偶发，取决于命令入队与
+#: suspend 清理的时序）。
+#: 可丢弃命令（WRITE_LINE/DISPLAY_MSGS/SUBAGENT_FRAME/CLEAR_MSGS/SPLASH/
+#: BG_BASH_COUNT）为外部输出/历史回放/面板刷新/清屏等——临时挂起后重放或
+#: 由调用方重新触发，丢弃可接受（避免暂停期间积压陈旧命令污染恢复帧）。
 _KEEP_CONTENT_CMDS = frozenset({
     RenderCommand.REASONING,
     RenderCommand.CONTENT,
     RenderCommand.PHASE_DONE,
     RenderCommand.TOOL_OUTPUT,
+    # 工具卡内 markdown 输出（与 TOOL_OUTPUT 同为用户可见内容——暂停/恢复
+    # 期间不丢弃，resume 后渲染线程处理）。
     RenderCommand.TOOL_MARKDOWN,
     RenderCommand.TOOL_SUMMARY,
     RenderCommand.TOOL_OPEN,
@@ -74,163 +102,366 @@ _KEEP_CONTENT_CMDS = frozenset({
     RenderCommand.SUBAGENT_MARKDOWN,
 })
 
-#: 内容命令背压最大等待时长（秒）
+#: P2-2（review 方向）：``_put_no_drop`` 内容命令背压最大等待时长（秒）。
+#: 渲染线程存活时队列满 → 背压等待（不静默丢弃内容）；超过本阈值（渲染线程
+#: 卡死/消费停滞）回退为丢弃并记 warning——防调用方（流式/事件循环线程）
+#: 永久阻塞。
 _PUT_NO_DROP_TIMEOUT = 30.0
+
+#: 「最新值覆盖」语义命令集合 —— 真源在 ``_cmd_priority._COALESCE_CMDS``
+#: （2026-09-20 解析进度行卡住修复；本模块经上方 import re-export，消费方为
+#: ``push_cmd`` 就地替换——队列中同类状态命令恒至多一条且为最新值）。
 
 
 class _SessionQueueMixin:
-    """InkSession 命令队列管理子域（CommandBuffer 公开契约）。"""
+    """InkSession 命令队列管理子域（mixin）。
 
-    _cmd_queue: Any
-    _cmd_event: Any
+    所有方法经 ``self`` 访问 InkSession 实例字段（见模块 docstring 依赖
+    约定）——本 mixin 无独立状态，方法可直接被测试以实例属性替换
+    （monkeypatch 语义保持，session._push_cmd 等替换即生效）。
+    """
+
+    # ── 类型标注（InkSession.__init__ 初始化；运行时求值为实例字段） ──
+    _cmd_queue: "queue.PriorityQueue"
+    _cmd_seq: "itertools.count"
+    _cmd_event: "threading.Event"
     _consecutive_full: int
     _cmd_queue_dropped: int
     _render_running: bool
     _config: Any
 
-    if TYPE_CHECKING:  # pragma: no cover
+    # ★ 宿主契约（仅静态检查用；运行期由 ``InkSession`` 提供）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
         def _write_emergency(self, *args: Any, **kwargs: Any) -> Any: ...
 
-    def _wake_render(self) -> None:
-        """唤醒渲染循环（P0-1：Event + 按需调度器双通道兼容）。"""
-        self._cmd_event.set()
-        scheduler = getattr(self, "_scheduler", None)
-        if scheduler is not None:
-            scheduler.request("push_cmd")
-
-    # ── 合并辅助 ─────────────────────────────────────
+    # ── 命令入队 ─────────────────────────────────────
 
     def _replace_queued_same_kind(self, cmd_id: int, cmd: RenderCmd) -> bool:
-        return self._cmd_queue.replace_same_kind(cmd_id, cmd, _get_cmd_id)
+        """就地替换队列中同类型未消费命令（「最新值覆盖」语义，2026-09-20）。
+
+        在 ``_cmd_queue.mutex`` 内遍历底层堆数组，命中首个同 ``cmd_id`` 条目后
+        替换其命令对象：**保留原 ``(priority, seq)``**——比较键不变，堆序与
+        「同批插入序」语义完全不变（无需 heapq.heapify）；条目数不变，
+        ``unfinished_tasks`` 一致（不额外 ``task_done``，不破坏 ``queue.join``）。
+
+        仅操作 ``queue.queue`` 数组（不调用 put/get/task_done），故持 mutex
+        安全（``all_tasks_done`` Condition 复用同一 mutex，不可在内调用
+        ``task_done``）。
+
+        Args:
+            cmd_id: 命令类型 id（``RenderCmd.cid``）。
+            cmd: 新的（最新值）命令。
+
+        Returns:
+            True — 已替换（调用方无需再入队）；False — 队列中无同类命令。
+        """
+        with self._cmd_queue.mutex:
+            for i, item in enumerate(self._cmd_queue.queue):
+                if _get_cmd_id(item[2]) == cmd_id:
+                    self._cmd_queue.queue[i] = (item[0], item[1], cmd)
+                    return True
+        return False
 
     def _append_to_last_stream_cmd(self, cmd_id: int, cmd: RenderCmd) -> bool:
+        """把流式文本追加到队列**最新入队**的同类命令（保序、不新增条目）。
+
+        仅当队列最新条目（``seq`` 最大）即为同类型流式命令时合并：此时新
+        文本在时间上紧跟其后，追加不改变任何命令的相对顺序；尾部一旦是其它
+        命令则放弃（走正常入队），保证渲染顺序与事件顺序一致。合并可显著
+        降低高频流式输出的队列增长，避免队列满触发内容命令背压/丢弃。
+
+        Returns:
+            True — 已合并（调用方无需再入队）；False — 未合并。
+        """
         if cmd_id not in _APPEND_STREAM_CMDS:
             return False
-        return self._cmd_queue.append_stream(
-            cmd_id,
-            cmd,
-            _get_cmd_id,
-            lambda c: getattr(c, "text", "") or "",
-            lambda c, text: dataclasses.replace(c, text=text),
-            _STREAM_MERGE_MAX_CHARS,
-        )
-
-    # ── 入队 ─────────────────────────────────────────
+        with self._cmd_queue.mutex:
+            arr = self._cmd_queue.queue
+            if not arr:
+                return False
+            idx = None
+            best_seq = -1
+            for i, item in enumerate(arr):
+                if item[1] > best_seq:
+                    best_seq = item[1]
+                    idx = i
+            if idx is None:
+                return False
+            last = arr[idx]
+            if _get_cmd_id(last[2]) != cmd_id:
+                return False
+            merged = ((getattr(last[2], "text", "") or "")
+                      + (getattr(cmd, "text", "") or ""))
+            if len(merged) > _STREAM_MERGE_MAX_CHARS:
+                # 单条命令文本已达上限：不再合并（退回背压等待/丢弃兜底）
+                return False
+            try:
+                new_cmd = dataclasses.replace(last[2], text=merged)
+            except Exception:
+                return False
+            # 仅替换命令对象、保持原 (priority, seq)——比较键不变，堆序不变
+            arr[idx] = (last[0], last[1], new_cmd)
+        return True
 
     def push_cmd(self, cmd: RenderCmd) -> None:
-        """入队渲染命令（优先级 + 合并 + 满队列背压/丢弃策略）。"""
+        """入队渲染命令（阻塞语义与 TuiEngine.push_cmd 一致）。"""
         priority = _get_cmd_priority(cmd)
         cmd_id = _get_cmd_id(cmd)
         blocking = cmd_id in _CRITICAL_CMDS
-
+        # ★ 2026-09-20（解析进度行卡住修复）：「最新值覆盖」类命令（PARSE_INFO/
+        #   BG_BASH_COUNT）合并——队列中已有同类未消费命令时**就地替换**（保持
+        #   原 (priority, seq) 位置，堆序/顺序语义不变；不新增条目、不增加
+        #   unfinished_tasks），队列中恒至多一条且始终是最新值；替换先于 put
+        #   执行，故队列已满时最新进度仍能落地（修复前队列满直接丢弃
+        #   ParseInfoCmd → 进度行数字停在上一次入队成功的值）。
         if cmd_id in _COALESCE_CMDS and self._replace_queued_same_kind(cmd_id, cmd):
             self._consecutive_full = 0
-            self._wake_render()
+            self._cmd_event.set()
             return
-
-        if self._cmd_queue.put(
-            cmd, priority, blocking=blocking,
-            timeout=0.1 if blocking else None,
-        ):
+        try:
+            if blocking:
+                self._cmd_queue.put(
+                    (priority, next(self._cmd_seq), cmd),
+                    block=True, timeout=0.1,
+                )
+            else:
+                self._cmd_queue.put(
+                    (priority, next(self._cmd_seq), cmd), block=False,
+                )
             self._consecutive_full = 0
-            self._wake_render()
-            return
-
-        # ── 队列满：低优先级腾位 ──
-        if priority < _CMD_PRIORITY_LOW:
-            removed = self._cmd_queue.evict_low(_CMD_PRIORITY_LOW, _get_cmd_id)
-            if removed is not None:
-                self._cmd_queue_dropped += 1
-                _logger.warning(
-                    "渲染命令队列已满，腾位移除 LOW 命令: %s",
-                    _cmd_name(_get_cmd_id(removed)),
-                )
-                if self._cmd_queue.put(cmd, priority):
+            self._cmd_event.set()
+        except queue.Full:
+            # ★ 方向4（队列满 LOW 优先丢弃）：新命令优先级高于 LOW 且队列中
+            #   存在 LOW 命令（WRITE_LINE/DISPLAY_MSGS）时腾位——持 mutex 锁内
+            #   遍历队列移除至多一个 LOW 项（记录 dropped + warning）后重试 put；
+            #   新命令本身为 LOW 或队列无 LOW 项时保持现状丢弃（保护
+            #   STREAM/CRITICAL 不丢）。
+            evicted = False
+            if priority < _CMD_PRIORITY_LOW:
+                with self._cmd_queue.mutex:
+                    for i, item in enumerate(self._cmd_queue.queue):
+                        if item[0] >= _CMD_PRIORITY_LOW:
+                            removed = self._cmd_queue.queue.pop(i)
+                            # ★ BUG-31（review 方向）：``PriorityQueue`` 底层是
+                            #   heapq 数组，任意下标 ``pop`` 后堆序被破坏——后续
+                            #   ``heappush``/``heappop`` 在损坏堆上操作可能返回非
+                            #   最小项 → 命令优先级/同批顺序错乱（如 PHASE_DONE
+                            #   先于 CONTENT 出队致内容通道提前关闭、TOOL_CLOSE
+                            #   先于 TOOL_OUTPUT 致输出落到无名新 box）。pop 后
+                            #   ``heapq.heapify`` 恢复堆序（O(n)，仅队列满腾位
+                            #   罕见路径触发，成本可接受）。
+                            heapq.heapify(self._cmd_queue.queue)
+                            self._cmd_queue_dropped += 1
+                            _logger.warning(
+                                "渲染命令队列已满，腾位移除 LOW 命令: %s",
+                                _cmd_name(_get_cmd_id(removed[2])),
+                            )
+                            evicted = True
+                            break
+            if evicted:
+                # ★ 修复（长任务思考/回答丢失）：pop 绕过 get() 直接移除 heapq
+                #   元素，须补 task_done() 减 unfinished_tasks——否则
+                #   queue.join()（flush 等待排空）因 unfinished_tasks 虚高而
+                #   永远等待 → flush 恒超时 → _drain_queue_safe 丢弃未消费的
+                #   reasoning/content 命令（视觉「只显示工具调用」）。
+                #   task_done() 须在 mutex 外调用：其内部经 all_tasks_done
+                #   （Condition，与 mutex 同源普通 Lock 不可重入）再次获取
+                #   mutex，持 mutex 调用会自死锁。
+                try:
+                    self._cmd_queue.task_done()
+                except ValueError:
+                    pass
+                try:
+                    self._cmd_queue.put(
+                        (priority, next(self._cmd_seq), cmd), block=False,
+                    )
                     self._consecutive_full = 0
-                    self._wake_render()
+                    self._cmd_event.set()
                     return
-
-        # ── 内容命令：尾部合并 → 背压等待（不静默丢弃） ──
-        if cmd_id in _STREAM_CMDS:
-            if self._append_to_last_stream_cmd(cmd_id, cmd):
-                self._consecutive_full = 0
-                self._wake_render()
+                except queue.Full:
+                    pass  # 并发竞争仍满 → 保持丢弃（不无限循环）
+            # ★ 内容命令不静默丢弃（长任务思考/回答丢失修复，2026-08-13）：
+            #   REASONING/CONTENT/TOOL_OUTPUT 是用户可见核心内容——队列满且无
+            #   LOW 可腾位时，修复前非 blocking 内容命令被**立即静默丢弃** →
+            #   长任务（大量工具输出/流式文本积压致队列满）中思考/回答偶发不
+            #   显示，而 TOOL_OPEN/TOOL_CLOSE/PHASE_DONE 等 CRITICAL 命令走
+            #   阻塞路径不丢，视觉上「只显示工具调用卡片」。渲染线程存活时
+            #   背压等待（模型流式让渲染消费跟上，内容不丢）；渲染线程已终止
+            #   （UI 不可用）回退原丢弃语义（不无限卡死调用方/事件循环）。
+            if _get_cmd_id(cmd) in _STREAM_CMDS:
+                # ★ 内容命令兜底合并（队列满且无 LOW 可腾位）：把文本追加到
+                #   「最新入队的同类流式命令」——不新增条目、相对顺序不变，
+                #   尽最大努力避免用户可见内容丢失（背压/丢弃退为最后兜底）。
+                if self._append_to_last_stream_cmd(cmd_id, cmd):
+                    self._consecutive_full = 0
+                    self._cmd_event.set()
+                    return
+                if self._render_running and self._put_no_drop(priority, cmd):
+                    return
+            # 方向2（CRITICAL 不静默丢弃）：blocking（CRITICAL）命令腾位失败后
+            # 改走 push_cmd_critical 紧急直写语义（_write_emergency 兜底，绝不
+            # 静默丢弃）——PhaseDone/ToolClose 等通道关闭命令丢失会导致通道
+            # 永不关闭。非 CRITICAL 保持既有丢弃语义（计数/日志不变）。
+            if blocking:
+                self.push_cmd_critical(cmd)
                 return
-            if self._render_running and self._put_no_drop(priority, cmd):
-                return
-
-        # ── 关键命令：紧急直写兜底；其余丢弃并告警 ──
-        if blocking:
-            self.push_cmd_critical(cmd)
-            return
-        self._consecutive_full += 1
-        self._cmd_queue_dropped += 1
-        _logger.warning(
-            "渲染命令队列已满（%s 条），丢弃命令: %s (优先级=%d)",
-            self._cmd_queue.qsize(), _cmd_name(cmd_id), priority,
-        )
-        if self._consecutive_full >= self._config.consecutive_full_threshold:
-            _logger.error("渲染输出管线持续拥堵（%d 次连续满队列）", self._consecutive_full)
-            if self._consecutive_full % self._config.consecutive_full_threshold == 0:
-                self._write_emergency(
-                    f"{ANSI_EMERGENCY_RED}[ChatUI] 渲染队列已满，已丢弃 "
-                    f"{self._cmd_queue_dropped} 条命令{ANSI_EMERGENCY_RESET}\n",
-                    stream="stderr",
-                )
+            self._consecutive_full += 1
+            self._cmd_queue_dropped += 1
+            _logger.warning(
+                "渲染命令队列已满（%s 条），丢弃命令: %s (优先级=%d)",
+                self._cmd_queue.qsize(), _cmd_name(cmd_id), priority,
+            )
+            if self._consecutive_full >= self._config.consecutive_full_threshold:
+                _logger.error("渲染输出管线持续拥堵（%d 次连续满队列）", self._consecutive_full)
+                if self._consecutive_full % self._config.consecutive_full_threshold == 0:
+                    self._write_emergency(
+                        f"{ANSI_EMERGENCY_RED}[ChatUI] 渲染队列已满，已丢弃 "
+                        f"{self._cmd_queue_dropped} 条命令{ANSI_EMERGENCY_RESET}\n",
+                        stream="stderr",
+                    )
 
     def push_cmd_critical(self, cmd: RenderCmd) -> None:
-        """入队关键命令 — 阻塞等待；队列满时紧急直写 stderr 兜底。"""
+        """入队关键命令 — 阻塞等待以确保绝不丢失。
+
+        队列满（queue.Full）时**不抛异常**：经紧急路径直写 stderr 兜底
+        （BUG-T2），保证"关键命令绝不丢失"语义（非静默丢弃）。
+        """
         priority = _CMD_PRIORITY_CRITICAL
         cmd_id = _get_cmd_id(cmd)
-        if self._cmd_queue.put(cmd, priority, blocking=True, timeout=1.0):
+        try:
+            self._cmd_queue.put((priority, next(self._cmd_seq), cmd), block=True, timeout=1.0)
             self._consecutive_full = 0
-            self._wake_render()
-            return
-        self._consecutive_full += 1
-        self._cmd_queue_dropped += 1
-        _logger.warning("关键命令队列已满，紧急直写: %s (优先级=%d)", _cmd_name(cmd_id), priority)
-        self._write_emergency(
-            f"{ANSI_EMERGENCY_RED}[ChatUI] 关键命令队列已满，紧急直写: "
-            f"{_cmd_name(cmd_id)}{ANSI_EMERGENCY_RESET}\n",
-            stream="stderr",
-        )
+            self._cmd_event.set()
+        except queue.Full:
+            self._consecutive_full += 1
+            self._cmd_queue_dropped += 1
+            _logger.warning(
+                "关键命令队列已满，紧急直写: %s (优先级=%d)",
+                _cmd_name(cmd_id), priority,
+            )
+            self._write_emergency(
+                f"{ANSI_EMERGENCY_RED}[ChatUI] 关键命令队列已满，紧急直写: "
+                f"{_cmd_name(cmd_id)}{ANSI_EMERGENCY_RESET}\n",
+                stream="stderr",
+            )
 
     def _put_no_drop(self, priority: int, cmd: RenderCmd) -> bool:
-        """内容命令背压等待（渲染线程存活时最长 ``_PUT_NO_DROP_TIMEOUT``）。"""
+        """内容命令背压等待：渲染线程存活时持续等待入队（不静默丢弃内容）。
+
+        长任务渲染拥塞修复（2026-08-13）：REASONING/CONTENT/TOOL_OUTPUT 是
+        用户可见核心内容——队列满时若静默丢弃，长任务中思考/回答偶发不显示
+        （工具调用卡因 CRITICAL 阻塞语义不丢，视觉上「只显示工具调用」）。
+        渲染线程存活时阻塞等待（背压：模型流式等待渲染消费跟上，内容不丢）；
+        渲染线程已终止（UI 不可用）返回 False → 调用方回退丢弃告警路径，
+        避免无限卡死调用方（流式/事件循环线程）。
+
+        ★ P2-2（review 方向）：背压**有上限**——``while`` 循环内
+        ``put(timeout=0.5)`` 无限重试，渲染线程卡死（消费停滞但线程仍存活）
+        时调用方永久阻塞。修复：增加最大等待时长（``_PUT_NO_DROP_TIMEOUT``，
+        30s），超时后回退为丢弃并记 warning（返回 False，调用方回退既有
+        丢弃告警路径，语义兼容）。
+
+        Returns:
+            True — 已入队成功；False — 渲染线程已终止或背压超时，未入队。
+        """
         deadline = time.monotonic() + _PUT_NO_DROP_TIMEOUT
         while self._render_running:
-            if self._cmd_queue.put(cmd, priority, blocking=True, timeout=0.5):
-                self._consecutive_full = 0
-                self._wake_render()
-                return True
-            if time.monotonic() >= deadline:
-                _logger.warning(
-                    "内容命令背压等待超时（>%.0fs），回退丢弃: %s (优先级=%d)",
-                    _PUT_NO_DROP_TIMEOUT, _cmd_name(_get_cmd_id(cmd)), priority,
+            try:
+                self._cmd_queue.put(
+                    (priority, next(self._cmd_seq), cmd),
+                    block=True, timeout=0.5,
                 )
-                return False
+                self._consecutive_full = 0
+                self._cmd_event.set()
+                return True
+            except queue.Full:
+                # 渲染线程存活但队列仍满（消费中）→ 继续等待（背压，不丢内容）
+                if time.monotonic() >= deadline:
+                    _logger.warning(
+                        "内容命令背压等待超时（>%.0fs），回退丢弃: %s (优先级=%d)",
+                        _PUT_NO_DROP_TIMEOUT, _cmd_name(_get_cmd_id(cmd)), priority,
+                    )
+                    return False
+                continue
         return False
 
     # ── 队列安全排空 ─────────────────────────────────
 
     def _drain_queue_safe(self, keep_content: bool = False) -> int:
-        """清空队列；``keep_content=True`` 时保留用户可见核心内容命令。"""
-        keep_ids = _KEEP_CONTENT_CMDS if keep_content else None
-        dropped, kept = self._cmd_queue.drain(keep_ids, _get_cmd_id)
-        if dropped:
-            if keep_content:
+        """清空渲染命令队列（丢弃计数）。
+
+        Args:
+            keep_content: True 时**保留用户可见核心内容命令**
+                （``_KEEP_CONTENT_CMDS``：思考/回答/工具卡/阶段/错误等）——
+                仅丢弃非内容命令（WRITE_LINE/DISPLAY_MSGS/SUBAGENT_FRAME 等）。
+                供 suspend（交互工具独占终端）/ 崩溃恢复 / flush 超时兜底使用：
+                模型在渲染暂停期间输出的短思考/短回答命令**不丢失**，resume 后
+                渲染线程处理并显示（修复前无条件丢弃 → 短内容永久丢失）。
+
+        Returns:
+            丢弃的命令条数。
+        """
+        dropped = 0
+        if keep_content:
+            # ★ 保留内容命令：**不 get/put 重放**（会破坏 unfinished_tasks——
+            # get_nowait+task_done 后 put 回去，resume 后 _drain_queue 的
+            # task_done 抛 ValueError）——直接在 mutex 保护下遍历队列，仅
+            # 移除要丢弃的命令（保留命令原地不动，seq/堆序不变）。
+            with self._cmd_queue.mutex:
+                keep_items: list = []
+                drop_items: list = []
+                for item in self._cmd_queue.queue:
+                    if _get_cmd_id(item[2]) in _KEEP_CONTENT_CMDS:
+                        keep_items.append(item)
+                    else:
+                        drop_items.append(item)
+                self._cmd_queue.queue[:] = keep_items
+                # ★ BUG-31 同族：heapq 数组任意修改后须 heapify 恢复堆序
+                #   （否则后续 heappush/heappop 在损坏堆上操作可能返回非最小项）。
+                heapq.heapify(self._cmd_queue.queue)
+                dropped = len(drop_items)
+                # ★ P3（review）：容量释放后唤醒 not_full 等待者——修复前直接
+                #   替换 ``queue.queue[:]`` 未 notify，并发 ``push_cmd(block=True)``
+                #   /``_put_no_drop`` 可能虚假超时（关键命令走紧急直写、内容
+                #   命令被记丢弃告警）。not_full 与 mutex 同源锁，须在持锁时
+                #   notify。
+                if drop_items:
+                    self._cmd_queue.not_full.notify_all()
+            # 丢弃的命令补 task_done（unfinished_tasks 一致性：put 增加、task_done
+            # 减少；丢弃的命令不再被消费 → 补一次 task_done）。与 push_cmd 腾位
+            # 语义一致：task_done 在 mutex 外调用（all_tasks_done Condition 与
+            # mutex 同源普通 Lock 不可重入，持 mutex 调用会自死锁）。
+            for _ in drop_items:
+                try:
+                    self._cmd_queue.task_done()
+                except ValueError:
+                    pass
+            if dropped > 0:
                 _logger.info(
                     "渲染队列清理：丢弃 %d 条非内容命令，保留 %d 条内容命令",
-                    dropped, kept,
+                    dropped, len(keep_items),
                 )
-            else:
-                _logger.info("render 线程终止，本次丢弃 %d 条命令", dropped)
+            return dropped
+        while not self._cmd_queue.empty():
+            try:
+                _, _, cmd = self._cmd_queue.get_nowait()
+                self._cmd_queue.task_done()
+                dropped += 1
+            except queue.Empty:
+                break
+        if dropped > 0:
+            # ★ P3（review）：日志用本次丢弃数（``dropped``）——修复前打印累计
+            #   计数 ``_cmd_queue_dropped``（从不重置、含历史其它丢弃），误导排障。
+            _logger.info("render 线程终止，本次丢弃 %d 条命令", dropped)
         return dropped
 
 
+#: 为保持旧导入路径兼容（``src.tui.ink.session._KEEP_CONTENT_CMDS`` /
+#: ``..._PUT_NO_DROP_TIMEOUT``），session 模块 re-export 本模块常量。
 __all__ = [
     "_SessionQueueMixin",
     "_KEEP_CONTENT_CMDS",
     "_PUT_NO_DROP_TIMEOUT",
+    # ★ 2026-09-20：真源在 _cmd_priority（本模块 re-export 供旧导入路径）
     "_COALESCE_CMDS",
 ]

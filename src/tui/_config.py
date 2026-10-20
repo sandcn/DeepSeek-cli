@@ -75,12 +75,6 @@ class TuiConfig(ConfigBase):
     cmd_queue_maxsize: int = 10000          # 命令队列最大容量
     consecutive_full_threshold: int = 10    # 连续满队列告警阈值
     bottom_redraw_interval: float = RENDER_INTERVAL_SEC  # 底部栏重绘间隔（秒），对应 60Hz
-    #: 严格渲染错误策略（P2-4）：True 时渲染异常直接抛出（开发/测试）；
-    #: False（生产默认）按指数退避重试，连续失败后显式降级。
-    strict_render: bool = False
-    #: 已提交历史内存窗口（P2-5）：超过后仅保留最近 N 行（源文本仍在 blocks，
-    #: resize 可重排）；0 = 不限制。
-    history_window_lines: int = 20000
 
     # ── 动画参数 ──────────────────────────────────────
     breath_cycle_len: int = 12              # 呼吸周期长度（帧数）
