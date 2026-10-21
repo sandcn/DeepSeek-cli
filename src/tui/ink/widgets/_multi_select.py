@@ -15,7 +15,7 @@ import logging
 
 from src.tui.core.style import Style
 from ..element import TEXT, Element, h
-from ..hooks import use_state, use_input, use_ref
+from ..hooks import use_state, use_input, use_ref, use_effect
 from ..widgets.layout import Column
 from ._interactive_common import (
     _call,
@@ -51,8 +51,15 @@ def MultiSelect(props: dict) -> Element:
             「自定义输入」伪选项行（不是可提交的勾选项）。
         focus: 是否参与输入路由（默认 True）。
         initialIndex: 初始光标下标（默认 0）。
+        index: 受控光标下标（默认 None 非受控）——外部权威源（如数字键
+            快选切换勾选后写入的 us.selected）变化时渲染期同步光标。
         initialValues: 初始选中的 value 列表（默认 []）。
+        values: 受控勾选集合（value 列表，默认 None 非受控）——外部权威源
+            变化时渲染期同步内部勾选状态（数字键快选切换勾选后即时回显）。
         limit: 可见 item 数（超出滚动窗口；默认 None 全部显示）。
+        onWindowChange: ``(offset, count, total) -> None``——可见窗口
+            变化回调（渲染提交期触发；用于弹窗显示「上方/下方还有 N 项」）。
+            默认 None 不回调（零回归）。
         highlightStyle: 光标行样式（默认 ``Style(fg=6)`` cyan）。
         checkedPrefix/uncheckedPrefix: 选中/未选中指示符
             （默认 ``"● "`` / ``"○ "``）。
@@ -67,7 +74,9 @@ def MultiSelect(props: dict) -> Element:
 
     行为：
       - up/down（及 vim j/k）移动光标；space（或空格 char）切换当前项选中；
-      - g/G 跳首/末项；enter 触发 ``onSelect(item)``（提供时）或
+      - g/G 跳首/末项；consumeAll（模态弹窗）下 Home/End 首末、
+        PgUp/PgDn 翻页；
+      - enter 触发 ``onSelect(item)``（提供时）或
         ``onSubmit(selected_values)`` 并消费事件；
       - escape 触发 ``onCancel(selected_values)``（onCancel 提供时）。
 
@@ -86,6 +95,7 @@ def MultiSelect(props: dict) -> Element:
     render_item = props.get("renderItem")
     focus = bool(props.get("focus", True))
     consume_all = bool(props.get("consumeAll", False))
+    on_window_change = props.get("onWindowChange")
     limit = props.get("limit")
     if limit is not None:
         try:
@@ -128,6 +138,22 @@ def MultiSelect(props: dict) -> Element:
     selected_ref = use_ref(selected)
     cursor_ref.current = cursor_idx
     selected_ref.current = selected
+    # ★ 2026-10-21（user_select 操作体验优化）：受控勾选集合 ``values``——
+    #   外部权威源（如数字键快选切换勾选后写入 us.checked）变化时渲染期
+    #   同步（ref 即时生效 + set_selected 排队收敛），控件勾选态即时回显。
+    #   None（缺省）保持纯非受控模式（既有调用零回归）。
+    controlled_values = props.get("values")
+    controlled_set = None
+    if controlled_values is not None:
+        if (
+            not hasattr(controlled_values, "__iter__")
+            or isinstance(controlled_values, (str, bytes))
+        ):
+            controlled_values = []
+        controlled_set = {_hashable(v) for v in controlled_values}
+        if controlled_set != selected_ref.current:
+            selected_ref.current = controlled_set
+            set_selected(controlled_set)
     # ★ 滚动窗口 offset（2026-08-19，跟随光标滚动——与 SelectInput 同语义）：
     #   选项多于可见行数时 ↑/↓ 光标在窗口内逐行移动、越过窗口边界后窗口
     #   才滚动（能移动到未显示的行）。
@@ -141,6 +167,23 @@ def MultiSelect(props: dict) -> Element:
         if new_off != offset_ref.current:
             offset_ref.current = new_off
             set_win_offset(new_off)
+
+    # ★ 2026-10-21（user_select 操作体验优化）：受控光标 ``index``——外部
+    #   权威源（数字键快选切换勾选后写入 us.selected）变化时渲染期同步
+    #   （ref 即时生效 + set_cursor_idx 排队收敛），光标高亮不再停在旧行。
+    #   None（缺省）保持纯非受控模式（既有调用零回归）。
+    controlled_index = props.get("index")
+    ci = 0
+    if controlled_index is not None:
+        try:
+            ci = int(controlled_index)
+        except (TypeError, ValueError, OverflowError):
+            ci = 0
+        ci = _clamp_index(ci, len(items))
+        if ci != cursor_ref.current:
+            cursor_ref.current = ci
+            set_cursor_idx(ci)
+        _scroll_follow(ci)
 
     def _handle(event) -> bool:
         if not focus or not items:
@@ -165,6 +208,27 @@ def MultiSelect(props: dict) -> Element:
                 if _hashable(item["value"]) in cur_selected
             ]
             _call(on_cancel, ordered)
+            return True
+        # ★ 2026-10-21（user_select 操作体验优化）：Home/End/PgUp/PgDn 导航
+        #   ——仅 consumeAll（模态弹窗独占模式）启用，其他调用方（补全弹窗
+        #   consumeAll=False）行为零变化。
+        if consume_all and event.kind in ("home", "end", "page_up", "page_down"):
+            if event.kind == "home":
+                target = 0
+            elif event.kind == "end":
+                target = len(items) - 1
+            else:
+                step = limit if isinstance(limit, int) and limit > 0 else 5
+                target = cur_cursor + (
+                    -step if event.kind == "page_up" else step
+                )
+            target = _clamp_index(target, len(items))
+            if target != cur_cursor:
+                cursor_ref.current = target
+                set_cursor_idx(target)
+                if on_highlight is not None:
+                    _call(on_highlight, target)
+                _scroll_follow(target)
             return True
         navs: list = []
         if event.kind == "arrow_up":
@@ -275,16 +339,30 @@ def MultiSelect(props: dict) -> Element:
     # ★ P2（review）：渲染期钳制光标索引——items 收缩后到下一次按键前的帧内
     #   cursor_idx state 仍越界，钳制后光标行高亮不消失（与 SelectInput
     #   渲染期钳制一致；不改 state，事件期钳制会同步）。
-    cursor_shown = _clamp_index(cursor_idx, len(items))
+    # ★ 受控光标（2026-10-21）：本帧以外部权威下标为准（set_cursor_idx 收敛
+    #   有一帧延迟）；非受控时沿用内部 state。
+    cursor_shown = _clamp_index(
+        ci if controlled_index is not None else cursor_idx, len(items)
+    )
     # ★ 跟随光标滚动窗口（2026-08-19）：传当前 offset_ref（事件期推进后的
     #   即时值）——光标在窗口内窗口不动，越过边界才滚动。
     offset, count = _visible_window(cursor_shown, len(items), limit, offset_ref.current)
+    # ★ 2026-10-21（user_select 滚动指示）：可见窗口变化回调（渲染提交期）。
+    def _report_window() -> None:
+        if on_window_change is not None:
+            _call(on_window_change, offset, count, len(items))
+
+    use_effect(_report_window, (offset, count, len(items)))
     rows = []
     for i in range(count):
         idx = offset + i
         item = items[idx]
         is_cursor = idx == cursor_shown
-        is_checked = _hashable(item["value"]) in selected
+        # ★ 受控 values（2026-10-21）：本帧以外部权威集合为准（set_selected
+        #   排队收敛有一帧延迟）；非受控时沿用内部 state。
+        is_checked = _hashable(item["value"]) in (
+            controlled_set if controlled_set is not None else selected
+        )
         if render_item is not None:
             # ★ 自定义行渲染（方案B）：弹窗界面（UserSelectPopup 多选）经
             #   renderItem 完全自定义行元素（勾选/高亮由调用方表达）。异常

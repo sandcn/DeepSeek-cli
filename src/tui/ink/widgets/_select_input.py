@@ -17,7 +17,7 @@ import logging
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from ..element import TEXT, Element, h
-from ..hooks import use_state, use_input, use_ref
+from ..hooks import use_state, use_input, use_ref, use_effect
 from ..widgets.layout import Column
 from ._interactive_common import (
     _call,
@@ -103,7 +103,12 @@ def SelectInput(props: dict) -> Element:
             （返回元素直接作为列表行；None 时用默认 prefix+label）。
         consumeAll: True（弹窗模式）——非导航/Enter/Esc 的按键也消费
             （返回 True 不放行），防止字符落入输入框；Ctrl+C（``\\x03``）
-            仍放行（可中断工具执行）。
+            仍放行（可中断工具执行）。★ 该模式同时启用 Home/End 首末、
+            PgUp/PgDn 翻页（每页 ``limit`` 项，缺省 5）；非弹窗调用方
+            行为不变。
+        onWindowChange: ``(offset, count, total) -> None``——可见窗口
+            变化回调（渲染提交期触发；用于弹窗显示「上方/下方还有 N 项」）。
+            默认 None 不回调（零回归）。
 
     Returns:
         BOX 元素（纵向堆叠的 item 行）。
@@ -115,6 +120,7 @@ def SelectInput(props: dict) -> Element:
     render_item = props.get("renderItem")
     focus = bool(props.get("focus", True))
     consume_all = bool(props.get("consumeAll", False))
+    on_window_change = props.get("onWindowChange")
     limit = props.get("limit")
     if limit is not None:
         try:
@@ -194,6 +200,25 @@ def SelectInput(props: dict) -> Element:
             # ★ 弹窗取消协议（方案B）：Esc 时调用 onCancel 并消费事件（返回
             #   True 阻断旧路径 Esc 中断语义——弹窗激活期间由协议接管取消）。
             _call(on_cancel, items[cur])
+            return True
+        # ★ 2026-10-21（user_select 操作体验优化）：Home/End/PgUp/PgDn 导航
+        #   ——仅 consumeAll（模态弹窗独占模式）启用，命令补全弹窗
+        #   （consumeAll=False）的 Home/End 仍交给输入区移动光标（零回归）。
+        if consume_all and event.kind in ("home", "end", "page_up", "page_down"):
+            if event.kind == "home":
+                target = 0
+            elif event.kind == "end":
+                target = len(items) - 1
+            else:
+                step = limit if isinstance(limit, int) and limit > 0 else 5
+                target = cur + (-step if event.kind == "page_up" else step)
+            target = _clamp_index(target, len(items))
+            if target != cur:
+                selected_ref.current = target
+                set_selected(target)
+                if on_highlight is not None:
+                    _call(on_highlight, target)
+                _scroll_follow(target)
             return True
         navs: list = []
         if event.kind == "arrow_up":
@@ -300,6 +325,14 @@ def SelectInput(props: dict) -> Element:
     # ★ 跟随光标滚动窗口（2026-08-19）：传当前 offset_ref（事件期/受控同步
     #   推进后的即时值）——光标在窗口内窗口不动，越过边界才滚动。
     offset, count = _visible_window(selected_shown, len(items), limit, offset_ref.current)
+    # ★ 2026-10-21（user_select 滚动指示）：可见窗口变化回调——渲染提交期
+    #   触发（parent 据此显示「上方/下方还有 N 项」）。deps 用窗口值而非
+    #   回调身份，parent setState 后窗口不变则不重复触发（无循环）。
+    def _report_window() -> None:
+        if on_window_change is not None:
+            _call(on_window_change, offset, count, len(items))
+
+    use_effect(_report_window, (offset, count, len(items)))
     rows = []
     # ★ P3（review）：pad 恒按 prefix 显示宽度——修复前 ``if prefix else 2``
     #   在 prefix=""（空串）时仍 pad 2 空格（未选中行比选中行宽 2 错位）。
