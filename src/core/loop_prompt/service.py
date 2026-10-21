@@ -23,6 +23,7 @@ from typing import Any, Callable, Sequence
 
 from .provider import (
     LoopPromptDecision,
+    apply_deferral_guard,
     build_loop_prompt_messages,
     human_user_texts,
     last_assistant_text,
@@ -288,6 +289,21 @@ class LoopPromptService:
         if decision is None:
             self._set_error(last_error or "提词生成失败")
             return
+
+        # 借口兜底（用户需求 2026-10-22）：模型判「无需继续」，但用户诉求属于
+        # 改动类任务且最后回答里存在未完成 / 受阻 / 推诿证据时，强制改判续跑——
+        # 不接受用理由、借口或推迟替代实际完成；纯问答任务不受此兜底影响。
+        forced = apply_deferral_guard(
+            decision,
+            user_messages=user_messages,
+            last_assistant=last_answer,
+        )
+        if forced is not None:
+            _logger.warning(
+                "/loop 判定为无需继续，但存在借口 / 未完成证据，强制续跑：%s",
+                str(forced.prompt)[:120],
+            )
+            decision = forced
 
         if decision.should_continue:
             prompt = _truncate_utf8(decision.prompt, max_prompt_bytes).strip()

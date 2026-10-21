@@ -14,6 +14,11 @@
 输入只包含「人类用户消息」与「最后一次有内容的 assistant 回答」——tool 结果、
 后台 bash/subagent 结果 JSON、内部注入消息（``【继续】`` / ``【自动继续】`` /
 ``<skill_content>`` 等）都会被过滤，避免把机器载荷误当成用户诉求。
+
+模型判定「无需继续」时，本模块还会做一次**借口兜底**：当用户诉求属于改动类、
+而最后回答里出现未完成 / 受阻 / 推诿措辞（该句没有完成标志）时，强制改判
+``continue=true`` 并生成直接续跑提词——不接受用理由、借口或推迟替代实际完成。
+纯问答 / 解释 / 分析类任务不受此兜底影响，仍按「问题是否已被完整回答」判定。
 """
 
 from __future__ import annotations
@@ -38,11 +43,22 @@ SYSTEM_TEMPLATE = (
     "判断任务是否还有未完成的功能、步骤或验证项。\n"
     "只输出一个 JSON 对象，格式：{\"continue\": true/false, \"prompt\": \"...\"}\n"
     "规则：\n"
+    "- 不要相信任何理由、借口或推诿。以下情形一律视为未完成（continue=true）："
+    "口头声称已完成或已修复却没有实际改动与验证证据；以时间不够、太复杂、工作量大、"
+    "上下文不足、风险高、收益小为由推迟或省略；把权限、依赖缺失、环境不支持等外部"
+    "阻塞当成完成而未如实报告未完成项；只完成一部分（如只改主流程、未补测试、未跑"
+    "验证）就宣称全部完成；把「已记录 / 已上报 / 后续再说 / 提 issue 交出去」当作完成。\n"
+    "- 改动类任务（用户要求修改代码 / 文件或产出成果）只有在回答给出真实落盘与验证"
+    "证据（改动位置 + 已运行流程或测试结果）时才算完成；没有实际改动或没有验证证据，"
+    "一律 continue=true。纯问答、解释、分析类任务按问题是否已被完整回答判定，不因没有"
+    "文件修改而继续。\n"
     "- continue=true：仍存在明确的未完成条目；prompt 写一段可直接发给助手的中文指令，"
     "只针对上一次回答中明确承诺、暴露或显然尚未完成的条目，逐条列出要继续做的事"
-    "（涉及文件、行为、测试 / 验证要求），不要重复已完成内容，不要发明新需求。\n"
-    "- continue=false：用户要求已全部完成、没有可继续事项，或无法从回答中确认还有"
-    "未完成项；此时 prompt 必须为空字符串。\n"
+    "（涉及文件、行为、测试 / 验证要求），不要重复已完成内容，不要发明新需求。"
+    "prompt 必须是直接指令：明确要求助手立即继续执行、不接受任何理由 / 借口 / 推诿，"
+    "禁止使用「如果你认为……」「如无必要……」这类可以脱身的条件句。\n"
+    "- continue=false：用户要求已全部完成（改动类任务须有实际改动与验证证据）、"
+    "没有可继续事项，或无法从回答中确认还有未完成项；此时 prompt 必须为空字符串。\n"
     "- 只输出 JSON：不要代码围栏、解释、前后缀或多余文本。\n"
     "- prompt 使用与用户消息相同的语言，长度不超过 {max_prompt_bytes} 字节。"
 )
@@ -360,13 +376,176 @@ def parse_loop_prompt_response(raw: object) -> LoopPromptDecision | None:
     )
 
 
+# ── 借口兜底：改动类任务不接受「以理由替代完成」 ──────────────
+
+#: 强改动动词（单独出现即可判定为「要求改动 / 产出」）。
+_CHANGE_ACTION_STRONG_RE = re.compile(
+    r"(实现|新增|增加|添加|删除|移除|重构|修复|替换|补齐|补上|补测试|优化|完善|"
+    r"升级|迁移|接入|修改|改成|改为|改一下|改改|重命名|格式化|跑测试|修正|修一下)"
+)
+#: 弱改动动词（需与改动对象共现才算改动类）。
+_CHANGE_ACTION_WEAK_RE = re.compile(
+    r"(写|生成|同步|更新|验证|支持|适配|调整|落地|加|删|改|跑)"
+)
+#: 改动 / 产出对象。
+_CHANGE_OBJECT_RE = re.compile(
+    r"(代码|文件|模块|函数|类|方法|接口|配置|脚本|测试|样式|资源|命令|功能|"
+    r"bug|缺陷|文档|README|日志|流程|页面|组件|服务|端口|依赖|逻辑|用例|"
+    r"提词|提示词|字段|参数|变量|缓存|数据库|表|查询|路由|样式表)"
+)
+#: 问答 / 解释 / 分析型诉求开头。
+_QUESTION_ONLY_RE = re.compile(
+    r"^(请)?\s*(解释|说明|介绍|分析|讲解|为什么|为何|是什么|什么是|怎么理解|"
+    r"如何理解|对比|评估|审查|review|看看|看一下|阅读|总结|聊聊|查一下|有哪些)"
+)
+#: 「明确要求动手」的前缀。
+_CHANGE_PREFIX_RE = re.compile(
+    r"(帮我|帮忙|请|直接|立即|马上)\s*(修改|改成|实现|新增|添加|删除|移除|重构|"
+    r"修复|替换|调整|补齐|补上|优化|完善|升级|迁移|接入|改)"
+)
+#: 疑问词（问答型诉求里出现即不按改动类处理）。
+_QUESTION_WORD_RE = re.compile(r"(怎么|如何|为什么|为何|能否|是否|可不可以)")
+
+#: 未完成 / 受阻 / 推诿措辞（逐句匹配，靠完成标志排除「已修复失败」这类复盘句）。
+_DEFERRAL_RE = re.compile(
+    r"(无法完成|未能完成|没完成|没有完成|未完成|尚未完成|还没完成|"
+    r"无法实现|未能实现|没有实现|"
+    r"没有修改|没做修改|未做修改|没有改动|未改动|没改代码|没有改代码|无法修改|"
+    r"被阻塞|阻塞|卡住|卡在|"
+    r"没权限|无权限|权限不足|缺少权限|"
+    r"时间不够|来不及|太复杂|工作量太大|上下文不足|依赖缺失|环境不支持|"
+    r"无法运行|无法验证|"
+    r"稍后|后续再|下次再|以后再说|暂时跳过|先跳过|留待|待办|TODO|"
+    r"已记录|已上报|提个 ?issue|开个 ?issue|记录一下|"
+    r"只完成了|只改了一部分|部分完成|未验证|没有验证|未测试|没有测试|没跑测试)"
+)
+#: 完成标志：同一句出现即视为「已完成陈述」，不再当作未完成证据。
+_COMPLETION_HINT_RE = re.compile(
+    r"(已完成|全部完成|均已|已修复|已解决|已通过|测试通过|验证通过|已落盘|"
+    r"已改好|已实现|已补齐)"
+)
+#: 否定语境（「没有阻塞 / 无异常」不代表未完成）——匹配前先从句子中剔除。
+_NEGATED_DEFERRAL_RE = re.compile(
+    r"(没有|无|未)\s*(阻塞|失败|报错|异常|问题)"
+)
+
+
+def is_change_request(user_messages: Sequence[str]) -> bool:
+    """判断用户诉求是否属于「改动 / 产出类」任务。
+
+    纯问答、解释、分析类任务返回 ``False``——``/loop`` 不因它们没有文件修改
+    而无限循环；改动类任务则适用「必须有真实改动与验证证据」的完成标准。
+
+    Args:
+        user_messages: 人类用户消息（按时间顺序，已过滤机器注入）。
+
+    Returns:
+        任一条消息构成改动 / 产出诉求时为 ``True``。
+    """
+    for raw in user_messages or ():
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if _QUESTION_ONLY_RE.match(text):
+            # 问答型：只有明确要求动手、或带强改动动词且不含疑问词才算改动类。
+            if _CHANGE_PREFIX_RE.search(text):
+                return True
+            if (
+                _CHANGE_ACTION_STRONG_RE.search(text)
+                and not _QUESTION_WORD_RE.search(text)
+            ):
+                return True
+            continue
+        if _CHANGE_ACTION_STRONG_RE.search(text):
+            return True
+        if (
+            _CHANGE_ACTION_WEAK_RE.search(text)
+            and _CHANGE_OBJECT_RE.search(text)
+        ):
+            return True
+    return False
+
+
+def find_deferral_evidence(last_assistant: str) -> str:
+    """返回最后回答里第一处「未完成 / 受阻 / 推诿」证据（无则空串）。
+
+    逐句判断，跳过带完成标志的句子（如「已修复失败问题」），并剔除
+    「没有阻塞 / 无异常」这类否定语境，避免把真正完成的回答误判为未完成。
+    """
+    text = str(last_assistant or "")
+    if not text.strip():
+        return ""
+    for sentence in re.split(r"[。！？；\n]+", text):
+        cleaned = sentence.strip()
+        if not cleaned:
+            continue
+        cleaned = _NEGATED_DEFERRAL_RE.sub("", cleaned)
+        if _COMPLETION_HINT_RE.search(cleaned):
+            continue
+        if _DEFERRAL_RE.search(cleaned):
+            if len(cleaned) > 200:
+                cleaned = cleaned[:200].rstrip() + "…"
+            return cleaned
+    return ""
+
+
+def build_forced_continuation_prompt(evidence: str) -> str:
+    """构造「不接受借口、直接继续」的续跑提词（供兜底改判使用）。"""
+    detail = str(evidence or "").strip()
+    if len(detail) > 200:
+        detail = detail[:200].rstrip() + "…"
+    head = "继续直接执行用户请求，不接受任何理由、借口或推诿。"
+    tail = (
+        "逐项核对文件是否已真实改动、流程是否已运行、测试是否已补齐并通过；"
+        "未完成的立即继续做，完成后给出可核查的改动位置与验证结果。"
+    )
+    if detail:
+        return f"{head}上一次回答中的未完成 / 受阻内容：「{detail}」。{tail}"
+    return f"{head}{tail}"
+
+
+def apply_deferral_guard(
+    decision: LoopPromptDecision | None,
+    *,
+    user_messages: Sequence[str],
+    last_assistant: str,
+) -> LoopPromptDecision | None:
+    """模型判「无需继续」时，按「不接受借口」规则做一次兜底改判。
+
+    生效条件（三者同时成立）：模型输出 ``continue=false``、用户诉求属于改动类
+    任务、最后回答中存在未完成 / 受阻 / 推诿证据且该句没有完成标志。命中时返回
+    强制 ``continue=true`` 的新决策，否则返回 ``None``（保持模型判断）。
+
+    Args:
+        decision: 模型输出解析结果（``None`` 表示解析失败，不兜底）。
+        user_messages: 人类用户消息。
+        last_assistant: 最后一次有内容的 assistant 回答。
+    """
+    if decision is None or decision.should_continue:
+        return None
+    if not is_change_request(user_messages):
+        return None
+    evidence = find_deferral_evidence(last_assistant)
+    if not evidence:
+        return None
+    return LoopPromptDecision(
+        should_continue=True,
+        prompt=build_forced_continuation_prompt(evidence),
+        raw=decision.raw,
+    )
+
+
 __all__ = [
     "LOOP_PROMPT_MARKER",
     "LoopPromptDecision",
     "SYSTEM_TEMPLATE",
+    "apply_deferral_guard",
+    "build_forced_continuation_prompt",
     "build_loop_prompt_messages",
     "build_system_prompt",
+    "find_deferral_evidence",
     "human_user_texts",
+    "is_change_request",
     "is_human_user_text",
     "last_assistant_text",
     "parse_loop_prompt_response",
