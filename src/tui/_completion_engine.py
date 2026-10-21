@@ -798,7 +798,7 @@ class CompletionEngine:
         ("1m", "1M 上下文窗口"),
     )
 
-    #: /loop 常用循环次数（``/loop <次数> <提词>``）
+    #: /loop 常用循环次数（``/loop [次数] <提词>``）
     _LOOP_COUNTS: tuple = (
         ("1", "循环 1 次"),
         ("2", "循环 2 次"),

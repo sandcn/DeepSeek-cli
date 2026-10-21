@@ -188,6 +188,12 @@ _COMPACTION_TOKEN_GRACE_SEC = 5.0
 #: 活跃期门控——生成期间 + 结束后宽限期内展示，之后自动收起。
 _TITLE_TOKEN_GRACE_SEC = 8.0
 
+#: ``/loop`` 续跑提词生成结束后「总tok / tok/s」的宽限期（秒）。
+#:
+#: 与标题生成同理：续跑提词是 silent 辅助流式调用，生成期间 + 结束后宽限期
+#: 内让这次请求的 token 消耗可见。
+_LOOP_PROMPT_TOKEN_GRACE_SEC = 8.0
+
 
 def _tokens_visible(status_active: bool, status, now: float) -> bool:
     """「总tok / tok/s」段是否可见。
@@ -221,7 +227,16 @@ def _tokens_visible(status_active: bool, status, now: float) -> bool:
     if bool(getattr(status, "title_generating", False)):
         return True
     title_end_ts = float(getattr(status, "title_last_end_ts", 0.0) or 0.0)
-    return title_end_ts > 0 and (now - title_end_ts) < _TITLE_TOKEN_GRACE_SEC
+    if title_end_ts > 0 and (now - title_end_ts) < _TITLE_TOKEN_GRACE_SEC:
+        return True
+    # /loop 续跑提词：生成中 / 结束后宽限期内同样展示 token 与 tok/s。
+    if bool(getattr(status, "loop_prompt_generating", False)):
+        return True
+    loop_end_ts = float(getattr(status, "loop_prompt_last_end_ts", 0.0) or 0.0)
+    return (
+        loop_end_ts > 0
+        and (now - loop_end_ts) < _LOOP_PROMPT_TOKEN_GRACE_SEC
+    )
 
 
 def _snapshot(model, ttl: float = _SNAPSHOT_TTL) -> dict:
@@ -821,6 +836,10 @@ def StatusBar(props) -> object:
             #   deps（否则 memo 命中旧结果，段的出现与收起都不会刷新）。
             getattr(st, "title_generating", False),
             getattr(st, "title_last_end_ts", 0.0),
+            # ★ 2026-10-21（/loop 续跑提词）：生成中 / 结束后宽限期内
+            #   tokens+speed 段可见——同样进 deps 以保证即时出现/收起。
+            getattr(st, "loop_prompt_generating", False),
+            getattr(st, "loop_prompt_last_end_ts", 0.0),
         ),
     )
     # 分割线（上面）

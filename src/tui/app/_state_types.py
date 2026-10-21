@@ -656,39 +656,47 @@ class StatusState:
     #: 标题是**静默后台流式调用**（不进入活跃期门控），空闲期生成结束后状态栏
     #: 在宽限期内继续展示「总tok / tok/s」，让这次标题请求的消耗可见。
     title_last_end_ts: float = 0.0
+    #: ``/loop`` 续跑提词生成中（辅助任务；模式行「✎ 提词」段的门控）。
+    #: 由 ``loop_prompt_generating`` 事件驱动，生成结束 / 失败 / 取消后复位。
+    loop_prompt_generating: bool = False
+    #: 最近一次续跑提词生成结束的单调时钟时间戳（0 = 尚未生成过）——
+    #: 与标题生成同理，生成是静默辅助调用，结束后宽限期内继续展示 token 段。
+    loop_prompt_last_end_ts: float = 0.0
 
 
 @dataclass
 class LoopStatusState:
     """``/loop`` 循环运行状态（浮窗展示的数据源，2026-10-21 用户需求）。
 
-    ``/loop`` 在每轮 / 每次运行前经 InkBridge 更新本状态，循环浮窗
+    ``/loop`` 在每次运行前经 InkBridge 更新本状态，循环浮窗
     （``app/floating.py`` 的 ``LoopFloatingWindow``）读取并在输入区上方的
-    浮动窗口中显示：总次数、提词、当前运行次数（每轮第 1 或 2 次），以及
-    **本轮已运行时间**（2026-10-21 用户需求：浮窗内动态刷新）。
+    浮动窗口中显示：运行次数、提词、下一轮生成提词 / 生成状态，以及
+    **本次已运行时间**（浮窗内动态刷新）。
 
     Attributes:
         active: 循环是否进行中（False 时浮窗内容为空/浮窗已关闭）。
-        total: 总轮数（``/loop <次数>`` 的次数）。
-        round: 当前轮（1-based；0 = 尚未开始）。
-        run: 当前轮内第几次运行（1-based，1 或 2）。
-        runs_per_round: 每轮运行次数（``/loop`` 固定为 2：用户提词 +
-            「继续完成所有」）。
-        prompt: 用户提词（浮窗中截断显示）。
-        round_started_at: 本轮开始的单调时钟时间戳（``time.monotonic()``；
-            0 = 尚未开始）。浮窗每帧用 ``now - round_started_at`` 计算「本轮
-            已运行时间」——浮窗内容每帧重建，因此计时**动态刷新**。
+        total: 总运行次数（``/loop [次数]`` 的次数；``0`` = 无限）。
+        round: 当前运行序号（1-based；0 = 尚未开始）。字段名为兼容旧实现保留，
+            新语义下即「第 R 次运行」。
+        run: 保留字段（旧语义：轮内第几次运行）；新语义恒为 0。
+        runs_per_round: 保留字段（旧语义每轮运行次数）；新语义恒为 1。
+        prompt: 当前运行的提词（浮窗中截断显示）。
+        next_prompt: 已生成的下一轮提词（等待使用时展示；空 = 尚未生成）。
+        generating: 是否正在生成下一轮提词（浮窗显示「✎ 生成提词中…」）。
+        round_started_at: 本次运行开始的单调时钟时间戳（``time.monotonic()``；
+            0 = 尚未开始）。浮窗每帧用 ``now - round_started_at`` 计算本次
+            已运行时间——浮窗内容每帧重建，因此计时**动态刷新**。
         run_started_at: 当前这一次运行开始的单调时钟时间戳（0 = 尚未开始）。
-            保留给「本次运行时间」展示/调试；不能拿它算本轮耗时（第 2 次
-            运行开始时本轮已过去一段时间）。
     """
 
     active: bool = False
     total: int = 0
     round: int = 0
     run: int = 0
-    runs_per_round: int = 2
+    runs_per_round: int = 1
     prompt: str = ""
+    next_prompt: str = ""
+    generating: bool = False
     round_started_at: float = 0.0
     run_started_at: float = 0.0
 

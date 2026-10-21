@@ -143,6 +143,11 @@ class BaseAgent:
         # （_process_background_tasks / _process_subagent_tasks 据此跳过超时
         #  降级分支，不把未完成任务误标记为 managed_by_tool）。
         self._background_wait_preempted: bool = False
+        # ── /loop 续跑提词钩子（仅主 Agent 的 run() 末尾调用） ──
+        # 由 ChatSession 注入（LoopPromptService.on_agent_round_end）：在
+        # pipeline 一轮完成之后、等待后台 bash/subagent **之前**同步生成
+        # 下一轮提词。未处于 /loop 模式时服务未 arm，钩子内部直接返回。
+        self._loop_prompt_hook: Callable[[], Any] | None = None
         # ★ 注册到全局活跃 Agent 注册表（ESC 中断时统一杀掉所有后台任务）
         with _active_agents_lock:
             _active_agents.add(self)
@@ -159,6 +164,34 @@ class BaseAgent:
             probe: 无参可调用对象；None 表示清除探测（恢复默认等待语义）。
         """
         self._pending_input_probe = probe
+
+    def set_loop_prompt_hook(self, hook: Callable[[], Any] | None) -> None:
+        """注入/清除 ``/loop`` 续跑提词钩子（由 ChatSession 接线）。
+
+        钩子在主 Agent 的 ``run()`` 中、pipeline 一轮完成之后、等待后台
+        bash/subagent **之前**被 ``await``；未处于 ``/loop`` 模式时钩子内部
+        直接返回（服务未 arm），普通对话不产生额外模型请求。
+
+        Args:
+            hook: 无参可等待对象（返回 None 亦可）；None 表示清除。
+        """
+        self._loop_prompt_hook = hook
+
+    async def _maybe_generate_loop_prompt(self) -> None:
+        """在后台任务等待前调用 ``/loop`` 续跑提词钩子（异常不阻断主链路）。"""
+        hook = getattr(self, "_loop_prompt_hook", None)
+        if hook is None:
+            return
+        try:
+            result = hook()
+            if hasattr(result, "__await__"):
+                await result
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _logger.warning(
+                "/loop 续跑提词钩子异常（不阻断主对话）", exc_info=True,
+            )
 
     def _has_pending_user_input(self) -> bool:
         """返回消息队列中是否有待处理的用户消息（探测失败视为无）。"""

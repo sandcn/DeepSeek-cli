@@ -52,8 +52,8 @@ _logger = logging.getLogger(__name__)
 #: 默认浮窗宽度（列，含边框）。内容自适应（spec.width=None）时不设置。
 DEFAULT_FLOAT_WIDTH = 30
 
-#: 循环浮窗固定宽度（列）——容纳「⟳ /loop … 第 N/M 轮」标题行、
-#: 进度条、「⏱ 本轮 mm:ss … 第 A/B 次」计时行与用户提词。
+#: 循环浮窗固定宽度（列）——容纳「⟳ /loop … 第 R/N 次」标题行、
+#: 进度条、「⏱ 本次 mm:ss … 生成状态」计时行与当前 / 下一轮提词。
 LOOP_FLOAT_WIDTH = 34
 
 #: 浮窗默认背景色（不透明覆盖；None = 透明，底层内容会从空格处透出）。
@@ -453,7 +453,7 @@ def _right_aligned(left_runs: list, right_runs: list, width: int) -> list:
 
 
 def _loop_elapsed_text(started_at, now: float) -> str:
-    """本轮已运行时长文本（``--`` = 尚未开始）。"""
+    """本次已运行时长文本（``--`` = 尚未开始）。"""
     started = _safe_float(started_at, 0.0)
     if started <= 0.0:
         return "--"
@@ -461,20 +461,20 @@ def _loop_elapsed_text(started_at, now: float) -> str:
 
 
 def LoopFloatingWindow(props: dict) -> object:
-    """``/loop`` 循环浮窗内容（美化版：标题 + 进度条 + 动态计时 + 提词）。
+    """``/loop`` 循环浮窗内容（标题 + 进度条 + 动态计时 + 提词 + 生成提词）。
 
-    数据源：``model.loop_status``（``LoopStatusState``，由 /loop 每轮/每次
-    运行前经 InkBridge 更新）。四行内容：
+    数据源：``model.loop_status``（``LoopStatusState``，由 /loop 每次运行前经
+    InkBridge 更新）。五行内容：
 
-      1. ``⟳ /loop … 第 R/N 轮``（两端对齐标题行）
-      2. ``████████░░░░░░░  40%``（轮次进度：当前轮计入进行中）
-      3. ``⏱ 本轮 1:23 … 第 1/2 次``（本轮已运行时间**每帧动态刷新**）
-      4. ``❯ 用户提词``（超宽省略号截断，暗色斜体）
+      1. ``⟳ /loop … 第 R/N 次``（无限时 ``第 R 次``；两端对齐）
+      2. ``████████░░░░░░░  40%``（有限次数显示进度；无限次显示流动条 + ``∞``）
+      3. ``⏱ 本次 1:23 … ✎ 生成提词中…``（本次已运行时间**每帧动态刷新**）
+      4. ``❯ 当前提词``（超宽省略号截断，暗色斜体）
+      5. ``↳ 下一轮生成提词`` / ``✎ 生成提词中…`` / ``↳ 等待生成``
 
     动态刷新机制：本组件每帧从 ``model`` 重建（``loop_window_spec`` 不声明
-    ``idle_static`` → 空闲帧复用被关闭），第 3 行用
-    ``time.monotonic() - round_started_at`` 实时计算，因此浮窗打开期间计时
-    持续走秒（与状态栏 elapsed 同一渲染期读时钟的模式）。
+    ``idle_static`` → 空闲帧复用被关闭），第 2/3 行使用 ``time.monotonic()``
+    实时计算，因此浮窗打开期间计时与无限进度条持续变化。
 
     ``active`` 为 False 时返回空 TEXT（窗口无内容，正常情况下窗口已关闭）。
     """
@@ -487,16 +487,15 @@ def LoopFloatingWindow(props: dict) -> object:
         return h(TEXT, {"key": "loop-empty", "children": ""})
     total = max(0, _safe_int(getattr(st, "total", 0), 0))
     round_no = max(0, _safe_int(getattr(st, "round", 0), 0))
-    run_no = max(0, _safe_int(getattr(st, "run", 0), 0))
-    per_round = max(1, _safe_int(getattr(st, "runs_per_round", 2), 2))
+    generating = bool(getattr(st, "generating", False))
     now = time.monotonic()
 
-    # ── 1. 标题行：⟳ /loop（左）… 第 R/N 轮（右） ──
+    # ── 1. 标题行：⟳ /loop（左）… 第 R/N 次（右） ──
     if round_no and total:
         shown_round = min(round_no, total)
-        round_label = f"第 {shown_round}/{total} 轮"
+        round_label = f"第 {shown_round}/{total} 次"
     elif round_no:
-        round_label = f"第 {round_no} 轮"
+        round_label = f"第 {round_no} 次"
     else:
         round_label = "准备中"
     header_runs = _right_aligned(
@@ -505,36 +504,87 @@ def LoopFloatingWindow(props: dict) -> object:
         width,
     )
 
-    # ── 2. 进度条：轮次进度（当前轮计入进行中，最后一轮达到 100%） ──
-    percent = (min(round_no, total) / total) if total and round_no else 0.0
+    # ── 2. 进度条：有限次数显示比例；无限次数显示流动块 + ∞ ──
     # 进度条占满整行（右侧留 5 列给「 100%」）——窄终端下至少 4 格。
     bar_width = max(4, min(40, width - 5))
-    filled = max(0, min(int(round(percent * bar_width)), bar_width))
     bar_runs: list = []
-    if filled:
-        bar_runs.append(StyledRun("█" * filled, _S_LOOP_BAR_FILL))
-    if bar_width > filled:
-        bar_runs.append(StyledRun("░" * (bar_width - filled), _S_LOOP_BAR_EMPTY))
-    bar_runs.append(StyledRun(f" {int(round(percent * 100)):3d}%", _S_LOOP_ACCENT))
+    if total > 0:
+        percent = (min(round_no, total) / total) if round_no else 0.0
+        filled = max(0, min(int(round(percent * bar_width)), bar_width))
+        if filled:
+            bar_runs.append(StyledRun("█" * filled, _S_LOOP_BAR_FILL))
+        if bar_width > filled:
+            bar_runs.append(StyledRun("░" * (bar_width - filled), _S_LOOP_BAR_EMPTY))
+        bar_runs.append(
+            StyledRun(f" {int(round(percent * 100)):3d}%", _S_LOOP_ACCENT)
+        )
+    else:
+        # 无限：一个约 1/4 宽的高亮块每 0.25s 前进一格，循环流动。
+        block = max(2, bar_width // 4)
+        offset = int(now * 4) % bar_width
+        on_cells = {(offset + index) % bar_width for index in range(block)}
+        current_on: bool | None = None
+        buffer: list[str] = []
 
-    # ── 3. 计时行：⏱ 本轮 <已运行时长>（每帧刷新）… 第 A/B 次 ──
+        def _flush() -> None:
+            if not buffer:
+                return
+            bar_runs.append(StyledRun(
+                "".join(buffer),
+                _S_LOOP_BAR_FILL if current_on else _S_LOOP_BAR_EMPTY,
+            ))
+            buffer.clear()
+
+        for index in range(bar_width):
+            is_on = index in on_cells
+            if current_on is not None and is_on != current_on:
+                _flush()
+            current_on = is_on
+            buffer.append("█" if is_on else "░")
+        _flush()
+        bar_runs.append(StyledRun("  ∞", _S_LOOP_ACCENT))
+
+    # ── 3. 计时行：⏱ 本次 <已运行时长>（每帧刷新）… 生成状态 / 第 R 次 ──
     elapsed_text = _loop_elapsed_text(getattr(st, "round_started_at", 0.0), now)
-    run_label = f"第 {run_no}/{per_round} 次" if round_no else "等待开始"
+    if generating:
+        run_label = "✎ 生成提词中…"
+    elif round_no:
+        run_label = f"第 {round_no} 次"
+    else:
+        run_label = "等待开始"
     time_runs = _right_aligned(
         [
             StyledRun("⏱ ", _S_LOOP_ACCENT),
-            StyledRun("本轮 ", _S_LOOP_MUTED),
+            StyledRun("本次 ", _S_LOOP_MUTED),
             StyledRun(elapsed_text, _S_LOOP_TIME),
         ],
         [StyledRun(run_label, _S_LOOP_MUTED)],
         width,
     )
 
-    # ── 4. 用户提词（单行，超宽省略号） ──
+    # ── 4. 当前提词（单行，超宽省略号） ──
     prompt_runs = [
         StyledRun("❯ ", _S_LOOP_ACCENT),
         StyledRun(str(getattr(st, "prompt", "") or ""), _S_LOOP_PROMPT),
     ]
+
+    # ── 5. 下一轮提词 / 生成状态（单行，超宽省略号） ──
+    next_prompt = str(getattr(st, "next_prompt", "") or "").strip()
+    if generating:
+        next_runs = [
+            StyledRun("✎ ", _S_LOOP_ACCENT),
+            StyledRun("生成提词中…", _S_LOOP_MUTED),
+        ]
+    elif next_prompt:
+        next_runs = [
+            StyledRun("↳ ", _S_LOOP_ACCENT),
+            StyledRun(next_prompt, _S_LOOP_PROMPT),
+        ]
+    else:
+        next_runs = [
+            StyledRun("↳ ", _S_LOOP_MUTED),
+            StyledRun("等待生成", _S_LOOP_MUTED),
+        ]
 
     def _line(key: str, runs: list, *, ellipsis: bool = False):
         """单行 TEXT（显式截断到可用宽度，防换行破坏浮窗高度）。"""
@@ -549,6 +599,7 @@ def LoopFloatingWindow(props: dict) -> object:
         _line("loop-progress", bar_runs),
         _line("loop-time", time_runs),
         _line("loop-prompt", prompt_runs, ellipsis=True),
+        _line("loop-next", next_runs, ellipsis=True),
     ])
 
 

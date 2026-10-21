@@ -36,7 +36,7 @@ __all__: list[str] = [
     "PARSING_256", "BATCH_256", "DIMMER_256", "DIMMEST_256",
     "SUMMARY_DIM_256", "BRANCH_256", "SPINNER_COLOR_256",
     # ── 内部模型调用标签 ──
-    "STREAM_LABEL_SUMMARIZE", "STREAM_LABEL_TITLE",
+    "STREAM_LABEL_SUMMARIZE", "STREAM_LABEL_TITLE", "STREAM_LABEL_LOOP_PROMPT",
 ]
 
 # ── ANSI 终端颜色常量（纯色值，无依赖） ────────────────
@@ -141,6 +141,13 @@ STREAM_LABEL_SUMMARIZE = "summarize"
 #: ——core 侧据此把该调用排除出 ``main · N%`` 上下文使用率统计，TUI 也不渲染
 #: 其流式内容（调用方另传 ``silent=True``）。
 STREAM_LABEL_TITLE = "session-title"
+
+#: ``/loop`` 续跑提词生成调用的流式标签（单一真源，api 与 core 共同引用）。
+#:
+#: 与标题生成同为**辅助请求**：输出写回循环控制状态而非主消息列表，输入也不是
+#: 主对话——core 侧据此把该调用排除出 ``main · N%`` 上下文使用率统计，TUI 也不
+#: 渲染其流式内容（调用方另传 ``silent=True``）。
+STREAM_LABEL_LOOP_PROMPT = "loop-prompt"
 
 # ── Token 格式化常量 ──
 

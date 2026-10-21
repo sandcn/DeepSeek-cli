@@ -347,6 +347,10 @@ class Agent(BaseAgent):
                         "ESC 中断后杀后台任务异常", exc_info=True,
                     )
                 break
+            # ── /loop 续跑提词：pipeline 一轮完成之后、等待后台 bash/subagent
+            #    **之前**同步生成（不能异步——下一轮 run 处要取用结果）。
+            #    未处于 /loop 模式时服务未 arm，钩子内部直接返回。
+            await self._maybe_generate_loop_prompt()
             # ── 后台任务处理：一轮对话完成后检查后台任务结果 ──
             # bash 后台任务（_background_tasks）与 subagent 后台任务
             # （_subagent_tasks）分表独立，各自检查处理；任一表有结果插入

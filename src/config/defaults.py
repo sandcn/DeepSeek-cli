@@ -279,6 +279,23 @@ DEFAULTS = {
         # 标题被接受后是否写入终端窗口标题（OSC 序列）
         "sync_terminal_title": True,
     },
+    # ── /loop 续跑提词（用户需求 2026-10-21）──
+    # /loop 每轮 run 结束、等待后台 bash/subagent 之前同步调用一次辅助 LLM：
+    # 根据「人类用户消息 + 最后一次回答」判断是否仍有未完成功能，并生成下一轮
+    # 提词。生成结果暂存，供下一次 run 使用（生成与使用不同步）；模型判「否」
+    # 时结束循环。辅助请求 silent + 内部 label，不渲染、不污染主上下文占用。
+    "loop_prompt": {
+        # 总开关（关闭后 /loop 无法生成续跑提词，按失败策略结束循环）
+        "enabled": True,
+        # 单次生成超时（毫秒）；<=0 表示不设超时
+        "timeout_ms": 120000,
+        # 请求输入字节上限（超出时按「最新优先」裁剪用户消息）
+        "max_input_bytes": 32768,
+        # 生成提词的 UTF-8 字节上限（超出截断）
+        "max_prompt_bytes": 4096,
+        # 超时 / 网络错误 / JSON 非法时是否重试一次（仍失败由编排结束循环）
+        "retry_once": True,
+    },
 }
 
 # ============================================================
@@ -428,6 +445,13 @@ CONFIG_KEYS = {
         "rc_path": ("session_title",),
         "type": dict,
         "default": DEFAULTS["session_title"],
+        "cacheable": True,
+    },
+    # ---- /loop 续跑提词 ----
+    "LOOP_PROMPT": {
+        "rc_path": ("loop_prompt",),
+        "type": dict,
+        "default": DEFAULTS["loop_prompt"],
         "cacheable": True,
     },
     # ---- 布尔配置 ----

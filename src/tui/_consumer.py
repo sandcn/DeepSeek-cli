@@ -416,15 +416,15 @@ class ChatUIConsumer:
     # ── /loop 循环浮窗（/loop 命令使用） ─────────────
 
     def open_loop_floating_window(
-        self, total: int, prompt: str, runs_per_round: int = 2,
+        self, total: int, prompt: str, runs_per_round: int = 1,
     ) -> None:
         """打开 ``/loop`` 循环浮窗并重置循环进度。
 
         浮窗锚定输入区最上方的分隔线右端、向上展开（带边框），显示
-        总次数 / 提词 / 当前运行次数 / 本轮已运行时间（动态刷新）；
-        进度经 ``set_loop_status`` 更新，循环结束（含中断）经
-        ``close_loop_floating_window`` 关闭——关闭后原内容由下一帧整帧重建
-        自动还原。
+        总运行次数 / 当前提词 / 当前运行次数 / 本次已运行时间（动态刷新）/
+        下一轮生成提词与生成状态；进度经 ``set_loop_status`` 更新，循环结束
+        （含中断）经 ``close_loop_floating_window`` 关闭——关闭后原内容由
+        下一帧整帧重建自动还原。``total=0`` 表示无限次。
         """
         from src.tui.app.floating import loop_window_spec
 
@@ -435,26 +435,28 @@ class ChatUIConsumer:
         try:
             per_round = max(1, int(runs_per_round))
         except (TypeError, ValueError, OverflowError):
-            per_round = 2
+            per_round = 1
         setter = getattr(self._bb, "set_loop_status", None)
         if callable(setter):
             setter(
                 active=True,
                 total=total_n,
                 prompt=str(prompt or ""),
+                next_prompt="",
+                generating=False,
                 round=0,
                 run=0,
                 runs_per_round=per_round,
-                # 计时锚点清零：本轮尚未开始（浮窗显示「--」，第一轮开始时
-                # 由 set_loop_status 写入本轮开始时间戳）。
+                # 计时锚点清零：本次尚未开始（浮窗显示「--」，第一次运行时
+                # 由 set_loop_status 写入本次开始时间戳）。
                 round_started_at=0.0,
                 run_started_at=0.0,
             )
         self.open_floating_window(loop_window_spec())
 
     def set_loop_status(self, **fields) -> None:
-        """更新 ``/loop`` 进度（total/round/run/runs_per_round/prompt/active/
-        round_started_at/run_started_at）。"""
+        """更新 ``/loop`` 进度（total/round/prompt/next_prompt/generating/
+        active/round_started_at/run_started_at）。"""
         fn = getattr(self._bb, "set_loop_status", None)
         if callable(fn):
             fn(**fields)

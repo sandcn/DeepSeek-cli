@@ -233,11 +233,64 @@ def _make_round_callbacks(
         except Exception:
             _logger.debug("更新标题生成状态失败（非关键）", exc_info=True)
 
+    def _on_loop_prompt_generating(generating=False, **kw):
+        """续跑提词生成开始/结束 → 状态栏「✎ 提词生成中」与浮窗状态。
+
+        用户需求 2026-10-21：``/loop`` 的下一轮提词由 LLM 在等待后台任务前
+        生成，属静默辅助调用；生成期间状态栏展示标记，结束后在宽限期内
+        继续展示本次消耗的 tok / tok/s（与标题生成同一套口径）。
+        """
+        try:
+            model = chat_ui.get_model() if hasattr(chat_ui, "get_model") else None
+        except Exception:
+            model = None
+        if model is None:
+            return
+        try:
+            active = bool(generating)
+            model.status.loop_prompt_generating = active
+            loop_status = getattr(model, "loop_status", None)
+            if loop_status is not None:
+                loop_status.generating = active
+            if not active:
+                model.status.loop_prompt_last_end_ts = time.monotonic()
+            request = getattr(chat_ui, "request_bottom_redraw", None)
+            if callable(request):
+                request()
+        except Exception:
+            _logger.debug("更新续跑提词生成状态失败（非关键）", exc_info=True)
+
+    def _on_loop_prompt_generated(should_continue=None, prompt="", error="", **kw):
+        """续跑提词生成完成 → 浮窗「下一轮提词」立即刷新。
+
+        ``should_continue`` 为 False 表示 LLM 判定任务已完成（loop 即将结束），
+        此时不展示下一轮提词，避免浮窗显示一条永远不会用到的文本。
+        """
+        try:
+            model = chat_ui.get_model() if hasattr(chat_ui, "get_model") else None
+        except Exception:
+            model = None
+        if model is None:
+            return
+        try:
+            loop_status = getattr(model, "loop_status", None)
+            if loop_status is not None:
+                loop_status.generating = False
+                keep = should_continue is not False and not error
+                loop_status.next_prompt = str(prompt or "").strip() if keep else ""
+            request = getattr(chat_ui, "request_bottom_redraw", None)
+            if callable(request):
+                request()
+        except Exception:
+            _logger.debug("更新下一轮提词失败（非关键）", exc_info=True)
+
     return {
         "on_start": _on_round_start,
         "on_end": _on_round_end,
         "on_title": _on_title_updated,
         "on_title_generating": _on_title_generating,
+        "on_loop_prompt_generating": _on_loop_prompt_generating,
+        "on_loop_prompt_generated": _on_loop_prompt_generated,
     }
 
 
@@ -354,8 +407,16 @@ def _register_session_handlers(
         session.off("round_end", old_callbacks["on_end"])
         session.off("title_updated", old_callbacks["on_title"])
         session.off("title_generating", old_callbacks["on_title_generating"])
+        old_generating = old_callbacks.get("on_loop_prompt_generating")
+        if old_generating is not None:
+            session.off("loop_prompt_generating", old_generating)
+        old_generated = old_callbacks.get("on_loop_prompt_generated")
+        if old_generated is not None:
+            session.off("loop_prompt_generated", old_generated)
     loop_state["_registered_callbacks"] = callbacks
     session.on("round_start", callbacks["on_start"])
     session.on("round_end", callbacks["on_end"])
     session.on("title_updated", callbacks["on_title"])
     session.on("title_generating", callbacks["on_title_generating"])
+    session.on("loop_prompt_generating", callbacks["on_loop_prompt_generating"])
+    session.on("loop_prompt_generated", callbacks["on_loop_prompt_generated"])

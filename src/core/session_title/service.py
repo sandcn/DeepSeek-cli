@@ -37,6 +37,7 @@ from .normalize import (
     sanitize_title,
     truncate_utf8,
 )
+from ..loop_prompt import LOOP_PROMPT_MARKER
 
 _logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ _NON_HUMAN_PREFIXES: tuple[str, ...] = (
     "[对话摘要]",
     "[检查点恢复]",
     "【继续】",
+    LOOP_PROMPT_MARKER,
 )
 
 #: 标题事件类型（会话日志，仅写入不进入模型输入）。

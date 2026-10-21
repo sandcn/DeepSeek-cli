@@ -48,6 +48,7 @@ from .internal.session._session_compression import _validate_compress_preconditi
 from .internal.session._session_persistence_manager import SessionPersistenceManager
 from .internal.session._session_messaging_manager import SessionMessagingManager
 from .internal.session import _session_lifecycle
+from .loop_prompt import LoopPromptService
 from .session_title import SessionTitleService
 
 _logger = logging.getLogger(__name__)
@@ -152,6 +153,22 @@ class ChatSession:
             log_getter=lambda: self.session_log,
             emit=self._emit,
         )
+
+        # ── /loop 续跑提词服务（用户需求 2026-10-21） ──────
+        # 每次 /loop run 在等待后台 bash/subagent 前同步生成下一轮提词，
+        # 结果暂存、由编排在下一轮运行处取用。通过 Agent 钩子接线；未 arm 时
+        # 普通对话不会产生任何额外模型请求。
+        self._loop_prompt_service = LoopPromptService(
+            messages_getter=lambda: self._agent.messages,
+            model_getter=lambda: self._model,
+            emit=self._emit,
+        )
+        set_hook = getattr(self._agent, "set_loop_prompt_hook", None)
+        if callable(set_hook):
+            try:
+                set_hook(self._loop_prompt_service.on_agent_round_end)
+            except Exception:
+                _logger.debug("注入 /loop 提词钩子失败", exc_info=True)
 
         # ── 持久化管理器 ─────────────────────────────────
         self._persistence_mgr = SessionPersistenceManager(
@@ -280,6 +297,11 @@ class ChatSession:
     def title_service(self) -> SessionTitleService:
         """会话标题服务（来源仲裁 / 异步生成 / 钉住 / 标题事件）。"""
         return self._title_service
+
+    @property
+    def loop_prompt_service(self) -> LoopPromptService:
+        """``/loop`` 续跑提词服务（生成 / 暂存 / 事件）。"""
+        return self._loop_prompt_service
 
     @property
     def title(self) -> str:

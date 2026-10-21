@@ -11,15 +11,10 @@ import logging
 
 from ._utils import (
     _put_and_wait, _merge_prefill,
-    _exit_save_and_stop, _save_loop_snapshot,
+    _exit_save_and_stop,
     _RETRY_SENTINEL,
 )
 from ._special_keys import make_special_key_callback
-from ._float_window import (
-    close_loop_window,
-    open_loop_window,
-    set_loop_window_status,
-)
 from ._session_setup import (
     SessionState, _RoundResult,
     _setup_session, _register_session_handlers,
@@ -31,8 +26,8 @@ from ._handlers import (
 from ..core.commands import CommandContext
 from ..core.commands.plugins import get_interactive_registry
 from ..core.message_queue import MessageQueue
-from ..core.exceptions import is_fatal_exception, is_network_error
-from ..core.constants import DIM, RESET, GREEN, YELLOW
+from ..core.exceptions import is_fatal_exception
+from ..core.constants import RESET, YELLOW
 from ..tui._screen import TerminalWidthCache
 from ..api.escape_monitor import EscapeMonitor
 from ..api.interrupt_async import (
@@ -41,7 +36,6 @@ from ..api.interrupt_async import (
     request_kill_background,
 )
 from ..core.base_agent import schedule_kill_all_background_tasks
-from ..core.stats import reset_token_speed
 from ..tui.consumer import ChatUIConsumer
 
 
@@ -298,147 +292,6 @@ class InteractiveLoop:
             if not msg_done.is_set():
                 msg_done.set()
             return _RoundResult(should_exit=False)
-
-    async def _handle_loop_cmd(self, content: str, session, state: SessionState) -> None:
-        """处理 /loop 命令"""
-        parts = content.split(maxsplit=2)
-        if len(parts) < 3 or not parts[1].isdigit() or int(parts[1]) < 1:
-            self._ui.write_line(f"  {YELLOW}用法: /loop <次数> <提词>{RESET}")
-            return
-        count = int(parts[1])
-        prompt = parts[2].strip()
-        if not prompt:
-            self._ui.write_line(f"  {YELLOW}用法: /loop <次数> <提词>{RESET}")
-            return
-        # ── 清理前一轮可能的强制退出标记 ──────────────────────
-        self._force_exit.clear()
-        # ── 自动保存循环前的对话 ────────────────────────────
-        await _save_loop_snapshot(session, self._chat_ui)
-        # ── /loop 浮动窗口（2026-10-21 用户需求）────
-        # 锚定输入区最上方的分隔线右端、向上展开（带边框），显示总次数 /
-        # 提词 / 当前运行次数；关闭后原内容由下一帧整帧重建自动还原。
-        open_loop_window(self._chat_ui, count, prompt)
-        # ── /loop 模式：启用状态行持续活跃 + 跨轮累加耗时 ────
-        try:
-            # _loop_mode + enable_status + write_line 全部在 try 内，
-            # 确保 finally 始终清理 _loop_mode，防止状态泄漏
-            self._loop_state["_loop_mode"] = True
-            if self._chat_ui is not None:
-                self._ui.bottom_bar.enable_status()
-            self._ui.write_line(f"  {GREEN}+ 开始循环 {count} 次: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"{RESET}")
-            for i in range(count):
-                self._ui.write_line(f"  {DIM}  ─ 第 {i+1}/{count} 轮 · 第1次 ─{RESET}")
-                # 浮窗进度：当前轮第 1 次运行
-                set_loop_window_status(self._chat_ui, round=i + 1, run=1)
-                # 清空对话（每轮开始前清空）
-                reset_interrupt_async(input_instance=self._ui.input if self._chat_ui else None)
-                session.clear_messages()
-                # 第1次运行（含网络错误重试）
-                result = await self._run_round_with_retry(session, prompt)
-                if result.get("interrupted", False):
-                    self._ui.write_line(f"  {YELLOW}+ ESC 中断，提前结束循环（已执行 {i+1}/{count} 轮）{RESET}")
-                    break
-
-                # 第2次运行（固定提词"继续完成所有"，含网络错误重试）
-                self._ui.write_line(f"  {DIM}  ─ 第 {i+1}/{count} 轮 · 第2次 ─{RESET}")
-                # 浮窗进度：当前轮第 2 次运行
-                set_loop_window_status(self._chat_ui, round=i + 1, run=2)
-                reset_interrupt_async(input_instance=self._ui.input if self._chat_ui else None)
-                result2 = await self._run_round_with_retry(session, "继续完成所有")
-                if result2.get("interrupted", False):
-                    self._ui.write_line(f"  {YELLOW}+ ESC 中断，提前结束循环（已执行 {i+1}/{count} 轮）{RESET}")
-                    break
-            else:
-                self._ui.write_line(f"  {GREEN}+ 循环 {count} 次执行完毕{RESET}")
-        finally:
-            # ── /loop 结束：清理 _loop_mode 标志 + 重置状态 ────
-            # 先关闭浮窗（正常结束/中断均执行）——下一帧整帧重建自动还原。
-            close_loop_window(self._chat_ui)
-            self._loop_state["_loop_mode"] = False
-            if self._chat_ui is not None:
-                self._ui.bottom_bar.disable_status()
-                self._ui.bottom_bar.reset_tool_count()
-            reset_token_speed()
-        # ── 自动保存循环后的对话 ────────────────────────────
-        await _save_loop_snapshot(session, self._chat_ui)
-
-    async def _run_round_with_retry(
-        self, session, prompt: str, max_attempts: int = 3,
-    ) -> dict:
-        """运行 session.run_round()，检测网络错误并自动重试。
-
-        Args:
-            session: ChatSession 实例
-            prompt: 用户输入文本
-            max_attempts: 最大尝试次数（含首次，默认 3）
-
-        Returns:
-            run_round 返回的结果字典
-        """
-        for attempt in range(1, max_attempts + 1):
-            # 每轮重试前确保 interrupt 信号已清除
-            reset_interrupt_async(input_instance=self._ui.input if self._chat_ui else None)
-
-            try:
-                result = await session.run_round(prompt)
-            except (KeyboardInterrupt, asyncio.CancelledError):
-                raise
-            except Exception as e:
-                if attempt < max_attempts and is_network_error("", e):
-                    _logger.warning(
-                        "/loop run_round 网络错误 (第%d次重试): %s", attempt, e,
-                    )
-                    self._ui.write_line(
-                        f"  {YELLOW}+ 检测到网络错误，正在重试 ({attempt}/{max_attempts})...{RESET}"
-                    )
-                    # 追加"[继续]"消息通知模型重试
-                    try:
-                        session.add_user_message("【继续】网络错误已恢复，请重试")
-                    except Exception:
-                        _logger.exception("追加重试消息失败")
-                    continue
-                raise  # 非网络错误直接抛出
-
-            # ── 检查最后一条 assistant 消息是否包含网络错误 ──
-            interrupted = result.get("interrupted", False)
-            if not interrupted and session.messages:
-                last_msg = session.messages[-1] or {}
-                if last_msg.get("role") == "assistant":
-                    # content 可能为 list（多模态 content blocks，仅 user/tool
-                    # 消息；assistant 恒为 str/None）——is_network_error 前转 str 防御
-                    last_content = last_msg.get("content", "") or ""
-                    if isinstance(last_content, list):
-                        from ..core.context_selector import message_to_text
-                        last_content = message_to_text(last_msg)
-                    if is_network_error(last_content, None):
-                        if attempt < max_attempts:
-                            _logger.warning(
-                                "/loop 返回内容含网络错误 (第%d次重试): %s",
-                                attempt, last_content[:100],
-                            )
-                            self._ui.write_line(
-                                f"  {YELLOW}+ 检测到网络错误，正在重试 ({attempt}/{max_attempts})...{RESET}"
-                            )
-                            try:
-                                session.add_user_message("【继续】网络错误已恢复，请重试")
-                            except Exception:
-                                _logger.exception("追加重试消息失败")
-                            continue
-                        else:
-                            _logger.error(
-                                "/loop 网络错误重试 %d 次仍失败，跳过本轮: %s",
-                                max_attempts, last_content[:200],
-                            )
-                            self._ui.write_line(
-                                f"  {YELLOW}+ 网络错误重试 {max_attempts} 次仍失败，跳过本轮{RESET}"
-                            )
-                            return {"interrupted": True, "session_id": None,
-                                    "delta": {"input": 0, "output": 0, "calls": 0}}
-
-            return result
-
-        # 不会执行到这里（return result 在循环内），类型占位
-        return {"interrupted": True}
 
     async def _handle_regular_msg(self, content: str, session, state: SessionState) -> None:
         """处理普通用户消息"""

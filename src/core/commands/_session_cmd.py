@@ -255,17 +255,26 @@ def _cmd_edit(ctx):
 def _cmd_loop(ctx):
     """循环命令：在 consumer 中被拦截执行，此处仅做校验和展示（使 /help 可见）。"""
     parts = ctx.arg.split(maxsplit=1)
-    if not parts or not parts[0].isdigit() or int(parts[0]) < 1:
-        _out.write(f"{YELLOW}  ! 用法: /loop <次数> <提词>{RESET}", level="raw", source="cmd")
-        _out.write(f"{YELLOW}    ⚠  次数必须是正整数{RESET}", level="raw", source="cmd")
-        return True
-    count = int(parts[0])
-    if len(parts) < 2 or not parts[1].strip():
-        _out.write(f"{YELLOW}  ! 用法: /loop <次数> <提词>{RESET}", level="raw", source="cmd")
+    if not parts or not parts[0].strip():
+        _out.write(f"{YELLOW}  ! 用法: /loop [次数] <提词>{RESET}", level="raw", source="cmd")
         _out.write(f"{YELLOW}    ⚠  提词不能为空{RESET}", level="raw", source="cmd")
         return True
-    prompt = parts[1].strip()
-    _out.write(f"{GREEN}  + 准备循环 {count} 次: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"{RESET}", level="raw", source="cmd")
+    # 首 token 为数字且存在第二 token 时才是次数；纯数字视为提词（与插件一致）。
+    if len(parts) == 2 and parts[0].isdigit():
+        count_text, prompt = parts[0], parts[1].strip()
+        count = int(count_text)
+    else:
+        count, prompt = None, ctx.arg.strip()
+    if not prompt:
+        _out.write(f"{YELLOW}  ! 用法: /loop [次数] <提词>{RESET}", level="raw", source="cmd")
+        _out.write(f"{YELLOW}    ⚠  提词不能为空{RESET}", level="raw", source="cmd")
+        return True
+    count_label = "无限" if count is None or count <= 0 else str(count)
+    _out.write(
+        f"{GREEN}  + 准备循环（{count_label}）: "
+        f"\"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"{RESET}",
+        level="raw", source="cmd",
+    )
     _out.write(f"{DIM}  ⚠  循环由异步 consumer 实际执行，请稍候…{RESET}", level="raw", source="cmd")
     return True
 

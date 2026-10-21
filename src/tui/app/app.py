@@ -192,6 +192,10 @@ def _normal_bottom_area(model, width: int) -> list:
             #   由 title_generating 事件更新 model.status，props 变化 → 模式行
             #   行首「✎ 标题」即时出现/消失。
             "title_generating": model.status.title_generating,
+            # ★ /loop 续跑提词生成中（2026-10-21 用户需求：参考自动起标题）——
+            #   由 loop_prompt_generating 事件更新 model.status，props 变化 →
+            #   模式行行首「✎ 提词」即时出现/消失。
+            "loop_prompt_generating": model.status.loop_prompt_generating,
             # 方向D 步骤14：Ctrl+R 反向历史搜索状态（input-area 渲染覆盖行）
             "history_search": model.history_search,
             # ★ 标准 React Ink 组件化（2026-08-05）：InputArea 标准组件接收

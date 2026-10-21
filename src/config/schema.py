@@ -92,6 +92,57 @@ def _clean_session_title(raw) -> dict:
     return base
 
 
+#: ``/loop`` 续跑提词配置字段规格（``键 → (类型, 最小值, 最大值)``）。
+_LOOP_PROMPT_FIELDS: dict = {
+    "enabled": (bool, None, None),
+    "timeout_ms": (int, 500, 600_000),
+    "max_input_bytes": (int, 256, 10_000_000),
+    "max_prompt_bytes": (int, 1, 100_000),
+    "retry_once": (bool, None, None),
+}
+
+
+def _clean_loop_prompt(raw) -> dict:
+    """清洗 ``loop_prompt`` 配置节（缺字段回退默认、数值夹到合法区间）。
+
+    与 ``session_title`` 同一约束：配置加载永不失败，坏值最多回退默认行为。
+
+    Args:
+        raw: RC 文件中的 ``loop_prompt`` 值（任意类型）。
+
+    Returns:
+        完整配置字典（键集合 = ``DEFAULTS["loop_prompt"]`` 的键）。
+    """
+    raw_default = DEFAULTS.get("loop_prompt")
+    base = dict(raw_default) if isinstance(raw_default, dict) else {}
+    if not isinstance(raw, dict):
+        return base
+    for key, (kind, low, high) in _LOOP_PROMPT_FIELDS.items():
+        if key not in raw:
+            continue
+        value = raw[key]
+        if kind is bool:
+            if isinstance(value, bool):
+                base[key] = value
+            elif isinstance(value, (int, float)):
+                base[key] = bool(value)
+            elif isinstance(value, str):
+                base[key] = value.strip().lower() in _TRUE_TEXT
+            continue
+        if isinstance(value, bool):
+            continue  # bool 是 int 子类：True/False 不是合法数值配置
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+        if low is not None and number < low:
+            number = low
+        if high is not None and number > high:
+            number = high
+        base[key] = number
+    return base
+
+
 def _validate_rc(rc):
     """校验配置值类型，无效值回退到默认值
 
@@ -247,6 +298,8 @@ def _validate_rc(rc):
     # 会话标题配置：手工编辑 RC 的坏值在此收敛（缺字段回退默认、数值夹到
     # 合法区间、回退字节上限不得超过标题总上限——dsh 同一约束）。
     rc["session_title"] = _clean_session_title(rc.get("session_title"))
+    # /loop 续跑提词配置：同一收敛规则（缺字段回退默认、数值夹到合法区间）。
+    rc["loop_prompt"] = _clean_loop_prompt(rc.get("loop_prompt"))
 
     if rc.get("max_retries", 1) < 0:
         rc["max_retries"] = DEFAULTS["max_retries"]

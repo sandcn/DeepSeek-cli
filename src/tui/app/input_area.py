@@ -215,7 +215,8 @@ _S_CTX_EMPTY = Style(fg=238)
 def _build_bg_task_prefix(ctx_percent: "float | None",
                           bash_count: int, subagent_count: int,
                           compaction_active: int = 0,
-                          title_generating: bool = False) -> "Line":
+                          title_generating: bool = False,
+                          loop_prompt_generating: bool = False) -> "Line":
     """构建模式行行首的信息前缀（main 进度条 · bash · N · subagent · N）。
 
     显示格式（2026-08-19 用户需求 + 2026-10-07 进度条增强）：
@@ -265,6 +266,13 @@ def _build_bg_task_prefix(ctx_percent: "float | None",
             line.append(" \u00b7 ", _S_ACCENT)
         line.append("\u270e \u6807\u9898", _S_ACCENT)
         first = False
+    # ★ 2026-10-21（用户需求：/loop 续跑提词生成中，参考自动起标题）——
+    #   紧随「✎ 标题」之后显示「✎ 提词」：生成期间同步辅助调用，用户可见。
+    if loop_prompt_generating:
+        if not first:
+            line.append(" \u00b7 ", _S_ACCENT)
+        line.append("\u270e \u63d0\u8bcd", _S_ACCENT)
+        first = False
     for label, count in (("bash", bash_count), ("subagent", subagent_count),
                          ("compact", compaction_active)):
         if count <= 0:
@@ -280,7 +288,8 @@ def _build_mode_line(width: int, mode,
                      ctx_percent: "float | None" = None,
                      bash_count: int = 0, subagent_count: int = 0,
                      input_rows: int = 0, compaction_active: int = 0,
-                     title_generating: bool = False) -> Line:
+                     title_generating: bool = False,
+                     loop_prompt_generating: bool = False) -> Line:
     """构建主 Agent 运行模式行（时间戳分隔线下方，行首信息 + 最右模式）。
 
     Ctrl+B 循环切换三态模式（``src/prompt_builder.builder.get_mode()``）：
@@ -317,7 +326,8 @@ def _build_mode_line(width: int, mode,
     # 行首信息前缀（main 进度条 + N% · bash · N · subagent · N · compact · N；
     # 全部不可用为空）
     prefix = _build_bg_task_prefix(ctx_percent, bash_count, subagent_count,
-                                   compaction_active, title_generating)
+                                   compaction_active, title_generating,
+                                   loop_prompt_generating)
     # ★ 2026-10-07（输入区体验）：多行输入指示（输入含显式换行 / 多行粘贴时
     #   在行首追加 ``↵ N 行``，便于用户感知当前编辑的是多行内容）。
     if input_rows and input_rows > 1:
@@ -392,6 +402,9 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
     # ★ 标题生成中（2026-10-20 用户需求：显示在上下文百分比旁）——
     #   title_generating 事件写 model.status，经 props 传入本行。
     title_generating = bool(props.get("title_generating", False))
+    # ★ /loop 续跑提词生成中（2026-10-21 用户需求：参考自动起标题）——
+    #   loop_prompt_generating 事件写 model.status，经 props 传入本行。
+    loop_prompt_generating = bool(props.get("loop_prompt_generating", False))
     # ★ 主 Agent 上下文使用百分比（2026-08-19 用户需求：模式行行首 main 段）。
     #   经全局快照 O(1) 无锁读取（context_manager 缓存同步点写入）——性能好：
     #   渲染线程每帧零计算（无除法/无扫描）；异常回退 None（不显示）。
@@ -509,6 +522,8 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
         # ★ 标题生成中（2026-10-20 用户需求：显示在上下文百分比旁）——
         #   title_generating 事件驱动 model.status，props 变化后本行即时刷新。
         title_generating,
+        # ★ /loop 续跑提词生成中（模式行行首「✎ 提词」即时出现/消失）
+        loop_prompt_generating,
         # ★ 主 Agent 上下文使用百分比——全局快照变化（ContextManager 缓存
         #   同步点写入）时模式行行首 main 段即时刷新。None 归一化为 -1
         #   （int 值比较，避免 None/str 混入 key 类型不一致）。
@@ -687,6 +702,7 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
         input_rows=text.count("\n") + 1 if text else 0,
         compaction_active=compaction_active,
         title_generating=title_generating,
+        loop_prompt_generating=loop_prompt_generating,
     ))
 
     # ★ 快照缓存写回（方向4）：未命中重建后更新缓存（同快照下次命中）
@@ -1066,6 +1082,9 @@ def _input_snap_key(props: dict, width: int, now: float, fading: bool = False):
     #   use_memo deps：title_generating 事件更新 model.status 后 props 变化
     #   → InputArea 重建 → 模式行行首「✎ 标题」即时出现/消失。
     title_generating = bool(props.get("title_generating", False))
+    # ★ /loop 续跑提词生成中（2026-10-21 用户需求：参考自动起标题）——
+    #   loop_prompt_generating 事件写 model.status，经 props 传入本行。
+    loop_prompt_generating = bool(props.get("loop_prompt_generating", False))
     # ★ 主 Agent 上下文使用百分比（2026-08-19 用户需求）——进 use_memo deps：
     #   ContextManager 缓存同步点更新全局快照后 InputArea 重建（模式行行首
     #   main 段即时刷新）。O(1) 无锁读（性能好）；异常回退 None → -1。
@@ -1105,6 +1124,8 @@ def _input_snap_key(props: dict, width: int, now: float, fading: bool = False):
         compaction_active,
         # ★ 标题生成中（模式行行首「✎ 标题」即时出现/消失）
         title_generating,
+        # ★ /loop 续跑提词生成中（模式行行首「✎ 提词」即时出现/消失）
+        loop_prompt_generating,
         # ★ 主 Agent 上下文使用百分比——模式行行首 main 段即时刷新
         ctx_percent_key,
         # history_search 指纹（局部变量提取——一次 props.get）
