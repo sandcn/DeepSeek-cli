@@ -132,6 +132,16 @@ class FloatingWindowSpec:
         idle_static: True 表示窗口内容**只依赖窗口自身 props**（不读 model
             等其他每帧可变状态）→ 允许空闲帧复用（无浮窗时的 60Hz 全量重建
             可省掉）。默认 False（保守：有浮窗即每帧重建，内容不会冻结在旧值）。
+        refresh_interval: **时间驱动内容的刷新间隔**（秒；None = 每帧刷新，
+            默认）。内容依赖 ``time.monotonic()``（计时器、进度动画）但可接受
+            有限帧率时**按需声明**：空闲态仍允许帧复用（不再因「有浮窗」永久
+            关掉空闲帧复用），由会话在**间隔到期**时强制重建一帧。非正数 /
+            非法值归一化为 None（保持每帧刷新语义）。与 ``idle_static`` 的
+            区别：``idle_static`` 声明「永不随时间变化」，本字段声明「变化但按
+            固定间隔采样」；两者都不阻止 model 变更经
+            ``request_bottom_redraw`` 触发的即时重建。
+            ★ ``/loop`` 循环浮窗**不使用**本字段（2026-10-22 用户确认：保持
+            每帧刷新，计时/流动进度条逐帧推进）。
         geometry: **运行时**窗口矩形（由 ``ink._floating.apply_floating_layout``
             每帧更新，内容组件经 props["geometry"] 读取）：
             ``{"x", "y", "width", "height", "content_height",
@@ -145,7 +155,8 @@ class FloatingWindowSpec:
         "offset_x", "offset_y", "border", "border_color", "border_style",
         "background", "padding_x", "padding_y", "title",
         "max_height", "scroll_top", "allow_cover_bottom", "over_fullscreen",
-        "close_on_escape", "on_close", "idle_static", "geometry",
+        "close_on_escape", "on_close", "idle_static", "refresh_interval",
+        "geometry",
     )
 
     def __init__(
@@ -174,6 +185,7 @@ class FloatingWindowSpec:
         close_on_escape: bool = False,
         on_close: Callable[[], None] | None = None,
         idle_static: bool = False,
+        refresh_interval: float | None = None,
         geometry: dict | None = None,
     ) -> None:
         self.id = str(id)
@@ -199,6 +211,7 @@ class FloatingWindowSpec:
         self.close_on_escape = bool(close_on_escape)
         self.on_close = on_close
         self.idle_static = bool(idle_static)
+        self.refresh_interval = _safe_interval(refresh_interval)
         # 运行时矩形（布局阶段原地更新；copy_with 共享同一 dict，内容组件
         # 跨帧读到的永远是最新值）
         self.geometry = geometry if isinstance(geometry, dict) else {}
@@ -235,6 +248,19 @@ def _safe_int(value, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError, OverflowError):
         return default
+
+
+def _safe_interval(value) -> float | None:
+    """刷新间隔归一化：None / 非正数 / 非有限值 / 非法类型 → None（每帧刷新）。"""
+    if value is None:
+        return None
+    try:
+        interval = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(interval) or interval <= 0:
+        return None
+    return interval
 
 
 def FloatingWindow(props: dict) -> object:
@@ -473,8 +499,9 @@ def LoopFloatingWindow(props: dict) -> object:
       5. ``↳ 下一轮生成提词`` / ``✎ 生成提词中…`` / ``↳ 等待生成``
 
     动态刷新机制：本组件每帧从 ``model`` 重建（``loop_window_spec`` 不声明
-    ``idle_static`` → 空闲帧复用被关闭），第 2/3 行使用 ``time.monotonic()``
-    实时计算，因此浮窗打开期间计时与无限进度条持续变化。
+    ``idle_static`` / ``refresh_interval`` → 有该浮窗时每帧重建），第 2/3 行
+    使用 ``time.monotonic()`` 实时计算，因此浮窗打开期间计时与无限进度条
+    逐帧推进。
 
     ``active`` 为 False 时返回空 TEXT（窗口无内容，正常情况下窗口已关闭）。
     """
@@ -609,8 +636,9 @@ def loop_window_spec() -> FloatingWindowSpec:
     ``bottom="bottom_area"`` 锚定整个底部框**上方一行**（``_resolve_row`` 对
     该锚点返回 ``bottom_area_top - 1``）——**窗口所有行都不覆盖底部框**
     （2026-10-21 用户需求：循环浮窗不能遮盖底部框）。水平右对齐终端右侧。
-    内容读 ``model.loop_status``（每帧可变，含动态计时）→ 不声明
-    ``idle_static``：有浮窗时保守每帧重建，内容不会冻结在旧值。
+    内容读 ``model.loop_status``（每帧可变，含动态计时）→ **不声明**
+    ``idle_static`` / ``refresh_interval``：有该浮窗时按每帧重建（计时与流动
+    进度条逐帧推进，内容不会冻结）——2026-10-22 用户确认保持每帧刷新语义。
     """
     return FloatingWindowSpec(
         id="loop",

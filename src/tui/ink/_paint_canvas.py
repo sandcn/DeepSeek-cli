@@ -321,6 +321,55 @@ def _slice_run_text(text: str, start_w: int, end_w: int) -> str:
     return _slice_run_text_with_offset(text, start_w, end_w)[0]
 
 
+def _slice_run_text_strict(text: str, start_w: int, end_w: int) -> tuple[str, int]:
+    """按显示宽度**严格**切片文本，返回 ``(text, offset)``（CJK 安全）。
+
+    与 ``_slice_run_text`` 的区别：只保留**完整落在** ``[start_w, end_w)``
+    内的字形簇——宽字符横跨左右边界时**整字丢弃**。用于把一行切成
+    「左段 + 窗口中段 + 右段」再无缝拼接（保留半个宽字符会占用相邻片段的
+    首列，导致其后内容整体错位）；被丢弃的列由调用方补空格留白。
+
+    零宽字形簇（组合标记 / 变体选择符）不占列：落在区间内（含左右边界，
+    边界处即紧邻区间内的字符）即保留，由调用方决定其依附关系。
+
+    Returns:
+        ``(text, offset)``：切片文本 + 首个保留字形簇的实际起始列相对
+        ``start_w`` 的偏移（``>= 0``；无保留字符时为 0）。
+    """
+    if not text or end_w <= start_w:
+        return "", 0
+    # ★ 性能：纯可打印 ASCII run 宽度 == 字符数（C 实现单趟扫描），直接切片
+    if text.isascii() and text.isprintable():
+        s = start_w if start_w > 0 else 0
+        if s >= len(text):
+            return "", 0
+        e = min(end_w, len(text))
+        if e <= s:
+            return "", 0
+        return text[s:e], 0
+    chars: list[str] = []
+    col = 0
+    first = 0
+    for cluster in grapheme_clusters(text):
+        w = wcswidth_simple(cluster)
+        if w == 0:
+            # 零宽簇不占列：落在区间内即保留（含 run 首的组合标记——它依附
+            # **前一个 run** 的基字符，与 ``_line_as_dict`` 的合并口径一致，
+            # 丢弃会让重音/变体选择符整段消失）；右边界处同样保留（紧邻
+            # 最后一个保留字符）。
+            if start_w <= col <= end_w:
+                chars.append(cluster)
+            continue
+        if col >= end_w:
+            break
+        if col >= start_w and col + w <= end_w:
+            if not chars:
+                first = col - start_w
+            chars.append(cluster)
+        col += w
+    return "".join(chars), first
+
+
 def _slice_line_with_offset(
     line: Line, start_col: int, end_col: int,
 ) -> tuple[Line, int]:
@@ -371,6 +420,37 @@ def _slice_line(line: Line, start_col: int, end_col: int) -> Line:
         裁剪后的新 Line（可能为空）。
     """
     return _slice_line_with_offset(line, start_col, end_col)[0]
+
+
+def _span_at(line: Line, col: int) -> tuple[int, int] | None:
+    """返回显示列 ``col`` 所在字符的 ``(起始列, 显示宽度)``；无字符返回 None。
+
+    用于判断「边界列是否落在跨列宽字符内部」——浮窗合成按矩形列区间切分
+    底层行时，宽字符不能切开（终端无法只覆盖宽字符的某一列）：调用方据
+    ``span[0] < col < span[0] + span[1]`` 判定边界落在宽字符内部并整字处理。
+
+    负数列 / 行尾之后返回 None（行内零宽字形簇不占列，不参与命中）。
+    """
+    if col < 0:
+        return None
+    pos = 0
+    for run in line.runs:
+        end = pos + run.width
+        if col >= end:
+            pos = end
+            continue
+        text = run.text
+        if text.isascii() and text.isprintable():
+            return col, 1
+        offset = col - pos
+        c = 0
+        for cluster in grapheme_clusters(text):
+            w = wcswidth_simple(cluster)
+            if c <= offset < c + w:
+                return pos + c, w
+            c += w
+        return None
+    return None
 
 
 def _canvas_row_to_line(row) -> Line:
@@ -465,8 +545,10 @@ __all__ = [
     "_overwrites_wide_second_col",
     "_merge_line",
     "_slice_run_text",
+    "_slice_run_text_strict",
     "_slice_run_text_with_offset",
     "_slice_line",
     "_slice_line_with_offset",
+    "_span_at",
     "_canvas_row_to_line",
 ]

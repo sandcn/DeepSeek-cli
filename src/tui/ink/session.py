@@ -395,6 +395,9 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #: 关闭）的第一拍预测刚翻真，上一帧仍是活跃态内容，直接复用会让已关闭
         #: 的视图残留在屏幕上（见 ``_should_reuse_idle_frame``）。
         self._last_frame_idle_static: bool = False
+        #: 最近一帧**实际重建**时刻（monotonic；空闲帧复用不更新）——
+        #: 浮窗 ``refresh_interval`` 到期判定基准（``_float_refresh_due``）。
+        self._last_frame_built_at: float = 0.0
 
     # ── 注入 ─────────────────────────────────────────
 

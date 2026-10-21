@@ -23,6 +23,7 @@ stop 时注销——替代旧模块级 ``_active_session`` 全局引用）。
 from __future__ import annotations
 
 import logging
+import math
 import sys
 import time
 
@@ -139,6 +140,32 @@ def _placeholder_fading(session) -> bool:
         return True
 
 
+def _window_blocks_idle(window) -> bool:
+    """浮窗是否**阻止**空闲帧复用（2026-10-21 渲染性能优化）。
+
+    三类窗口语义（见 ``FloatingWindowSpec``）：
+
+      - ``idle_static=True``：内容只依赖窗口自身 props（不随时间变化）→
+        复用安全，不阻止；
+      - ``refresh_interval`` 为正数：内容随时间变化但只需有限刷新率 →
+        不阻止复用，由会话 ``_float_refresh_due`` 在间隔到期时强制重建；
+      - 其余（默认）：内容未知且可能每帧变化 → 阻止复用（保守：宁可多渲染，
+        不让浮窗内容冻结在旧值）。
+
+    异常值（属性缺失 / 非数字 / NaN / 非正数）按「不可复用」处理。
+    """
+    if getattr(window, "idle_static", False):
+        return False
+    raw = getattr(window, "refresh_interval", None)
+    if raw is None:
+        return True
+    try:
+        interval = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return True
+    return not (math.isfinite(interval) and interval > 0)
+
+
 def _make_idle_frame_predicate(model, session):
     """构造「空闲帧复用」预测函数（保守判定，2026-10-07 性能优化）。
 
@@ -174,10 +201,13 @@ def _make_idle_frame_predicate(model, session):
             #   （内容只依赖窗口自身 props、不读 model）时允许复用——避免
             #   常驻浮窗把空闲帧复用永久关掉（60Hz 全量重建）。默认仍保守
             #   重建（未知内容冻结风险优先）。
+            #   ★ 渲染性能优化（2026-10-21）：声明 ``refresh_interval`` 的
+            #   时间驱动窗口同样允许复用——由会话在间隔到期时强制重建一帧
+            #   （``_float_refresh_due``），把「有浮窗即 60Hz 全量重建」降到
+            #   该间隔的刷新率。``/loop`` 浮窗按用户确认**保持每帧刷新**，
+            #   不声明该字段（默认保守语义不变）。
             windows = getattr(model, "floating_windows", None)
-            if windows and not all(
-                getattr(w, "idle_static", False) for w in windows
-            ):
+            if windows and any(_window_blocks_idle(w) for w in windows):
                 return False
             completion = getattr(model, "completion", None)
             if completion is not None and getattr(completion, "visible", False):
@@ -558,4 +588,5 @@ __all__ = [
     "_make_logs_toggle_cb",
     "_make_changes_toggle_cb",
     "_make_fullscreen_toggle_cb",
+    "_window_blocks_idle",
 ]

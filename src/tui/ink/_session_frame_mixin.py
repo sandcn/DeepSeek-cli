@@ -43,6 +43,7 @@ if TYPE_CHECKING:  # pragma: no cover - 仅静态检查（避免运行期循环�
     from .renderer import Frame
 
 import logging
+import math
 import time
 
 from src.tui._const import RenderCommand
@@ -124,6 +125,9 @@ class _SessionFrameMixin:
     _last_frame: "Frame | None"
     #: 最近一帧是否在「静态态」下构建（False = 该帧仍含活跃态内容，禁止复用）
     _last_frame_idle_static: bool
+    #: 最近一帧**实际重建**时刻（monotonic；空闲帧复用不更新）——浮窗
+    #: ``refresh_interval`` 到期判定基准（见 ``_float_refresh_due``）
+    _last_frame_built_at: float
     #: 最近渲染帧行数（render(debug=True) 统计）
     _last_frame_lines: int
 
@@ -280,6 +284,11 @@ class _SessionFrameMixin:
         # 上一帧不是静态态内容 → 必须先重建一帧（静态预测可能刚由假翻真）
         if not getattr(self, "_last_frame_idle_static", False):
             return False
+        # ★ 浮窗定时刷新到期（2026-10-21 渲染性能优化）：带 ``refresh_interval``
+        #   的浮窗（如 ``/loop`` 计时窗）允许空闲复用，但到期必须重建一帧
+        #   ——否则计时/进度条冻结在上一帧内容上。
+        if self._float_refresh_due():
+            return False
         # 本拍有变更（输入/命令/请求重绘，由 ``_should_render`` 落位）→ 重建
         if not getattr(self, "_idle_ok", False):
             return False
@@ -300,6 +309,51 @@ class _SessionFrameMixin:
             _logger.debug("has_active_animations 探测异常", exc_info=True)
             return False
         return True
+
+    def _float_refresh_due(self) -> bool:
+        """浮窗「定时刷新」是否到期（到期 → 本拍必须重建，禁止复用上一帧）。
+
+        ★ 2026-10-21 渲染性能优化（用户需求：优化有浮动窗口时的渲染性能）：
+        浮窗内容若依赖 ``time.monotonic()``（计时器 / 进度动画），此前空闲
+        预测只能对**所有非 ``idle_static`` 窗口**返回「非静态」——等于有浮窗
+        就永久按 60Hz 全量重建整个界面（组件树 + 调和 + 布局 + 绘制 + 合成）。
+        窗口声明 ``FloatingWindowSpec.refresh_interval`` 后：空闲态允许帧复用，
+        本方法按**最短间隔**判定到期，到期那一拍强制重建一帧（内容更新粒度即
+        该间隔）。未声明的窗口（含 ``/loop`` 循环浮窗——用户确认保持每帧刷新）
+        仍走「有浮窗即每帧重建」，本方法不额外约束。
+
+        判定口径：
+          - 无浮窗 / 无 ``refresh_interval`` 窗口 → False（不额外约束）；
+          - 多个窗口取**最小**间隔（最频繁的那个决定刷新率）；
+          - ``_last_frame_built_at`` 为最近一次**实际重建**时刻（复用帧不更新
+            ——否则刷新永远不到期）；
+          - 非法/非有限/非正数间隔忽略（与 ``_window_blocks_idle`` 同口径）。
+        """
+        model = getattr(self, "_model", None)
+        windows = getattr(model, "floating_windows", None) or []
+        if not windows:
+            return False
+        interval: float | None = None
+        for window in windows:
+            raw = getattr(window, "refresh_interval", None)
+            if raw is None:
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(value) or value <= 0:
+                continue
+            interval = value if interval is None else min(interval, value)
+        if interval is None:
+            return False
+        try:
+            elapsed = time.monotonic() - float(
+                getattr(self, "_last_frame_built_at", 0.0) or 0.0
+            )
+        except (TypeError, ValueError):
+            return True  # 时间基准异常 → 保守重建
+        return elapsed >= interval
 
     def _render_frame_impl(self) -> None:
         if self._build_tree is None:
@@ -483,6 +537,10 @@ class _SessionFrameMixin:
             )
             self._last_frame = frame
             self._last_frame_idle_static = static_now
+            # ★ 浮窗定时刷新基准（2026-10-21）：记录**实际重建**时刻——
+            #   复用帧不更新该时间（否则 ``_float_refresh_due`` 永远不到期，
+            #   计时浮窗会冻结）。
+            self._last_frame_built_at = time.monotonic()
         # ★ 输出历史接线（committed 内容行数）：InkRenderer 只回调 committed
         #   区的**新增内容行**（修复前用文档末尾行区间推断 → 状态栏/输入区/
         #   时间线被反复写入输出历史且真正内容行漏记）。committed_lines 为

@@ -319,6 +319,10 @@ class Fiber:
     #: 浮窗本帧是否隐藏（依赖输入区锚点但输入区未渲染时——如 user_select 等
     #: 模态底部视图打开、整屏视图——浮窗暂不绘制，输入区恢复后自动回到原位）。
     _float_hidden: bool = False
+    #: 本帧浮窗 host fiber 列表（``render_frame`` 入口置 None；定位阶段
+    #: ``apply_floating_layout`` 写入、合成层 ``_overlay_floating`` 复用）——
+    #: 同一帧只做一遍浮窗 DFS（2026-10-21 渲染性能优化）。
+    _float_frame_windows: Any = None
     #: TEXT 测量缓存 ``(props, styled_len, avail_w, fill, result)``——同 props
     #: 引用 + 同宽度 + 同 styled 长度的帧免重测（``_layout_measure`` 唯一
     #: 写入点；绝对定位第二遍临时改写 props 后恢复并失效缓存）。

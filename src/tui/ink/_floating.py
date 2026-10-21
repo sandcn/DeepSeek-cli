@@ -553,6 +553,14 @@ def apply_floating_layout(root_fiber, width: int, viewport_height: int = 0) -> i
     异常安全：单个窗口解析/平移失败只记 debug，不影响其它窗口与主界面。
     """
     windows = _collect_float_fibers(root_fiber, include_hidden=True)
+    # ★ 本帧收集结果写回 root fiber（2026-10-21 渲染性能优化）：合成层
+    #   ``components._overlay_floating`` 直接复用该列表——修复前每帧对整棵
+    #   组件树做两遍完全相同的 DFS（定位 + 合成）。``render_frame`` 在入口把
+    #   该字段置 None，缓存生命周期严格限于**同一帧**。
+    try:
+        root_fiber._float_frame_windows = windows
+    except Exception:  # pragma: no cover - 属性只读/异常 fiber 防御
+        _logger.debug("浮窗收集缓存写入失败", exc_info=True)
     if not windows:
         return 0
     width = max(1, int(width or 0))

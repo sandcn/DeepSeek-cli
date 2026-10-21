@@ -34,11 +34,13 @@ from ._layout_transform import _translate_subtree_x, _translate_subtree_y
 from ._paint_canvas import (
     _merge_line,
     _slice_line_with_offset,
+    _span_at,
     _canvas_row_to_line,
     _ensure_row_dict,
     _entry3,
     _line_as_dict,
 )
+from src._text_width import grapheme_clusters
 from src.tui._width import wcswidth_simple
 from ._paint_border import (
     _paint_border,
@@ -431,23 +433,106 @@ def _apply_float_positions(root: Fiber, width: int,
         _logger.debug("浮窗定位异常（本帧保持原坐标）", exc_info=True)
 
 
+def _run_text_width(text: str) -> int:
+    """文本显示宽度（ASCII 可打印快路径：宽度 == 字符数）。"""
+    if text.isascii() and text.isprintable():
+        return len(text)
+    return wcswidth_simple(text)
+
+
+def _leading_zero_width_prefix(text: str) -> int:
+    """返回 ``text`` 开头连续零宽字形簇的**字符数**（无则 0）。
+
+    零宽字形簇（组合重音、变体选择符、ZWJ 等）不占显示列，ANSI 样式切换会
+    把它们拆到新 run 的开头——切片时必须单独保留（见 ``_append_line_range``）。
+    首字符为 ASCII 时直接返回 0（组合标记不在 ASCII 范围，免逐簇扫描）。
+    """
+    if not text or text[0].isascii():
+        return 0
+    length = 0
+    for cluster in grapheme_clusters(text):
+        if wcswidth_simple(cluster) != 0:
+            break
+        length += len(cluster)
+    return length
+
+
+def _append_line_range(out: Line, line: Line, start: int, end: int) -> None:
+    """把 ``line`` 的 ``[start, end)`` 显示列**严格**追加到 ``out``（O(runs)）。
+
+    性能关键（2026-10-21 浮窗合成重写）：只按 run 级切片（``_slice_run_text_strict``
+    + ASCII 快路径），**不**把整行转成列键字典、也不重建整行 Line——修复前
+    ``_merge_window_row`` 对每个窗口行做一次 ``_line_as_dict(base_line)``
+    （整行逐列建 dict）+ ``_canvas_row_to_line``（整行重建 + 逐字符测宽），
+    120 列终端 + 7 行浮窗实测 ~1.6ms/帧（占合成层 2/3），行宽越宽越慢。
+
+    宽字符横跨 ``start`` / ``end`` 边界时**整字丢弃**：被丢弃的列在 ``out``
+    中以空格留白（调用方据此对齐），避免半个宽字符占用相邻片段首列导致
+    其后内容整体错位。
+
+    Args:
+        out: 目标 Line（原地追加）。
+        line: 源行。
+        start: 起始显示列（含）。
+        end: 结束显示列（不含）。
+    """
+    from ._paint_canvas import _slice_run_text_strict
+
+    col = 0
+    written = 0  # 已追加内容相对 start 的列数
+    for run in line.runs:
+        run_end = col + run.width
+        text = run.text
+        # 前导零宽字形簇（组合标记 / ZWJ 等，ANSI 样式切换会把它拆到新 run
+        # 开头）不占列、依附**前一个**字符：只有 run 起点 = 已追加内容的终止列
+        # （``start + written``）时才真正紧跟前一个**被保留**的字符 → 输出；
+        # 否则（边界宽字符被裁掉 / 段首与前段不相邻）丢弃——避免它错附到
+        # 别的字符上。无论保留与否都从 run 文本中摘掉，防止后续切片再次带上。
+        if text and end > start and col <= end:
+            lead = _leading_zero_width_prefix(text)
+            if lead:
+                if start + written == col:
+                    out.append(text[:lead], run.style, run.link)
+                text = text[lead:]
+        if run_end <= start:
+            col = run_end
+            continue
+        if col >= end:
+            break
+        s = max(start, col) - col
+        e = min(end, run_end) - col
+        text, offset = _slice_run_text_strict(text, s, e)
+        if text:
+            target = max(start, col) + offset - start
+            if target > written:
+                # 边界宽字符被丢弃 → 按真实列补空格（对齐文档列）
+                out.append(" " * (target - written))
+                written = target
+            out.append(text, run.style, run.link)
+            written += _run_text_width(text)
+        col = run_end
+
+
 def _merge_window_row(base_line, rowdata, win_x: int, win_w: int,
                       width: int, opaque: bool):
     """把浮窗一行合成到底层帧行，返回新 Line（无内容返回 None）。
 
-    单元格级合并（2026-10-21 重写）：
+    合并语义（2026-10-21 重写，行为保持）：
       - **不透明窗口**（``backgroundColor`` 非 None）：矩形整段占用——矩形内
-        底层字符全部清除，再由窗口单元格覆盖（背景铺满整段，视觉与旧实现
-        一致）；
+        底层字符全部清除，再由窗口单元格覆盖（背景铺满整段）；
       - **透明窗口**（``backgroundColor is None``）：只占用**实际绘制了字符
-        的列**——空白列保留底层原内容。修复前无论透明与否都清除整个矩形，
-        ``background=None`` 的"底层内容从空格处透出"语义实际失效（底层被
-        抹成空格）。
+        的列**——空白列保留底层原内容（``background=None`` 语义）；
+      - 宽字符与占用列重叠时整字清除（终端无法只覆盖宽字符的某一列）。代价
+        是窗口外与窗口相邻的那一列会变成空白（终端能力限制，见
+        ``app.floating`` docstring）。
 
-    宽字符：清除与占用列重叠的底层字符（含跨越窗口左右边界的宽字符首列）
-    ——终端无法只覆盖宽字符的某一列，保留残字会让行宽推导错位。代价是
-    窗口外与窗口相邻的那一列会变成空白（终端能力限制，见 ``app.floating``
-    docstring）。
+    **性能（2026-10-21 用户需求：优化有浮动窗口时的渲染性能）**：只处理
+    窗口覆盖的列区间 ``[win_x, win_x + win_w)``——左/右段经
+    ``_append_line_range`` 按 run 级严格切片直接追加（不建整行 dict、不逐列
+    测宽）；中段宽度 ≤ 窗口宽（典型 30~40 列），dict 化/回填只发生在这段。
+    修复前每个窗口行都要对**整行**做 ``_line_as_dict`` + 逐列
+    ``wcswidth_simple`` + ``_canvas_row_to_line`` 全量重建，代价随终端宽度
+    线性增长（120 列终端实测合成层 2.3ms/帧，其中合并 1.6ms）。
 
     Args:
         base_line: 底层帧行（Line）。
@@ -462,7 +547,8 @@ def _merge_window_row(base_line, rowdata, win_x: int, win_w: int,
         合并后的 Line；窗口在本行没有任何单元格时返回 None（该行不变）。
     """
     cells: dict = {}
-    for col, value in _ensure_row_dict(rowdata).items():
+    rowdict = _ensure_row_dict(rowdata)
+    for col, value in rowdict.items():
         try:
             local = int(col)
         except (TypeError, ValueError):
@@ -475,36 +561,97 @@ def _merge_window_row(base_line, rowdata, win_x: int, win_w: int,
         cells[screen_col] = value
     if not cells:
         return None
-    # 占用列集合：不透明 = 整个矩形；透明 = 实际字符占用列（宽字符占 2 列）
-    occupied: set = set()
+
+    # 中段（窗口覆盖的可见列）——窗口部分出屏时按可见区间裁剪
+    mid0 = max(0, win_x)
+    mid1 = min(width, win_x + win_w)
+    if mid1 <= mid0:
+        return None
+
+    # ── 段边界（透明窗口按字符整字对齐）──────────────────────────────
+    # 透明窗口只占用「实际绘制了字符」的列：底层宽字符横跨矩形边界但**未**
+    # 与任何窗口字符重叠时必须完整保留（修复前按矩形边界硬切 → 该宽字符
+    # 整字消失，底层内容丢失）。因此把中段边界外扩到跨越边界的字符起点/终点；
+    # 该字符若与窗口字符重叠，仍会在下方的占用列清理中被整字删除。
+    seg0 = mid0
+    seg1 = mid1
+    if not opaque:
+        span = _span_at(base_line, mid0)
+        if span is not None and span[0] < mid0:
+            seg0 = span[0]
+        span = _span_at(base_line, mid1)
+        if span is not None and span[0] < mid1:
+            seg1 = span[0] + span[1]
+    # 窗口字符为宽字符且起点在矩形右边界前一列时，其第二列越过 mid1——
+    # 右段必须从该字符之后开始（否则底层残余字符与宽字符抢占同一列）。
+    cut1 = seg1
+    for col, value in cells.items():
+        ch = _entry3(value)[0]
+        cw = wcswidth_simple(ch) or 1
+        if col < cut1 < col + cw:
+            cut1 = col + cw
+    cut1 = min(width, cut1)
+    region_w = cut1 - seg0
+
     if opaque:
-        occupied.update(range(max(0, win_x), min(width, win_x + win_w)))
+        middict: dict = {}
     else:
+        # 透明：只取中段底层内容（≤ 窗口宽 + 边界字符），逐列判断是否与窗口
+        # 字符重叠
+        base_mid = Line()
+        _append_line_range(base_mid, base_line, seg0, seg1)
+        middict = _line_as_dict(base_mid)
+        occupied: set = set()
         for col, value in cells.items():
             ch = _entry3(value)[0]
             cw = wcswidth_simple(ch) or 1
-            occupied.update(range(col, col + cw))
-    base = _line_as_dict(base_line)
-    for col in list(base):
-        ch = base[col][0]
-        cw = wcswidth_simple(ch) or 1
-        if any(c in occupied for c in range(col, col + cw)):
-            del base[col]
+            occupied.update(range(col - seg0, col - seg0 + cw))
+        for bcol in list(middict):
+            ch = _entry3(middict[bcol])[0]
+            bw = wcswidth_simple(ch) or 1
+            if any((bcol + i) in occupied for i in range(bw)):
+                del middict[bcol]
+
     for col in sorted(cells):
         value = cells[col]
         ch = _entry3(value)[0]
+        local = col - seg0
         if (wcswidth_simple(ch) or 1) > 1:
             # 宽字符只写首列键；第二列若有底层残留必须清掉（否则行宽推导
             # 把宽字符按 1 列处理，后续内容错位）。
-            base.pop(col + 1, None)
-        base[col] = value
-    line = _canvas_row_to_line(base)
-    if line.width > width:
+            middict.pop(local + 1, None)
+        middict[local] = value
+    mid_line = _canvas_row_to_line(middict)
+
+    merged = Line()
+    _append_line_range(merged, base_line, 0, seg0)
+    if merged.width < seg0:
+        # 左边界宽字符被整字丢弃 → 留白到窗口起点
+        merged.append(" " * (seg0 - merged.width))
+    # 右段是否真有内容：cut1 处的字符若为跨越边界的宽字符则从**其结束列**
+    # 起算（该字符已被窗口占用/裁掉）；结束列等于行宽时说明右段为空——
+    # 此时补齐空格只会给行尾加无意义空白（改变 Line.width，无视觉收益）。
+    span = _span_at(base_line, cut1)
+    right_start = cut1
+    if span is not None and span[0] < cut1:
+        right_start = span[0] + span[1]
+    has_right = span is not None and right_start < base_line.width
+    for run in mid_line.runs:
+        merged.append(run.text, run.style, run.link)
+    if has_right and mid_line.width < region_w:
+        # 中段未被窗口单元格铺满（窗口透明/内容较短）→ 在**右侧**补齐到中段
+        # 结束列，保证右段仍落在文档列 cut1 上（跨界宽字符的留白由
+        # ``_append_line_range`` 在右段内部补齐）。
+        merged.append(" " * (region_w - mid_line.width))
+    if has_right:
+        _append_line_range(merged, base_line, cut1, 10**9)
+
+    if merged.width > width:
         # ★ 行宽不变量兜底（E-OVERFLOW-GUARD）：窗口贴右边界时有宽字符跨越
         #   终端右边界（终端不可见的半列）→ 截断，保证 diff/光标定位正确。
         from .helpers import truncate_line
-        line = truncate_line(line, width)
-    return line
+        merged = truncate_line(merged, width)
+    return merged
 
 
 def _overlay_floating(root: Fiber, frame: Frame, width: int) -> Frame:
@@ -530,9 +677,18 @@ def _overlay_floating(root: Fiber, frame: Frame, width: int) -> Frame:
     """
     if not _has_floating_layer(root):
         return frame
-    from ._floating import _collect_float_fibers
+    # ★ 每帧只做一次浮窗收集（2026-10-21 性能优化）：``render_frame`` 内的
+    #   ``_apply_float_positions`` 刚刚完成同一遍 DFS（``apply_floating_layout``
+    #   的 ``_collect_float_fibers(include_hidden=True)``）并把结果写回
+    #   ``root._float_frame_windows``——这里直接复用，修复前每帧对整棵组件树
+    #   做**两遍**完全相同的前序 DFS（浮窗开启时每帧白白多扫上千 fiber）。
+    #   缓存由 ``render_frame`` 在入口置 None 保证不跨帧陈旧；独立调用方
+    #   （测试/外部直接调本函数）未经过 render_frame 时回退现场收集。
+    windows = getattr(root, "_float_frame_windows", None)
+    if windows is None:
+        from ._floating import _collect_float_fibers
 
-    windows = _collect_float_fibers(root)
+        windows = _collect_float_fibers(root)
     if not windows:
         return frame
     base_lines = frame.lines
@@ -542,6 +698,11 @@ def _overlay_floating(root: Fiber, frame: Frame, width: int) -> Frame:
     #   浮窗内容、左侧/右侧原内容丢失）。只把窗口自己的单元格合并到对应列，
     #   窗口外原内容原样保留（见 ``_merge_window_row``）。
     for fiber in windows:
+        # ★ 隐藏窗口不绘制（2026-10-21）：复用的每帧收集结果含隐藏窗口
+        #   （``include_hidden=True``），这里按布局阶段写入的 ``_float_hidden``
+        #   过滤——与原 ``_collect_float_fibers()`` 默认口径一致。
+        if getattr(fiber, "_float_hidden", False):
+            continue
         box = fiber.layout_box
         if box is None or box.w <= 0 or box.h <= 0:
             continue
@@ -644,6 +805,11 @@ def render_frame(root: Fiber, width: int, viewport_height: int = 0) -> Frame:
         total_h = box.h
     else:
         total_h = layout_tree(root, width)
+    # ★ 浮窗收集缓存复位（2026-10-21 性能优化）：本帧的浮窗列表由紧随其后的
+    #   ``_apply_float_positions`` → ``apply_floating_layout`` 写入，
+    #   ``_overlay_floating`` 复用——避免同一帧对整棵组件树做两遍 DFS。
+    #   先置 None：定位被跳过/异常时合成层回退现场收集（不读到上一帧的列表）。
+    root._float_frame_windows = None
     # ★ 浮窗定位（2026-10-21 统一入口）：必须在布局之后、绘制之前——所有
     #   帧构建路径（InkSession / renderToString / render()）都经此处，
     #   修复「公共渲染 API 渲染 App 时浮窗不定位、粘在左上角」。幂等，调用方

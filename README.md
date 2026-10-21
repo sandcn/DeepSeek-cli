@@ -755,6 +755,7 @@ chat_ui.clear_floating_windows()                            # 关闭全部
 | `over_fullscreen` | `False` | 允许显示在模态全屏视图之上；默认全屏视图下隐藏 |
 | `close_on_escape` | `False` | Esc 关闭窗口（`on_close` 由 bridge 自动注入） |
 | `on_close` / `idle_static` | `None` / `False` | 关闭回调 / 内容只依赖自身 props 时允许空闲帧复用 |
+| `refresh_interval` | `None` | 时间驱动内容的刷新间隔（秒；`None` = 每帧刷新，默认）。计时器/进度动画可接受有限帧率时按需声明——空闲态不再因「有浮窗」永久关掉空闲帧复用，由会话到期强制重建一帧。`/loop` 浮窗**不声明**（保持每帧刷新） |
 
 ### 锚点语义
 
@@ -770,9 +771,17 @@ chat_ui.clear_floating_windows()                            # 关闭全部
 - 键位/焦点由内容组件自行声明：`use_input` + `useFocus`，需要独占键盘时调 `use_modal(True)`。
 - `close_on_escape=True` 时 Esc 关闭窗口（其余按键原样放行）。
 
+### 渲染性能
+
+浮窗开启时框架有两条默认生效的优化，另有一个按需启用的刷新选项：
+
+- **单次浮窗收集**：`render_frame` 的定位阶段把本帧浮窗 fiber 列表写入 `root._float_frame_windows`，合成层直接复用——修复前每帧对整棵组件树做两遍相同的 DFS。
+- **区域切片合成**：`_merge_window_row` 只处理窗口覆盖的列区间（左/右段按 run 级严格切片直接追加），不再把整行转列键字典 + 全量重建；120 列终端 + 7 行窗口实测合并耗时约降 60%。
+- **空闲帧复用（按需）**：默认浮窗每帧重建（内容不会冻结；`/loop` 浮窗即如此）。内容只依赖自身 props 时用 `idle_static=True`，时间驱动且可接受有限帧率时用 `refresh_interval=N`——两者都不再阻止空闲帧复用，后者由会话在间隔到期时强制重建一帧。
+
 ### 已知限制
 
-- 浮窗覆盖到跨列宽字符（CJK/emoji）时，终端无法只覆盖其某一列——相邻列会被清空。
+- 浮窗覆盖到跨列宽字符（CJK/emoji）时，终端无法只覆盖其某一列——相邻列会被清空（透明窗口未被窗口字符覆盖的边界宽字符也按整字丢弃/留白处理）。
 - 嵌套浮窗（窗口内容里再声明 `dataFloatWindow`）不支持，内层会被忽略。
 - `allow_cover_bottom=True` 且覆盖输入区时，终端光标仍按输入区定位，会落在窗口内容上——非必要不要打开。
 - 浮窗只在合成层绘制：不进入输出历史（scrollback 记录的是底层消息内容）。
