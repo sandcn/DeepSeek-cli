@@ -823,20 +823,26 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     #   （第二遍 ``_layout_absolute_pass`` 独立遍历定位，不消费该列表），
     #   简化后仅保留判断语义。
     has_abs = False
+    has_float = False
     for c in children:
         if c.props.get("position") == "absolute":
             has_abs = True
-            # ★ 性能（PERF-17）：置位 root absolute 存在标志——layout_tree
-            #   据此跳过绝对定位第二遍（无 absolute 组件树每帧省整树遍历）。
-            #   沿 return_ 链向上 O(树深) 完全可接受（仅 absolute 首次出现
-            #   时触发一次；同树多 absolute 节点重复置位幂等）。
-            _f = fiber.return_
-            while _f is not None:
-                if getattr(_f, "tag", None) == "root":
-                    _f._has_absolute_present = True
-                    break
-                _f = _f.return_
-            break
+            if c.props.get("dataFloatWindow"):
+                has_float = True
+    if has_abs:
+        # ★ 性能（PERF-17）：置位 root absolute 存在标志——layout_tree
+        #   据此跳过绝对定位第二遍（无 absolute 组件树每帧省整树遍历）。
+        #   沿 return_ 链向上 O(树深) 完全可接受（仅 absolute 首次出现
+        #   时触发一次；同树多 absolute 节点重复置位幂等）。
+        #   ★ 2026-10-21：同时置位浮窗存在标志（render_frame 合成层用）。
+        _f = fiber.return_
+        while _f is not None:
+            if getattr(_f, "tag", None) == "root":
+                _f._has_absolute_present = True
+                if has_float:
+                    _f._has_float_present = True
+                break
+            _f = _f.return_
     if has_abs:
         children = [c for c in children if c.props.get("position") != "absolute"]
     # ── 父可用高度传播（height="50%" 百分比解析）──

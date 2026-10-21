@@ -706,16 +706,29 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
 #   分隔线构建统一经 ``_theme.sep_line``（BUG-72 行宽修复唯一真源）。
 
 
-def _lines_to_text_elements(lines: list, prefix: str = "ia") -> list:
+def _lines_to_text_elements(
+    lines: list, prefix: str = "ia", first_anchor: str | None = None,
+) -> list:
     """Line 行列表 → TEXT 元素列表（每行带索引 key）。
 
     styled 引用 = Line.runs（跨帧稳定——_build_lines 快照缓存命中时同一
     Line 对象）→ TEXT wrap 缓存命中（零重建）。
+
+    Args:
+        lines: 行列表。
+        prefix: 元素 key 前缀。
+        first_anchor: 非空时给**第一行** TEXT 加 ``dataFloatAnchor`` 标记
+            （2026-10-21 通用浮窗锚点）——``rest`` 第一行即输入区最上方的
+            分隔线（CPU/MEM 行），浮窗 ``bottom="input_top"`` 据此精确定位
+            到该分隔线（容器首行可能是不可见的补全弹窗空行）。
     """
-    return [
-        h(TEXT, {"key": f"{prefix}-{i}", "styled": ln.runs, "height": 1})
-        for i, ln in enumerate(lines)
-    ]
+    elements = []
+    for i, ln in enumerate(lines):
+        props = {"key": f"{prefix}-{i}", "styled": ln.runs, "height": 1}
+        if i == 0 and first_anchor:
+            props["dataFloatAnchor"] = first_anchor
+        elements.append(h(TEXT, props))
+    return elements
 
 
 def CompletionPopup(props: dict) -> object:
@@ -927,7 +940,9 @@ def _input_elements(props: dict, width: int, now: float, fade_state: dict) -> li
     # 渐显状态写回组件级缓存（_build_lines 内部经 _placeholder_fade_color
     # 更新 fiber._placeholder_fade_key——SimpleNamespace 可写，读回持久）
     fade_state["_placeholder_fade_key"] = getattr(fiber, "_placeholder_fade_key", None)
-    children.extend(_lines_to_text_elements(rest, "ia"))
+    # 第一行（上分隔线）带浮窗锚点标记——浮窗 bottom="input_top" 精确贴住
+    # 输入区最上方的分隔线（不因补全弹窗空行等容器首行而偏移）。
+    children.extend(_lines_to_text_elements(rest, "ia", first_anchor="input_separator"))
     return children
 
 

@@ -34,7 +34,9 @@ from ._paint_canvas import (
     _merge_line,
     _slice_line_with_offset,
     _canvas_row_to_line,
+    _line_as_dict,
 )
+from src.tui._width import wcswidth_simple
 from ._paint_border import (
     _paint_border,
     _paint_box_background,
@@ -106,6 +108,11 @@ def _paint(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) -> None
         clip: 裁剪区域 (x, y, w, h)；None 表示不裁剪。
         inherit_bg: 继承的背景样式（None=无；Box backgroundColor 传递）。
     """
+    # ★ 浮窗隐藏（2026-10-21）：锚点缺失（输入区 / 底部框未渲染，如整屏
+    #   视图）时由 ``apply_floating_layout`` 标记隐藏——整树绘制阶段直接
+    #   跳过，避免窗口贴到文档底部与弹窗重叠。
+    if fiber.props.get("dataFloatWindow") and getattr(fiber, "_float_hidden", False):
+        return
     try:
         _paint_impl(fiber, canvas, clip, inherit_bg)
     except Exception:
@@ -369,6 +376,111 @@ def _to_line(row, width: int) -> Line:
     return line
 
 
+def _has_floating_layer(root: Fiber) -> bool:
+    """组件树中是否存在浮窗（``_has_float_present`` 标志，沿 return 链查找）。
+
+    ``_measure`` 在 ROOT fiber 上置位；``render_frame`` 的调用方可能传入
+    ROOT 或 host 根——向上查找保证两种入口一致。
+    """
+    node = root
+    while node is not None:
+        if getattr(node, "_has_float_present", False):
+            return True
+        node = node.return_
+    return False
+
+
+def _overlay_floating(root: Fiber, frame: Frame, width: int) -> Frame:
+    """把浮窗层合成到最终帧（覆盖 committed 前缀复用区域）。
+
+    ★ 为什么在 render_frame 末尾重新合成（2026-10-21 用户需求）：committed
+    历史前缀路径直接复用缓存前缀行（``prefix[:fit]``）并**丢弃**画布中对应
+    区域的绘制——浮窗若覆盖到 committed 区（短文档 / 小历史时常见），首轮
+    ``_paint`` 的浮窗内容会被前缀拼接覆盖，只显示窗口下半部分。本函数在
+    帧拼装完成后，把浮窗子树重新绘制到「仅浮窗覆盖行」的画布上并逐行合并
+    ——窗口完整、不透明、关闭后前缀行原样恢复（下一帧无浮窗 → 直接返回原
+    frame）。
+
+    性能：仅当树中存在浮窗时执行；画布长度 = 帧行数，只有浮窗 box 覆盖的行
+    被写入/合并（O(浮窗面积)）。与 committed 前缀区间相交时取消
+    ``stable_prefix`` 标记（被覆盖行已非前缀原行，不能再跳过 diff 比较）。
+    """
+    if not _has_floating_layer(root):
+        return frame
+    from ._floating import _collect_float_fibers
+
+    windows = _collect_float_fibers(root)
+    if not windows:
+        return frame
+    lines = list(frame.lines)
+    touched: list[int] = []
+    # ★ 逐窗口按**矩形列范围**合并（2026-10-21 用户反馈修复：同一行只显示
+    #   浮窗内容、左侧/右侧原内容丢失）。此前把所有窗口画到同一画布后整行
+    #   ``_merge_line(lines[row], 0, overlay)``——``_canvas_row_to_line`` 会为
+    #   浮窗左侧的列补空格，整行合并时这些空格覆盖了底层原内容。现只取窗口
+    #   box 的 [x, x+w) 列片段合并到对应列，窗口外原内容原样保留。
+    for fiber in windows:
+        box = fiber.layout_box
+        if box is None or box.w <= 0 or box.h <= 0:
+            continue
+        canvas: list = [None] * len(lines)
+        try:
+            _paint(fiber, canvas)
+        except Exception:
+            _logger.warning(
+                "浮窗合成绘制异常 id=%r",
+                fiber.props.get("dataFloatWindow"), exc_info=True,
+            )
+            continue
+        x0 = max(0, int(box.x))
+        x1 = max(x0, int(box.x) + int(box.w))
+        row_start = max(0, int(box.y))
+        row_end = min(len(lines), int(box.y) + int(box.h))
+        for row in range(row_start, row_end):
+            rowdata = canvas[row]
+            if rowdata is None:
+                continue
+            overlay = _canvas_row_to_line(rowdata)
+            if overlay.width <= 0:
+                continue
+            piece, offset = _slice_line_with_offset(overlay, x0, x1)
+            if piece.width <= 0:
+                continue
+            draw_x = x0 + offset
+            end_x = draw_x + piece.width
+            # ★ CJK 边界（2026-10-21）：先清除窗口片段覆盖列上的底层字符
+            #   （含跨越左右边界的宽字符首列）——终端无法只覆盖宽字符的
+            #   第二列，保留残字会使 ``_canvas_row_to_line`` 跳过窗口边框
+            #   列（边框缺一列/错位）。清除后间隙由 ``_canvas_row_to_line``
+            #   补空格，窗口片段完整覆盖。
+            base = _line_as_dict(lines[row])
+            for col in list(base):
+                ch = base[col][0]
+                cw = wcswidth_simple(ch) or 1
+                if col < end_x and col + cw > draw_x:
+                    del base[col]
+            merged = _merge_line(base, draw_x, piece)
+            lines[row] = _canvas_row_to_line(merged)
+            touched.append(row)
+    if not touched:
+        return frame
+    prefix = frame._stable_prefix
+    offset = frame._stable_prefix_offset
+    plen = frame._stable_prefix_len
+    if prefix is not None:
+        start, end = offset, offset + plen
+        if any(start <= row < end for row in touched):
+            prefix = None
+            offset = 0
+            plen = 0
+    return Frame(
+        lines,
+        stable_prefix=prefix,
+        stable_prefix_offset=offset,
+        stable_prefix_len=plen,
+    )
+
+
 def render_frame(root: Fiber, width: int) -> Frame:
     """渲染布局好的 host 树为整帧 Frame。
 
@@ -459,11 +571,15 @@ def render_frame(root: Fiber, width: int) -> Frame:
                 # 缓存命中），标记 stable_prefix 使 ``first_diff_line`` 跳过前缀
                 # 区间（避免大文档每帧全量逐行 is 比较）。防御：fit 可能 <
                 # len(prefix)，stable_prefix_len 用实际覆盖 fit。
-                return Frame(
-                    prefix[:fit] + tail,
-                    stable_prefix=prefix,
-                    stable_prefix_offset=0,
-                    stable_prefix_len=fit,
+                return _overlay_floating(
+                    root,
+                    Frame(
+                        prefix[:fit] + tail,
+                        stable_prefix=prefix,
+                        stable_prefix_offset=0,
+                        stable_prefix_len=fit,
+                    ),
+                    width,
                 )
             # 非顶部 / 前缀含超宽行：前缀行填入画布对应区域（_paint 命中缓存
             # 已跳过画布写入；超宽行已截断，正常行身份保持）。
@@ -484,13 +600,21 @@ def render_frame(root: Fiber, width: int) -> Frame:
             #   stable_prefix 使 ``first_diff_line`` 跳过该区间（前缀区间外
             #   的 header/tail 行仍逐行比较）。防御：fit 可能 < len(prefix)
             #   （reflow 布局陈旧），stable_prefix_len 用实际覆盖 fit。
-            return Frame(
-                header + prefix[:fit] + tail,
-                stable_prefix=prefix,
-                stable_prefix_offset=y0,
-                stable_prefix_len=fit,
+            return _overlay_floating(
+                root,
+                Frame(
+                    header + prefix[:fit] + tail,
+                    stable_prefix=prefix,
+                    stable_prefix_offset=y0,
+                    stable_prefix_len=fit,
+                ),
+                width,
             )
-    return Frame(_to_line(row, width) for row in canvas)
+    return _overlay_floating(
+        root,
+        Frame(_to_line(row, width) for row in canvas),
+        width,
+    )
 
 
 __all__ = ["render_frame"]

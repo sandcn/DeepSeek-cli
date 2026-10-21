@@ -208,6 +208,110 @@ class InkBridge(_BottomBarCompatMixin):
         self._model.subagent_lines = list(lines)
         self._request_redraw()
 
+    # ── 通用浮动窗口（2026-10-21 用户需求） ─────────
+
+    def open_floating_window(self, window) -> bool:
+        """打开（或替换同 id）浮动窗口并请求重绘。
+
+        Args:
+            window: ``app.floating.FloatingWindowSpec``。
+
+        Returns:
+            True=已登记；False=无效规格（None/缺 id）——不改变模型。
+        """
+        if window is None:
+            return False
+        wid = getattr(window, "id", None)
+        if not wid:
+            return False
+        windows = list(getattr(self._model, "floating_windows", None) or [])
+        replaced = False
+        for i, existing in enumerate(windows):
+            if getattr(existing, "id", None) == wid:
+                windows[i] = window
+                replaced = True
+                break
+        if not replaced:
+            windows.append(window)
+        self._model.floating_windows = windows
+        self._request_redraw()
+        return True
+
+    def update_floating_window(self, window_id: str, **changes) -> bool:
+        """更新已打开窗口的规格字段（不可变替换）并请求重绘。
+
+        Returns:
+            True=找到并更新；False=窗口不存在（无操作）。
+        """
+        windows = list(getattr(self._model, "floating_windows", None) or [])
+        for i, existing in enumerate(windows):
+            if getattr(existing, "id", None) != window_id:
+                continue
+            copy_with = getattr(existing, "copy_with", None)
+            if callable(copy_with):
+                windows[i] = copy_with(**changes)
+            else:  # 非 FloatingWindowSpec 的鸭子类型：逐字段赋值
+                for key, value in changes.items():
+                    try:
+                        setattr(existing, key, value)
+                    except Exception:
+                        _logger.debug(
+                            "浮窗字段更新失败 id=%r key=%r", window_id, key,
+                            exc_info=True,
+                        )
+            self._model.floating_windows = windows
+            self._request_redraw()
+            return True
+        return False
+
+    def close_floating_window(self, window_id: str) -> bool:
+        """关闭指定浮动窗口（下一帧原内容自动还原）。"""
+        windows = list(getattr(self._model, "floating_windows", None) or [])
+        kept = [w for w in windows if getattr(w, "id", None) != window_id]
+        if len(kept) == len(windows):
+            return False
+        self._model.floating_windows = kept
+        self._request_redraw()
+        return True
+
+    def clear_floating_windows(self) -> None:
+        """关闭全部浮动窗口（幂等）。"""
+        if getattr(self._model, "floating_windows", None):
+            self._model.floating_windows = []
+            self._request_redraw()
+
+    # ── /loop 循环状态（循环浮窗数据源） ─────────────
+
+    _LOOP_STATUS_FIELDS = (
+        "active", "total", "round", "run", "runs_per_round", "prompt",
+    )
+
+    def _loop_status(self):
+        """取（必要时创建）模型的循环状态对象。"""
+        st = getattr(self._model, "loop_status", None)
+        if st is None:
+            from .app._state_types import LoopStatusState
+            st = LoopStatusState()
+            self._model.loop_status = st
+        return st
+
+    def set_loop_status(self, **fields) -> None:
+        """更新 ``/loop`` 循环状态并请求重绘（仅接受已知字段）。"""
+        st = self._loop_status()
+        changed = False
+        for key in self._LOOP_STATUS_FIELDS:
+            if key in fields:
+                setattr(st, key, fields[key])
+                changed = True
+        if changed:
+            self._request_redraw()
+
+    def reset_loop_status(self) -> None:
+        """重置循环状态（循环结束/中断；浮窗内容清空）。"""
+        from .app._state_types import LoopStatusState
+        self._model.loop_status = LoopStatusState()
+        self._request_redraw()
+
     # ── 内部 ───────────────────────────────────────
 
     def _request_redraw(self) -> None:

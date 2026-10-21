@@ -319,3 +319,89 @@ def test_compat_is_completion_visible_property(bridge):
     assert b.is_completion_visible is True
     m.completion.visible = False
     assert b.is_completion_visible is False
+
+
+# ── 通用浮动窗口（2026-10-21 用户需求） ─────────────────
+
+def _spec(wid="w1", **kwargs):
+    from src.tui.app.floating import FloatingWindowSpec
+
+    kwargs.setdefault("width", 20)
+    kwargs.setdefault("x", "right")
+    kwargs.setdefault("bottom", "input_top")
+    return FloatingWindowSpec(id=wid, **kwargs)
+
+
+def test_open_floating_window_registers_and_redraws(bridge):
+    b, m, s = bridge
+    assert b.open_floating_window(_spec("w1")) is True
+    assert [w.id for w in m.floating_windows] == ["w1"]
+    assert s.redraws == 1
+    # 同 id 再次打开 → 原位替换（不重复叠加）
+    assert b.open_floating_window(_spec("w1", priority=9)) is True
+    assert len(m.floating_windows) == 1
+    assert m.floating_windows[0].priority == 9
+    assert s.redraws == 2
+    # 第二个窗口追加（绘制在上）
+    assert b.open_floating_window(_spec("w2")) is True
+    assert [w.id for w in m.floating_windows] == ["w1", "w2"]
+
+
+def test_open_floating_window_invalid_is_noop(bridge):
+    b, m, s = bridge
+    assert b.open_floating_window(None) is False
+    assert b.open_floating_window(object()) is False
+    assert getattr(m, "floating_windows", []) == []
+    assert s.redraws == 0
+
+
+def test_update_floating_window_updates_fields(bridge):
+    b, m, s = bridge
+    b.open_floating_window(_spec("w1"))
+    assert b.update_floating_window("w1", priority=7, x="left") is True
+    assert m.floating_windows[0].priority == 7
+    assert m.floating_windows[0].x == "left"
+    assert s.redraws == 2
+    # 不存在的窗口：无操作、不重绘
+    assert b.update_floating_window("missing", priority=1) is False
+    assert s.redraws == 2
+
+
+def test_close_and_clear_floating_windows(bridge):
+    b, m, s = bridge
+    b.open_floating_window(_spec("w1"))
+    b.open_floating_window(_spec("w2"))
+    assert b.close_floating_window("w1") is True
+    assert [w.id for w in m.floating_windows] == ["w2"]
+    assert b.close_floating_window("w1") is False
+    b.clear_floating_windows()
+    assert m.floating_windows == []
+    # 幂等：已空时不重绘
+    before = s.redraws
+    b.clear_floating_windows()
+    assert s.redraws == before
+
+
+def test_set_loop_status_updates_known_fields_only(bridge):
+    b, m, s = bridge
+    b.set_loop_status(active=True, total=3, prompt="p", round=1, run=2,
+                      runs_per_round=2)
+    st = m.loop_status
+    assert (st.active, st.total, st.prompt, st.round, st.run) == (
+        True, 3, "p", 1, 2,
+    )
+    assert s.redraws == 1
+    before = (st.active, st.total, st.round, st.run)
+    b.set_loop_status(unknown_field="x")
+    assert (st.active, st.total, st.round, st.run) == before
+    assert s.redraws == 1  # 未知字段不触发重绘
+
+
+def test_reset_loop_status_clears_progress(bridge):
+    b, m, s = bridge
+    b.set_loop_status(active=True, total=4, round=2, run=1, prompt="p")
+    b.reset_loop_status()
+    st = m.loop_status
+    assert st.active is False and st.total == 0 and st.round == 0
+    assert st.run == 0 and st.prompt == ""
+    assert s.redraws == 2

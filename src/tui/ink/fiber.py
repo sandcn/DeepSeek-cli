@@ -309,6 +309,13 @@ class Fiber:
     #: 复位、``_measure`` 容器分支检测到 absolute 子节点时置位；无绝对定位
     #: 的树跳过第二遍绝对定位遍历。
     _has_absolute_present: bool = False
+    #: 组件树中是否存在浮动窗口（``dataFloatWindow`` 标记的 absolute 节点）——
+    #: ``layout_tree`` 每帧复位、``_measure`` 容器分支检测到浮窗时置位；
+    #: ``render_frame`` 据此跳过浮窗叠加层的 DFS（无浮窗的树零开销）。
+    _has_float_present: bool = False
+    #: 浮窗本帧是否隐藏（依赖输入区锚点但输入区未渲染时——如 user_select 等
+    #: 模态底部视图打开、整屏视图——浮窗暂不绘制，输入区恢复后自动回到原位）。
+    _float_hidden: bool = False
     #: TEXT 测量缓存 ``(props, styled_len, avail_w, fill, result)``——同 props
     #: 引用 + 同宽度 + 同 styled 长度的帧免重测（``_layout_measure`` 唯一
     #: 写入点；绝对定位第二遍临时改写 props 后恢复并失效缓存）。

@@ -27,6 +27,7 @@ from .header import TopHeader
 from .status_bar import StatusBar
 from .input_area import InputArea
 from .view_registry import bottom_views, fullscreen_views
+from .floating import floating_layer_elements
 
 #: 模态全屏视图注册表（2026-08-17 通用机制；「一切皆插件」）：
 #: view_id → 组件函数。App 在 ``model.fullscreen`` 非空时按 id 查注册表**整屏
@@ -78,7 +79,16 @@ def App(props) -> object:
     if fullscreen_id:
         view = FULLSCREEN_VIEWS.get(fullscreen_id)
         if view is not None:
-            return h(view, {"model": model, "width": width})
+            # ★ 通用浮动窗口（2026-10-21）：浮窗层追加在整屏视图之后——
+            #   绝对定位、不占高度，后绘制覆盖在上；无浮窗时保持「视图组件
+            #   直接作为根元素」的既有结构（零行为变化）。
+            float_children = floating_layer_elements(model, width)
+            if not float_children:
+                return h(view, {"model": model, "width": width})
+            return h(APP, {"width": width, "flexDirection": "column"}, [
+                h(view, {"model": model, "width": width}),
+                *float_children,
+            ])
 
     # ★ 方向1（Flexbox 布局消息区 + 底部区）：根容器 flexbox column——消息区
     #   （flexGrow=1，聊天历史/实时解析行/工具状态头/subagent 面板）与底部区
@@ -128,10 +138,20 @@ def App(props) -> object:
             bottom_area = _normal_bottom_area(model, width)
     else:
         bottom_area = _normal_bottom_area(model, width)
-    return h(APP, {"width": width, "flexDirection": "column"}, [
+    root_children = [
         h(Column, {"flexGrow": 1}, message_area),
-        h(Column, None, bottom_area),
-    ])
+        # ★ 底部框锚点（2026-10-21 用户需求：浮窗不得覆盖底部框）：整个底部
+        #   区（状态栏 + 输入区，或模态底部视图）打标记——浮窗
+        #   ``bottom="bottom_area"`` 锚定其上方一行，向上展开，绝不遮挡底部
+        #   框的任何一行。
+        h(Column, {"dataFloatAnchor": "bottom_area"}, bottom_area),
+    ]
+    # ★ 通用浮动窗口（2026-10-21 用户需求）：绝对定位层追加为根的最后
+    #   子节点——不占文档高度（_measure 分离 absolute），绘制顺序在正常
+    #   界面之后（覆盖在上）；布局完成后由 ink._floating 按锚点/坐标平移。
+    #   关闭浮窗后元素消失，下一帧整帧重建 → 行级 diff 恢复被覆盖行。
+    root_children.extend(floating_layer_elements(model, width))
+    return h(APP, {"width": width, "flexDirection": "column"}, root_children)
 
 
 def _normal_bottom_area(model, width: int) -> list:

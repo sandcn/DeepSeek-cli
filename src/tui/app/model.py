@@ -48,6 +48,7 @@ from src.tui.app._state_types import (
     PluginViewState,
     ModelViewState,
     StatusState,
+    LoopStatusState,
     HistorySearchState,
     ReasoningState,
     SessionsViewState,
@@ -151,6 +152,16 @@ class AppModel(_ToolOutputMixin):
         self._tool_id_seq: int = 0
         # 状态栏
         self.status: StatusState = StatusState()
+        # ── 通用浮动窗口（2026-10-21 用户需求）──
+        # 浮窗规格列表（``app.floating.FloatingWindowSpec``）——渲染期由
+        # App 追加到组件树根（absolute 定位，不占文档高度），布局后经
+        # ``ink._floating.apply_floating_layout`` 按锚点/坐标定位；关闭时
+        # 从列表移除，下一帧重建整帧 → 原内容原样还原。按 priority 排序
+        # 叠加（高优先级后绘制、覆盖低优先级）。
+        # **reset_display 不清空**（/loop 每轮 clear_messages 不得关闭浮窗）。
+        self.floating_windows: list = []
+        # ``/loop`` 循环状态（循环浮窗数据源；/loop 每轮/每次运行前更新）。
+        self.loop_status: LoopStatusState = LoopStatusState()
         # 输入
         self.input_text: str = ""
         self.input_cursor: int = 0
@@ -1306,6 +1317,7 @@ __all__ = [
     "ChatBlock",
     "CompletionState",
     "StatusState",
+    "LoopStatusState",
     "HistorySearchState",
     "UserSelectState",
     "EditMsgSelectState",

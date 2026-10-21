@@ -57,9 +57,24 @@ class _FakeChatUI:
     def __init__(self):
         self.lines: list[str] = []
         self.bottom_bar = _FakeBottomBar()
+        # 循环浮窗（2026-10-21 用户需求）：记录打开/进度/关闭调用
+        self.loop_windows_opened = 0
+        self.loop_window_open_args = None
+        self.loop_statuses: list[dict] = []
+        self.loop_windows_closed = 0
 
     def write_line(self, text):
         self.lines.append(text)
+
+    def open_loop_floating_window(self, total, prompt, runs_per_round=2):
+        self.loop_windows_opened += 1
+        self.loop_window_open_args = (total, prompt, runs_per_round)
+
+    def set_loop_status(self, **fields):
+        self.loop_statuses.append(dict(fields))
+
+    def close_loop_floating_window(self):
+        self.loop_windows_closed += 1
 
 
 class _FakeLoop:
@@ -130,6 +145,17 @@ async def test_loop_command_consecutive_rounds_after_completed(
     assert session.state_name == "completed"
     assert fake_loop._loop_state["_loop_mode"] is False
     assert fake_loop._chat_ui.bottom_bar.status_enabled is False
+    # 循环浮窗：打开一次（总次数/提词）、每轮第 1/2 次进度、结束关闭一次
+    ui = fake_loop._chat_ui
+    assert ui.loop_windows_opened == 1
+    assert ui.loop_window_open_args == (count, "ls", 2)
+    assert [s["run"] for s in ui.loop_statuses] == [
+        run for _ in range(count) for run in (1, 2)
+    ]
+    assert [s["round"] for s in ui.loop_statuses] == [
+        r for r in range(1, count + 1) for _ in (1, 2)
+    ]
+    assert ui.loop_windows_closed == 1
 
 
 async def test_loop_command_survives_completed_state_without_clear(

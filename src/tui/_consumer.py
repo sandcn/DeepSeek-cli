@@ -376,6 +376,90 @@ class ChatUIConsumer:
     def bottom_bar(self):
         return self._bb
 
+    # ── 通用浮动窗口（2026-10-21 用户需求） ─────────
+
+    def open_floating_window(self, window) -> bool:
+        """打开（或替换同 id）浮动窗口。
+
+        Args:
+            window: ``src.tui.app.floating.FloatingWindowSpec``——窗口内部
+                可放任意 React Ink 组件（hooks/标准控件可用）。
+
+        Returns:
+            True=已登记；False=无效规格或底层桥不支持（测试桩）。
+        """
+        fn = getattr(self._bb, "open_floating_window", None)
+        if not callable(fn):
+            return False
+        return bool(fn(window))
+
+    def update_floating_window(self, window_id: str, **changes) -> bool:
+        """更新已打开窗口的规格字段（如位置/内容组件）。"""
+        fn = getattr(self._bb, "update_floating_window", None)
+        if not callable(fn):
+            return False
+        return bool(fn(window_id, **changes))
+
+    def close_floating_window(self, window_id: str) -> bool:
+        """关闭指定浮动窗口（原内容在下一帧自动还原）。"""
+        fn = getattr(self._bb, "close_floating_window", None)
+        if not callable(fn):
+            return False
+        return bool(fn(window_id))
+
+    def clear_floating_windows(self) -> None:
+        """关闭全部浮动窗口（幂等）。"""
+        fn = getattr(self._bb, "clear_floating_windows", None)
+        if callable(fn):
+            fn()
+
+    # ── /loop 循环浮窗（/loop 命令使用） ─────────────
+
+    def open_loop_floating_window(
+        self, total: int, prompt: str, runs_per_round: int = 2,
+    ) -> None:
+        """打开 ``/loop`` 循环浮窗并重置循环进度。
+
+        浮窗锚定输入区最上方的分隔线右端、向上展开（带边框），显示
+        总次数 / 提词 / 当前运行次数；进度经 ``set_loop_status`` 更新，
+        循环结束（含中断）经 ``close_loop_floating_window`` 关闭——关闭后
+        原内容由下一帧整帧重建自动还原。
+        """
+        from src.tui.app.floating import loop_window_spec
+
+        try:
+            total_n = max(0, int(total))
+        except (TypeError, ValueError, OverflowError):
+            total_n = 0
+        try:
+            per_round = max(1, int(runs_per_round))
+        except (TypeError, ValueError, OverflowError):
+            per_round = 2
+        setter = getattr(self._bb, "set_loop_status", None)
+        if callable(setter):
+            setter(
+                active=True,
+                total=total_n,
+                prompt=str(prompt or ""),
+                round=0,
+                run=0,
+                runs_per_round=per_round,
+            )
+        self.open_floating_window(loop_window_spec())
+
+    def set_loop_status(self, **fields) -> None:
+        """更新 ``/loop`` 进度（total/round/run/runs_per_round/prompt/active）。"""
+        fn = getattr(self._bb, "set_loop_status", None)
+        if callable(fn):
+            fn(**fields)
+
+    def close_loop_floating_window(self) -> None:
+        """关闭 ``/loop`` 浮窗并重置循环状态（幂等；循环结束/中断调用）。"""
+        self.close_floating_window("loop")
+        resetter = getattr(self._bb, "reset_loop_status", None)
+        if callable(resetter):
+            resetter()
+
     @property
     def output_adapter(self):
         """返回 None（非全屏流动模型无 OutputAdapter；2026-08-05 死代码清理）。

@@ -96,6 +96,9 @@ def layout_tree(root_fiber: Fiber, width: int) -> int:
     #   分支检测到 absolute 子节点时置位（见 _measure）；无 absolute 节点
     #   跳过第二遍绝对定位遍历。
     root._has_absolute_present = False
+    # ★ 浮窗存在标志（2026-10-21）：同 absolute 标志——render_frame 仅在
+    #   存在浮窗时合成浮窗层（无浮窗的树零额外 DFS）。
+    root._has_float_present = False
     box = _measure(root, 0, 0, width)
     if root._has_absolute_present:
         _layout_absolute_pass(root)

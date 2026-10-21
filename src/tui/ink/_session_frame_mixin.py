@@ -51,6 +51,7 @@ from src.tui.ink import components as _components
 from src.tui.ink import hooks as _hooks
 from src.tui.ink import _cursor
 from src.tui.ink._animation import advance_animation, has_active_animations
+from src.tui.ink._floating import apply_floating_layout
 
 _logger = logging.getLogger(__name__)
 
@@ -435,6 +436,17 @@ class _SessionFrameMixin:
         else:
             element = self._build_tree(self._model, width)
             self._reconciler.render(self._root_fiber, element, width, self._width_cache.get_height())
+            # ★ 浮窗定位（2026-10-21 用户需求：通用浮动窗口）：浮窗是组件树中的
+            #   absolute 容器（不占文档高度），布局完成后按锚点（如输入区顶部分隔线）
+            #   /任意行列坐标解析目标矩形并平移子树——向上展开、任意位置显示、
+            #   多窗口叠加。关闭浮窗后下一帧重建不含浮窗的整帧，行级 diff 自动
+            #   重写被覆盖行（原内容原样还原）。仅当模型声明浮窗时遍历（常规
+            #   帧零开销）。
+            if getattr(self._model, "floating_windows", None):
+                try:
+                    apply_floating_layout(self._root_fiber, width)
+                except Exception:
+                    _logger.debug("浮窗布局异常", exc_info=True)
             frame = _components.render_frame(self._root_fiber, width)
             self._last_frame = frame
             self._last_frame_idle_static = static_now

@@ -25,6 +25,7 @@ __all__ = [
     "PluginViewState",
     "ModelViewState",
     "StatusState",
+    "LoopStatusState",
     "HistorySearchState",
     # ── 2026-10 新增全屏视图状态（ListViewState 基类 + 各视图子类） ──
     "ListViewState",
@@ -655,6 +656,32 @@ class StatusState:
     #: 标题是**静默后台流式调用**（不进入活跃期门控），空闲期生成结束后状态栏
     #: 在宽限期内继续展示「总tok / tok/s」，让这次标题请求的消耗可见。
     title_last_end_ts: float = 0.0
+
+
+@dataclass
+class LoopStatusState:
+    """``/loop`` 循环运行状态（浮窗展示的数据源，2026-10-21 用户需求）。
+
+    ``/loop`` 在每轮 / 每次运行前经 InkBridge 更新本状态，循环浮窗
+    （``app/floating.py`` 的 ``LoopFloatingWindow``）读取并在输入区上方的
+    浮动窗口中显示：总次数、提词、当前运行次数（每轮第 1 或 2 次）。
+
+    Attributes:
+        active: 循环是否进行中（False 时浮窗内容为空/浮窗已关闭）。
+        total: 总轮数（``/loop <次数>`` 的次数）。
+        round: 当前轮（1-based；0 = 尚未开始）。
+        run: 当前轮内第几次运行（1-based，1 或 2）。
+        runs_per_round: 每轮运行次数（``/loop`` 固定为 2：用户提词 +
+            「继续完成所有」）。
+        prompt: 用户提词（浮窗中截断显示）。
+    """
+
+    active: bool = False
+    total: int = 0
+    round: int = 0
+    run: int = 0
+    runs_per_round: int = 2
+    prompt: str = ""
 
 
 @dataclass
