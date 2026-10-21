@@ -1,4 +1,4 @@
-"""PetPlugin — ``/pet`` 蓝色大肥鱼宠物浮窗。
+"""PetPlugin — ``/pet`` 爱吃大白饭的蓝色大肥鱼宠物浮窗。
 
 交互语义（2026-10-22 用户需求）：
 
@@ -6,7 +6,9 @@
   - ``/pet on`` / ``/pet open``：强制召唤（已在显示则重新开窗、动画重置）；
   - ``/pet off``：收回宠物；
   - 宠物浮窗无边框、背景透明，只显示实际绘制的行内容（见
-    ``src.tui.app.pet.pet_window_spec``）。
+    ``src.tui.app.pet.pet_window_spec``）；人设为「干饭鱼娘」：端饭碗、
+    冒热气、干饭/咀嚼/打嗝/追饭粒/吃撑躺平/跳舞/漫步/吃 tok 等 22 种动作，
+    36 条通用台词 + 动作专属台词；浮窗固定在右侧 40 列，不随机游走。
 
 关闭不绑定 Esc：Esc 在 TUI 中承担中断 / 清空输入语义，避免宠物浮窗抢键。
 """
@@ -72,7 +74,10 @@ class PetPlugin(InteractiveCommandPlugin):
         super().__init__()
         self.meta = CommandMeta(
             name="pet",
-            description="召唤/收回蓝色大肥鱼宠物（无边框透明浮窗，会跳来跳去）",
+            description=(
+                "召唤/收回爱吃大白饭的蓝色大肥鱼宠物"
+                "（右侧浮窗，干饭/吃 tok/跳舞等 22 种动作）"
+            ),
             group="general",
             usage="[on|off]",
         )
@@ -103,7 +108,7 @@ class PetPlugin(InteractiveCommandPlugin):
         if arg in _OFF_WORDS:
             closed = _call_bool(chat_ui, "close_pet_floating_window")
             if closed:
-                self._emit(chat_ui, f"  {BRIGHT_CYAN}🐟 大肥鱼娘游走了～{RESET}")
+                self._emit(chat_ui, f"  {BRIGHT_CYAN}🐟 大肥鱼娘干完饭游走了～{RESET}")
             elif closed is False:
                 self._emit(chat_ui, f"  {DIM}宠物浮窗本来就没开哦{RESET}")
             else:
@@ -120,15 +125,15 @@ class PetPlugin(InteractiveCommandPlugin):
         is_open = _call_bool(chat_ui, "is_pet_floating_window_open")
         if arg == "" and is_open:
             _call_bool(chat_ui, "close_pet_floating_window")
-            self._emit(chat_ui, f"  {BRIGHT_CYAN}🐟 大肥鱼娘游走了～{RESET}")
+            self._emit(chat_ui, f"  {BRIGHT_CYAN}🐟 大肥鱼娘干完饭游走了～{RESET}")
             return True
 
         opened = _call_bool(chat_ui, "open_pet_floating_window")
         if opened:
             self._emit(
                 chat_ui,
-                f"  {BRIGHT_CYAN}🐟 蓝色大肥鱼娘出现啦！{RESET}"
-                f"{DIM}  （/pet 收回；她会跳来跳去）{RESET}",
+                f"  {BRIGHT_CYAN}🐟 干饭鱼娘端着大白饭出现啦！{RESET}"
+                f"{DIM}  （/pet 收回；她要开始干饭了）{RESET}",
             )
         elif opened is False:
             self._emit(

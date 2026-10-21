@@ -415,32 +415,49 @@ class ChatUIConsumer:
 
     # ── /pet 宠物浮窗（/pet 命令使用） ───────────────
 
-    def open_pet_floating_window(self) -> bool:
-        """打开（或替换）蓝色大肥鱼宠物浮窗。
+    def _floating_window_ids(self) -> set[str]:
+        """当前已登记浮窗 id 集合（strip 归一化；无模型时为空集）。"""
+        model = getattr(self, "_rs", None)
+        windows = getattr(model, "floating_windows", None) or []
+        return {
+            str(getattr(window, "id", "")).strip()
+            for window in windows
+            if str(getattr(window, "id", "")).strip()
+        }
 
-        规格见 ``src.tui.app.pet.pet_window_spec``：无边框、透明背景、
-        内容自适应宽度（只显示实际绘制的行内容）。返回底层桥是否登记成功。
+    def open_pet_floating_window(self) -> bool:
+        """打开（或替换）爱吃大白饭的蓝色大肥鱼宠物浮窗。
+
+        规格见 ``src.tui.app.pet.pet_window_spec``：无边框、透明背景、右侧
+        40 列浮窗；22 种动作含干饭/咀嚼/打嗝/追饭粒/吃撑躺平/跳舞/吃 tok。
+        返回底层桥是否登记成功。
+
+        ``/loop`` 同时打开时把循环浮窗移到左侧，宠物保留右侧——两者不互相
+        遮挡；宠物关闭后循环浮窗恢复右侧。
         """
         from src.tui.app.pet import pet_window_spec
 
+        if "loop" in self._floating_window_ids():
+            self.update_floating_window("loop", x="left")
         return self.open_floating_window(pet_window_spec())
 
     def close_pet_floating_window(self) -> bool:
-        """关闭宠物浮窗（窗口不存在时返回 False）。"""
+        """关闭宠物浮窗（窗口不存在时返回 False）。
+
+        宠物关闭后若 ``/loop`` 仍打开，把它从左侧恢复到默认右侧。
+        """
         from src.tui.app.pet import PET_WINDOW_ID
 
-        return self.close_floating_window(PET_WINDOW_ID)
+        closed = self.close_floating_window(PET_WINDOW_ID)
+        if closed and "loop" in self._floating_window_ids():
+            self.update_floating_window("loop", x="right")
+        return closed
 
     def is_pet_floating_window_open(self) -> bool:
         """宠物浮窗是否正在显示（供 ``/pet`` 做开关切换）。"""
         from src.tui.app.pet import PET_WINDOW_ID
 
-        model = getattr(self, "_rs", None)
-        windows = getattr(model, "floating_windows", None) or []
-        return any(
-            str(getattr(window, "id", "")).strip() == PET_WINDOW_ID
-            for window in windows
-        )
+        return PET_WINDOW_ID in self._floating_window_ids()
 
     # ── /loop 循环浮窗（/loop 命令使用） ─────────────
 
@@ -481,7 +498,11 @@ class ChatUIConsumer:
                 round_started_at=0.0,
                 run_started_at=0.0,
             )
-        self.open_floating_window(loop_window_spec())
+        spec = loop_window_spec()
+        if "pet" in self._floating_window_ids():
+            # 宠物占右侧时，循环浮窗让到左侧，避免被宠物窗口覆盖。
+            spec = spec.copy_with(x="left")
+        self.open_floating_window(spec)
 
     def set_loop_status(self, **fields) -> None:
         """更新 ``/loop`` 进度（total/round/prompt/next_prompt/generating/

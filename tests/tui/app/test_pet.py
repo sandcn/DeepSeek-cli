@@ -1,14 +1,21 @@
-"""``/pet`` 宠物浮窗：规格、姿态、内容渲染与透明行裁剪。"""
+"""``/pet`` 宠物浮窗：规格、姿态、动作、台词、内容渲染与透明行裁剪。"""
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
+from src.tui._width import wcswidth_simple
 from src.tui.app.pet import (
+    PET_ACTIONS,
     PET_BUBBLE_PERIOD,
     PET_BUBBLE_VISIBLE,
     PET_CYCLE,
+    PET_LINES,
     PET_MAX_DX,
+    PET_SPRITE_HEIGHT,
+    PET_SPRITE_WIDTH,
     PET_STAGE_HEIGHT,
     PET_STAGE_WIDTH,
     PetFloatingWindow,
@@ -63,24 +70,55 @@ def test_pet_window_composites_into_app_frame() -> None:
     from src.tui.app.model import AppModel
 
     model = AppModel()
-    model.floating_windows = [pet_window_spec(started_at=0.0)]
+    model.floating_windows = [pet_window_spec(started_at=time.monotonic())]
     text = strip_ansi(
         renderToString(build_app_element(model, 70), {"columns": 70})
     )
-    # 发饰与鱼身是每一帧都存在的稳定标记（眼睛/气泡会随动作/时间变化）。
-    assert "✿" in text
+    # 启动欢迎页空间有限时可能裁掉顶部发饰，但鱼身必须可见。
     assert "█" in text
     # 透明背景：窗口空白列不写画布，底层欢迎卡内容仍可见。
     assert "运行环境" in text
     assert "◆ 主题" in text
 
 
-# ── 姿态时间函数 ─────────────────────────────────────────
+def test_pet_layer_is_above_loop_window() -> None:
+    """/pet 与 /loop 同屏时宠物在上层（循环浮窗由 consumer 让到左侧）。"""
+    from src.tui.app.app import build_app_element
+    from src.tui.app.floating import loop_window_spec
+    from src.tui.app.model import AppModel
+
+    model = AppModel()
+    model.floating_windows = [
+        loop_window_spec(),
+        pet_window_spec(started_at=time.monotonic()),
+    ]
+    text = strip_ansi(
+        renderToString(build_app_element(model, 120), {"columns": 120})
+    )
+    assert "█" in text, "宠物应绘制在浮窗层"
+    assert pet_window_spec().priority > loop_window_spec().priority
+
+
+# ── 动作目录与姿态时间函数 ───────────────────────────────
 
 
 def _mid(name: str) -> float:
     start, duration = action_window(name)
     return start + duration * 0.5
+
+
+def test_action_catalog_has_feeding_actions() -> None:
+    names = [name for name, _duration in PET_ACTIONS]
+    assert len(names) == 22
+    assert len(set(names)) == len(names)
+    for action in (
+        "idle", "eat", "jump", "chew", "wiggle", "dash", "burp",
+        "spin", "sing", "chase", "wink", "food_coma", "dance", "sleep",
+        "stroll", "sniff_tok", "tok_feast", "happy_run",
+        "peek", "stretch", "beg", "nod",
+    ):
+        assert action in names
+    assert PET_CYCLE == pytest.approx(sum(duration for _name, duration in PET_ACTIONS))
 
 
 def test_idle_blinks_and_bob_does_not_freeze() -> None:
@@ -99,7 +137,7 @@ def test_jump_goes_up_and_returns() -> None:
     landing = pet_pose_at(start + duration * 0.99)
 
     assert takeoff.dy == 0
-    assert airborne.dy == -2
+    assert airborne.dy == -3
     assert airborne.eyes == ("^", "^")
     assert landing.dy == 0
     assert landing.effect in ("dust", "spark")
@@ -126,6 +164,16 @@ def test_dash_uses_full_stage_width_and_flips() -> None:
     assert right.effect == "motion"
 
 
+def test_chase_runs_for_rice_and_mirrors() -> None:
+    start, duration = action_window("chase")
+    right = pet_pose_at(start + duration * 0.25)
+    left = pet_pose_at(start + duration * 0.75)
+    assert abs(right.dx) >= PET_MAX_DX
+    assert right.dx == -left.dx
+    assert right.flip != left.flip
+    assert right.effect == "crumb_motion"
+
+
 def test_spin_dizzy_and_flips() -> None:
     start, duration = action_window("spin")
     frames = [pet_pose_at(start + duration * f).flip for f in (0.05, 0.2, 0.35)]
@@ -149,6 +197,40 @@ def test_sing_wink_sleep_have_signature_poses() -> None:
     assert sleep.effect == "z"
 
 
+def test_eating_poses_are_distinct() -> None:
+    eat = pet_pose_at(_mid("eat"))
+    chew = pet_pose_at(_mid("chew"))
+    burp = pet_pose_at(_mid("burp"))
+    coma = pet_pose_at(_mid("food_coma"))
+    dance = pet_pose_at(_mid("dance"))
+
+    assert eat.effect == "steam_rice"
+    assert eat.mouth in ("▽", "ω")
+    assert chew.effect == "crumb"
+    assert burp.effect == "burp"
+    assert coma.effect == "full"
+    assert coma.dy > 0, "吃撑应躺平下沉"
+    assert dance.effect == "dance"
+
+
+def test_tok_actions_render_tok_snack() -> None:
+    from src.tui.app.pet import _compose_grid
+
+    sniff = pet_pose_at(_mid("sniff_tok"))
+    feast = pet_pose_at(_mid("tok_feast"))
+    assert sniff.effect == "sniff_tok"
+    assert feast.effect == "tok_feast"
+    assert "tok" in "".join(ch for row in _compose_grid(feast, _mid("tok_feast"), width=100) for ch, _style in row)
+    assert "tok" in "".join(ch for row in _compose_grid(sniff, _mid("sniff_tok"), width=100) for ch, _style in row)
+
+
+def test_pet_stays_in_40_column_window() -> None:
+    """删除随机游走后，宠物始终限制在右侧 40 列浮窗内。"""
+    text = _render(0.2, width=130)
+    for line in text.splitlines():
+        assert wcswidth_simple(line) <= PET_STAGE_WIDTH
+
+
 def test_action_cycle_wraps() -> None:
     assert pet_pose_at(0.0).action == "idle"
     assert pet_pose_at(PET_CYCLE).action == "idle"
@@ -162,7 +244,28 @@ def test_bubble_periodically_speaks() -> None:
     assert pet_pose_at(PET_BUBBLE_PERIOD + 0.2).line
 
 
-# ── 内容渲染：行宽大小不一 / 只画内容 ─────────────────────
+def test_dialogue_pool_is_large_and_rice_themed() -> None:
+    assert len(PET_LINES) >= 36
+    assert any("饭" in line for line in PET_LINES)
+    assert any("白饭" in line for line in PET_LINES)
+    assert any("干饭" in line for line in PET_LINES)
+    assert PET_BUBBLE_PERIOD <= 7.0
+    assert PET_BUBBLE_VISIBLE >= 3.0
+
+
+def test_every_action_has_specific_dialogue() -> None:
+    from src.tui.app import pet as pet_module
+
+    names = {name for name, _duration in PET_ACTIONS}
+    assert set(pet_module._ACTION_LINES) == names
+    for lines in pet_module._ACTION_LINES.values():
+        assert len(lines) >= 3
+        for line in lines:
+            assert line
+            assert wcswidth_simple(line) <= PET_STAGE_WIDTH - 4
+
+
+# ── 内容渲染：行宽大小不一 / 只画内容 / 干饭道具 ──────────
 
 
 def test_bubble_is_inside_fixed_stage_height() -> None:
@@ -184,6 +287,18 @@ def test_render_contains_blue_fish_face_and_accessories() -> None:
     assert "╭" in text and "╯" in text, "气泡"
 
 
+def test_render_contains_rice_bowl_and_steam() -> None:
+    eat = _render(_mid("eat"))
+    assert "╭" in eat and "╰" in eat, "饭碗"
+    assert "▁" in eat and "▒" in eat, "白饭"
+    assert "≈" in eat, "热气"
+    assert "▽" in eat or "ω" in eat, "干饭嘴型"
+
+    coma = _render(_mid("food_coma"))
+    assert "░" in coma, "空碗"
+    assert "z" in coma or "Z" in coma, "吃撑睡觉"
+
+
 def test_render_rows_have_different_widths() -> None:
     text = _render(0.2)
     lines = [line.rstrip() for line in text.splitlines() if line.strip()]
@@ -191,7 +306,18 @@ def test_render_rows_have_different_widths() -> None:
     assert len(widths) > 3, f"行宽应大小不一，实际: {sorted(widths)}"
 
 
-def test_render_jump_moves_up_two_rows() -> None:
+def test_all_actions_fit_canvas_width() -> None:
+    for name, duration in PET_ACTIONS:
+        start, _duration = action_window(name)
+        for fraction in (0.05, 0.3, 0.5, 0.75, 0.95):
+            text = _render(start + duration * fraction)
+            for line in text.splitlines():
+                assert wcswidth_simple(line) <= PET_STAGE_WIDTH, (
+                    f"{name} 行宽超出舞台: {line!r}"
+                )
+
+
+def test_render_jump_moves_up_three_rows() -> None:
     from src.tui.app.pet import _compose_grid
 
     jump_t = _mid("jump")
@@ -204,7 +330,7 @@ def test_render_jump_moves_up_two_rows() -> None:
                 return index
         raise AssertionError("未找到发饰")
 
-    assert flower_row(jump_grid) == flower_row(idle_grid) - 2
+    assert flower_row(jump_grid) == flower_row(idle_grid) - 3
 
 
 def test_render_uses_blue_body_and_pink_accessories() -> None:
@@ -217,21 +343,45 @@ def test_render_uses_blue_body_and_pink_accessories() -> None:
         {"columns": 40},
     )
     assert "\x1b[38;5;39m" in raw, "亮蓝鱼身"
-    assert "\x1b[38;5;25m" in raw, "深蓝描边"
+    assert "\x1b[38;5;45m" in raw, "亮青蓝描边"
     assert "\x1b[38;5;211m" in raw, "粉色腮红/爱心"
+    assert "\x1b[38;5;231m" in raw, "白饭/大眼"
+    assert "\x1b[48;5;39m" in raw, "身体底色（避免半填充字形露黑块）"
 
 
 def test_narrow_width_is_clamped() -> None:
     text = _render(0.2, width=10)
     for line in text.splitlines():
-        assert len(line) <= 10
+        assert wcswidth_simple(line) <= 10
     assert text.strip(), "窄终端仍应显示内容"
 
 
 def test_stage_dimensions_match_constants() -> None:
     # 内容组件内部使用固定舞台：窗口高度不会随小动作抖动。
-    assert PET_STAGE_WIDTH == 30
-    assert PET_STAGE_HEIGHT == 12
+    assert PET_STAGE_WIDTH == 40
+    assert PET_STAGE_HEIGHT == 16
+    assert PET_SPRITE_WIDTH == 28
+    assert PET_SPRITE_HEIGHT == 11
+    assert PET_MAX_DX == 6
+
+
+def test_visible_height_crops_bottom_rows_without_bubble() -> None:
+    """启动欢迎页空间不足时保留身体/表情/饭碗，并隐藏会被裁掉的气泡。"""
+    text = strip_ansi(
+        renderToString(
+            h(PetFloatingWindow, {
+                "width": 40,
+                "started_at": 0.0,
+                "now": 2.5,
+                "geometry": {"visible": True, "height": 10},
+            }),
+            {"columns": 40},
+        )
+    )
+    assert len(text.splitlines()) <= 10
+    assert "◕" in text, "表情必须保留"
+    assert "╭" in text, "饭碗必须保留"
+    assert "啊呜" not in text, "气泡不应只露半截"
 
 
 def test_runtime_type_alias_avoids_pep604_for_python39() -> None:
@@ -259,4 +409,70 @@ def test_runtime_type_alias_avoids_pep604_for_python39() -> None:
             if isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.BitOr)
         ]
         assert not pep604, "运行期类型别名必须兼容 Python 3.9（用 Optional）"
+
+
+def test_pet_and_loop_windows_take_separate_sides() -> None:
+    """宠物与 /loop 同开时循环浮窗让到左侧，关闭宠物后恢复右侧。"""
+    from types import SimpleNamespace
+
+    from src.tui._consumer import ChatUIConsumer
+
+    class _Bridge:
+        def __init__(self, model):
+            self.model = model
+
+        def open_floating_window(self, window) -> bool:
+            wid = str(getattr(window, "id", ""))
+            self.model.floating_windows = [
+                w for w in self.model.floating_windows
+                if str(getattr(w, "id", "")) != wid
+            ] + [window]
+            return True
+
+        def update_floating_window(self, window_id: str, **changes) -> bool:
+            for index, window in enumerate(self.model.floating_windows):
+                if str(getattr(window, "id", "")) == window_id:
+                    self.model.floating_windows[index] = window.copy_with(**changes)
+                    return True
+            return False
+
+        def close_floating_window(self, window_id: str) -> bool:
+            kept = [
+                w for w in self.model.floating_windows
+                if str(getattr(w, "id", "")) != window_id
+            ]
+            if len(kept) == len(self.model.floating_windows):
+                return False
+            self.model.floating_windows = kept
+            return True
+
+    model = SimpleNamespace(floating_windows=[])
+    ui = ChatUIConsumer.__new__(ChatUIConsumer)
+    ui._rs = model
+    ui._bb = _Bridge(model)
+
+    ui.open_loop_floating_window(1, "干饭")
+    assert _window(model, "loop").x == "right"
+
+    assert ui.open_pet_floating_window() is True
+    assert _window(model, "loop").x == "left"
+    assert _window(model, "pet").x == "right"
+
+    assert ui.close_pet_floating_window() is True
+    assert _window(model, "loop").x == "right"
+
+    # 先开宠物、再开 /loop：loop 直接让到左侧。
+    assert ui.open_pet_floating_window() is True
+    ui.close_loop_floating_window()
+    ui.open_loop_floating_window(2, "再干一碗")
+    assert _window(model, "loop").x == "left"
+    assert _window(model, "pet").x == "right"
+
+
+def _window(model, window_id: str):
+    for window in model.floating_windows:
+        if str(getattr(window, "id", "")) == window_id:
+            return window
+    raise AssertionError(f"未找到浮窗: {window_id}")
+
 
