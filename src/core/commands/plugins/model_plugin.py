@@ -44,6 +44,7 @@ class ModelPlugin(InteractiveCommandPlugin):
             name="model",
             description="切换模型",
             group="model",
+            queue_only=True,
         )
 
     async def async_execute(self, ctx: Any) -> bool:

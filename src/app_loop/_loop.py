@@ -68,6 +68,11 @@ def _make_pending_input_probe(queue, input_instance=None):
     返回 True 即提前结束后台任务等待，让当前轮结束、由消息队列消费者取走
     并处理该条用户消息（后台任务继续运行，不杀不标记 managed_by_tool）。
 
+    ★ 命令直连（2026-10-22）：可直连的斜杠命令在 render 线程 Enter 时即被
+    接管（不写入 ``_submitted_text`` / ``_input_ready``），因此不会触发本
+    探测；探测继续只对普通消息与排队例外命令生效（保持既有「用户输入优先」
+    语义）。
+
     Args:
         queue: 消息队列实例（MessageQueue / asyncio.Queue）。
         input_instance: Input 实例（可为 None——无输入框的上层）。
@@ -117,6 +122,21 @@ class InteractiveLoop:
         # ★ ESC 杀后台任务跨线程调度用的主事件循环（run() 中保存——
         #   render 线程中 asyncio.get_event_loop() 不可用）
         self._loop: asyncio.AbstractEventLoop | None = None
+        # ★ 命令直连（2026-10-22 用户需求）：命令不再一律投递到用户消息队列。
+        #   - ``_round_active``：消费者正在处理队列消息（生成本轮 / 队列命令），
+        #     此时只允许只读命令（``direct_during_round``）直连；
+        #   - ``_generation_active``：正在跑 AI 生成轮（普通消息 / retry 哨兵，
+        #     含后台任务等待）——render 线程只在此窗口拦截只读命令；
+        #     队列例外命令执行期间不拦截，避免与交互弹窗/全屏视图并发；
+        #   - ``_command_active_depth``：正在执行的命令数（直连或队列命令），
+        #     >0 时同样只允许只读命令直连，避免两个改写状态的命令并发；
+        #   - ``_direct_cmd_lock``：直连命令串行锁（run() 内创建，绑定运行循环）；
+        #   - ``_direct_tasks``：直连命令后台任务（run() 退出时统一取消）。
+        self._round_active = False
+        self._generation_active = False
+        self._command_active_depth = 0
+        self._direct_cmd_lock: asyncio.Lock | None = None
+        self._direct_tasks: set[asyncio.Task] = set()
 
     @property
     def _ui(self) -> ChatUIConsumer:
@@ -128,6 +148,173 @@ class InteractiveLoop:
 
     def _get_term_width(self) -> int:
         return TerminalWidthCache.get_default().get_width()
+
+    # ── 用户消息 / 命令回显（2026-10-22 用户需求） ──────────────
+    #
+    # 命令按 Enter 后先以「用户消息」样式上屏（白色粗体 + tool_card 背景，
+    # 样式由渲染层统一处理；此处只负责投递 UserMsgCmd），再执行命令逻辑。
+    # 回显只在 Enter 时发生一次：直连 / 队列 / 普通消息路径均不重复回显。
+
+    def _echo_user_message(self, text: str) -> None:
+        """把一条文本按用户消息样式上屏（命令回显 / exit 回显）。"""
+        if self._chat_ui is None:
+            return
+        try:
+            self._ui.on_user_message(text)
+        except Exception:
+            _logger.debug("用户消息回显失败", exc_info=True)
+
+    def _echo_exit_message(self, text: str) -> None:
+        """exit 回显并同步 flush（确保退出前消息已上屏）。"""
+        self._echo_user_message(text)
+        try:
+            self._ui.flush()
+        except Exception:
+            _logger.debug("exit 回显 flush 失败", exc_info=True)
+
+    # ── 命令直连策略（2026-10-22 用户需求） ──────────────
+    #
+    # 规则（由 CommandMeta.queue_only / direct_during_round 声明，见
+    # ``src/core/commands/base.py``）：
+    #   1. 空闲（无生成、无命令执行）：除 ``queue_only`` 例外命令外，斜杠命令
+    #      一律直连执行，不进入 MessageQueue；
+    #   2. 生成中 / 其他命令执行中：只有只读展示类命令（``direct_during_round``）
+    #      与未知命令直连（无状态副作用），其余命令保持原有排队语义，等当前轮 /
+    #      当前命令结束后再处理；
+    #   3. ``queue_only`` 命令（改写会话历史 / 触发新一轮生成 / 改写上下文预算 /
+    #      独占交互界面）始终经消息队列串行执行。
+    #
+    # 判定两处使用：render 线程（InputBufferEditor._enter）仅在
+    # ``_generation_active``（AI 生成轮 / 后台任务等待）期间拦截只读命令
+    # （Enter 时不写入排队输入）；空闲时命令仍由 _handle_round 内联直连执行，
+    # 保证命令与后续输入严格串行。
+
+    @staticmethod
+    def _command_name(text: str) -> str:
+        """从命令文本提取命令名（首词、去 ``/``、小写）。"""
+        parts = str(text or "").split(maxsplit=1)
+        if not parts:
+            return ""
+        return parts[0].lstrip("/").lower()
+
+    @staticmethod
+    def _command_meta(name: str):
+        """取命令元数据（注册表优先，未注册时回退已声明插件；未知返回 None）。"""
+        if not name:
+            return None
+        plugin = get_interactive_registry().get(name)
+        if plugin is None:
+            try:
+                from ..core.commands.base import declared_command_plugin
+
+                plugin = declared_command_plugin(name)
+            except Exception:
+                _logger.debug("直连策略：读取声明命令失败", exc_info=True)
+                plugin = None
+        return getattr(plugin, "meta", None) if plugin is not None else None
+
+    def _should_direct_command(self, text: str) -> bool:
+        """该输入是否应立即直连执行（而非投递到用户消息队列）。
+
+        - 非斜杠输入（普通用户消息）→ False；
+        - ``queue_only`` 命令 → False（始终排队）；
+        - 生成中 / 命令执行中 → 仅 ``direct_during_round`` 命令为 True；
+        - 空闲 → 其余命令（含未注册命令，仅打印未知提示）为 True。
+        """
+        if not isinstance(text, str) or not text.startswith("/"):
+            return False
+        meta = self._command_meta(self._command_name(text))
+        if meta is not None:
+            if bool(getattr(meta, "queue_only", False)):
+                return False
+            direct_during_round = bool(getattr(meta, "direct_during_round", False))
+        else:
+            # 未知命令只输出「未知命令」提示，无会话/配置副作用。
+            direct_during_round = True
+        busy = self._round_active or self._generation_active or self._command_active_depth > 0
+        return direct_during_round if busy else True
+
+    def _ensure_direct_lock(self) -> asyncio.Lock:
+        """返回直连命令串行锁（首次使用时在运行中的事件循环内创建）。"""
+        lock = self._direct_cmd_lock
+        if lock is None:
+            lock = asyncio.Lock()
+            self._direct_cmd_lock = lock
+        return lock
+
+    def _make_direct_submit_callback(self, session, state: SessionState):
+        """构造 render 线程调用的「命令直连」判定回调。
+
+        回调必须快速、非阻塞：只做策略判断 + ``call_soon_threadsafe`` 调度，
+        实际命令执行由主事件循环中的 ``_run_direct_command`` 串行完成。
+        """
+
+        def _on_direct_submit(text: str) -> bool:
+            if self._force_exit.is_set():
+                return False
+            # ★ 命令回显（2026-10-22 用户需求）：所有斜杠命令在 Enter 时先按
+            #   用户消息上屏（含队列例外 / 未知命令），再决定是否直连执行。
+            #   只在此处回显一次：_handle_command_msg 不再回显，避免重复。
+            if text.startswith("/"):
+                self._echo_user_message(text)
+            # ★ 仅在 AI 生成轮进行中拦截：空闲时命令由 _handle_round 内联
+            #   直连执行，保持命令与后续输入严格串行；队列例外命令（如
+            #   /model 弹窗）执行期间也不拦截，避免与其交互视图并发。
+            if not self._generation_active:
+                return False
+            if not self._should_direct_command(text):
+                return False
+            loop = self._loop
+            if loop is None or loop.is_closed():
+                return False
+            try:
+                loop.call_soon_threadsafe(
+                    self._schedule_direct_command, text, session, state,
+                )
+            except RuntimeError:
+                _logger.debug("直连命令调度失败（事件循环已关闭）", exc_info=True)
+                return False
+            return True
+
+        return _on_direct_submit
+
+    def _schedule_direct_command(self, text: str, session, state: SessionState) -> None:
+        """在事件循环线程中为直连命令创建后台任务（串行执行）。"""
+        if self._force_exit.is_set():
+            return
+        try:
+            task = asyncio.create_task(
+                self._run_direct_command(text, session, state),
+            )
+        except RuntimeError:
+            _logger.debug("直连命令任务创建失败（事件循环已关闭）", exc_info=True)
+            return
+        self._direct_tasks.add(task)
+        task.add_done_callback(self._on_direct_task_done)
+
+    def _on_direct_task_done(self, task: asyncio.Task) -> None:
+        """直连命令任务完成回调：清理集合，异常对用户可见。"""
+        self._direct_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is None:
+            return
+        _logger.warning("直连命令执行失败", exc_info=exc)
+        if self._chat_ui is not None:
+            try:
+                self._ui.write_line(
+                    f"  {YELLOW}\u26a0{RESET} 命令执行失败: {exc}"
+                )
+            except Exception:
+                _logger.debug("直连命令失败提示写入异常", exc_info=True)
+
+    async def _run_direct_command(self, text: str, session, state: SessionState) -> None:
+        """串行执行一条直连命令（不经过 MessageQueue）。"""
+        async with self._ensure_direct_lock():
+            await self._handle_command_msg(
+                text, session, state, reset_interrupt=False,
+            )
 
     def _check_consumer_exception(self, task: asyncio.Task) -> None:
         """检查消费者任务是否有未捕获的异常。异常时设置 _force_exit 并唤醒 msg_done 防止死锁。"""
@@ -161,9 +348,12 @@ class InteractiveLoop:
         queue: MessageQueue,
         msg_done: asyncio.Event,
     ) -> _RoundResult:
-        """执行一轮对话交互——所有用户输入（包括命令）统一放入 MessageQueue。
+        """执行一轮对话交互。
 
-        所有用户输入通过 MessageQueue 投递。
+        ★ 用户输入路由（2026-10-22 直连改造）：
+          - 斜杠命令：``_should_direct_command`` 判定为直连时直接执行
+            （不进入 MessageQueue）；``queue_only`` 例外命令仍投递队列；
+          - 普通用户消息：始终通过 MessageQueue 投递给消费者。
         """
         try:
             # ★ Bug 7: 确保 msg_done 为 cleared 状态，避免异常路径遗留 set 状态导致逻辑混乱
@@ -191,7 +381,16 @@ class InteractiveLoop:
             if not prefill:
                 queued = self._loop_state.pop("queued_input", None)
                 if queued:
-                    await _put_and_wait(queue, queued, msg_done)
+                    # ★ exit 回显（2026-10-22 用户需求）：流式期间排队的 exit
+                    #   先按用户消息上屏再退出（不能当普通消息发给模型）。
+                    if queued.strip().lower() == "exit":
+                        self._echo_exit_message(queued)
+                        return _RoundResult(should_exit=True)
+                    # 直连命令不进入消息队列；例外命令保持原排队语义。
+                    if self._should_direct_command(queued):
+                        await self._run_direct_command(queued, session, state)
+                    else:
+                        await _put_and_wait(queue, queued, msg_done)
                     return _RoundResult(should_exit=False)
 
             # ★ 等待 render 线程处理完待渲染内容
@@ -268,6 +467,8 @@ class InteractiveLoop:
             self._monitor_recovery_count = 0
 
             if user_input.strip().lower() == 'exit':
+                # ★ exit 回显（2026-10-22 用户需求）：先按用户消息上屏再退出
+                self._echo_exit_message(user_input)
                 pending = session.pending_messages
                 if pending:
                     self._ui.write_line(f"\n  [警告] 还有 {len(pending)} 条排队消息未处理，已丢弃")
@@ -277,8 +478,11 @@ class InteractiveLoop:
             if not user_input:
                 return _RoundResult(should_exit=False)
 
-            # ── 所有用户输入（包括 / 命令）统一通过 MessageQueue ──
-            await _put_and_wait(queue, user_input, msg_done)
+            # ── 斜杠命令直连；普通消息 / 队列例外命令仍走 MessageQueue ──
+            if self._should_direct_command(user_input):
+                await self._run_direct_command(user_input, session, state)
+            else:
+                await _put_and_wait(queue, user_input, msg_done)
             return _RoundResult(should_exit=False)
 
         except asyncio.CancelledError:
@@ -322,68 +526,106 @@ class InteractiveLoop:
         if self._chat_ui is not None:
             await asyncio.to_thread(self._ui.flush)
 
-    async def _handle_command_msg(self, content: str, session, state: SessionState) -> None:
-        """处理 / 命令分发 — 统一走插件路径"""
-        reset_interrupt_async(input_instance=self._ui.input if self._chat_ui else None)
-        cmd_name = content.split()[0].lower()
+    async def _handle_command_msg(
+        self,
+        content: str,
+        session,
+        state: SessionState,
+        *,
+        reset_interrupt: bool = True,
+    ) -> None:
+        """处理 / 命令分发 — 统一走插件路径。
 
-        # 插件命令分发（统一路径）
-        registry = get_interactive_registry()
-        plugin = registry.get(cmd_name)
-        if plugin is not None:
-            # 确保插件绑定了当前 loop 实例（仅 InteractiveCommandPlugin 子类有此属性）
-            if hasattr(plugin, 'loop') and hasattr(plugin, 'bind_loop'):
-                if plugin.loop is None or plugin.loop is not self:
-                    plugin.bind_loop(self)
-            state_dict = {"model": state.model, "retry": False, "prefill": ""}
-            arg = content.split(maxsplit=1)[1] if len(content.split(maxsplit=1)) > 1 else ""
-            from ..core.commands import CommandUiAdapter
-            _ui_adapter = CommandUiAdapter()
-            input_ = self._ui.input
-            ctx = CommandContext(
-                messages=session.messages, state=state_dict, arg=arg,
-                build_system_prompt=session.agent.build_system_prompt,
-                get_user_input=lambda prompt="": self._ui.wait_for_user_input(
-                    self._monitor, prefill=prompt, input_=input_),
-                context_manager=session.context_manager,
-                session=session,
-                config_port=getattr(session, "_config_port", None),
-                ui_adapter=_ui_adapter,
-            )
-            # 优先 async_execute（InteractiveCommandPlugin 子类有），
-            # 否则回退到同步 execute（纯 CommandPlugin 子类）
-            if hasattr(plugin, 'async_execute'):
-                handled = await plugin.async_execute(ctx)
-            else:
-                handled = await asyncio.to_thread(plugin.execute, ctx)
-            if handled:
-                state.model = state_dict.get("model", state.model)
-                self._ui.bottom_bar.set_model_name(state.model)
-                state.retry = state_dict.get("retry", False)
-                state.prefill = state_dict.get("prefill", "")
-                _logger.debug("_handle_command_msg: state.prefill set, len=%d, retry=%s", len(state.prefill), state.retry)
+        Args:
+            reset_interrupt: 是否在命令执行前清除中断标志（队列路径默认 True）；
+                直连命令在生成期间执行时必须传 False——否则会误清用户刚发出的
+                ESC / Ctrl+C 中断请求。
+
+        ★ 命令直连（2026-10-22）：本方法同时服务消息队列路径与
+          ``_run_direct_command`` 直连路径。``_command_active_depth`` 在
+          整个执行期间 >0，使 render 线程的直连判定只放行只读命令，避免
+          两个会改写状态的命令并发。
+        """
+        self._command_active_depth += 1
+        try:
+            if reset_interrupt:
+                reset_interrupt_async(
+                    input_instance=self._ui.input if self._chat_ui else None,
+                )
+            cmd_name = content.split()[0].lower()
+
+            # 插件命令分发（统一路径）
+            registry = get_interactive_registry()
+            plugin = registry.get(cmd_name)
+            if plugin is not None:
+                # 确保插件绑定了当前 loop 实例（仅 InteractiveCommandPlugin 子类有此属性）
+                if hasattr(plugin, 'loop') and hasattr(plugin, 'bind_loop'):
+                    if plugin.loop is None or plugin.loop is not self:
+                        plugin.bind_loop(self)
+                state_dict = {"model": state.model, "retry": False, "prefill": ""}
+                arg = content.split(maxsplit=1)[1] if len(content.split(maxsplit=1)) > 1 else ""
+                from ..core.commands import CommandUiAdapter
+                _ui_adapter = CommandUiAdapter()
+                input_ = self._ui.input
+                ctx = CommandContext(
+                    messages=session.messages, state=state_dict, arg=arg,
+                    build_system_prompt=session.agent.build_system_prompt,
+                    get_user_input=lambda prompt="": self._ui.wait_for_user_input(
+                        self._monitor, prefill=prompt, input_=input_),
+                    context_manager=session.context_manager,
+                    session=session,
+                    config_port=getattr(session, "_config_port", None),
+                    ui_adapter=_ui_adapter,
+                )
+                # 优先 async_execute（InteractiveCommandPlugin 子类有），
+                # 否则回退到同步 execute（纯 CommandPlugin 子类）
+                if hasattr(plugin, 'async_execute'):
+                    handled = await plugin.async_execute(ctx)
+                else:
+                    handled = await asyncio.to_thread(plugin.execute, ctx)
+                if handled:
+                    state.model = state_dict.get("model", state.model)
+                    self._ui.bottom_bar.set_model_name(state.model)
+                    state.retry = state_dict.get("retry", False)
+                    state.prefill = state_dict.get("prefill", "")
+                    _logger.debug("_handle_command_msg: state.prefill set, len=%d, retry=%s", len(state.prefill), state.retry)
+                else:
+                    self._ui.write_line(f"  {YELLOW}未知命令: {content}，输入 /help 查看可用命令{RESET}")
             else:
                 self._ui.write_line(f"  {YELLOW}未知命令: {content}，输入 /help 查看可用命令{RESET}")
-        else:
-            self._ui.write_line(f"  {YELLOW}未知命令: {content}，输入 /help 查看可用命令{RESET}")
+        finally:
+            self._command_active_depth -= 1
 
     async def _cli_msg_consumer(self, msg, session, state: SessionState, msg_done: asyncio.Event) -> None:
-        """CLI 消息消费者：处理放入队列的所有消息（命令 + 普通消息）。"""
+        """CLI 消息消费者：处理放入队列的所有消息（命令 + 普通消息）。
+
+        ``_round_active`` 在整条消息处理期间为 True：此时只有只读命令
+        （``direct_during_round``）可被 render 线程直连执行，其余命令继续排队。
+        """
+        self._round_active = True
         try:
             content = msg.content
 
-            # ── retry 哨兵 ──
+            # ── retry 哨兵（生成轮） ──
             if content is _RETRY_SENTINEL:
-                await _handle_retry_sentinel(session)
+                self._generation_active = True
+                try:
+                    await _handle_retry_sentinel(session)
+                finally:
+                    self._generation_active = False
                 return
 
-            # ── / 命令 ──
+            # ── / 命令（队列例外命令：不开放 render 线程直连） ──
             if isinstance(content, str) and content.startswith('/'):
                 await self._handle_command_msg(content, session, state)
                 return
 
-            # ── 普通用户消息 ──
-            await self._handle_regular_msg(content, session, state)
+            # ── 普通用户消息（AI 生成轮：只读命令可直连） ──
+            self._generation_active = True
+            try:
+                await self._handle_regular_msg(content, session, state)
+            finally:
+                self._generation_active = False
         except asyncio.CancelledError:
             _logger.info("CLI 消息消费者被取消")
             raise
@@ -402,6 +644,7 @@ class InteractiveLoop:
                     except Exception:
                         _logger.warning("非致命异常用户反馈写入失败", exc_info=True)
         finally:
+            self._round_active = False
             if not msg_done.is_set():
                 msg_done.set()
 
@@ -488,6 +731,12 @@ class InteractiveLoop:
         input_instance.set_kill_background_callback(_on_escape_kill)
         input_instance.set_echo_callback(
             lambda text, cursor_pos=-1: self._ui.refresh_bottom_bar(text, cursor_pos)
+        )
+        # ★ 命令直连（2026-10-22 用户需求）：Enter 提交斜杠命令时由 render
+        #   线程询问是否直接调度（不写入排队输入 → 不进 MessageQueue）。
+        #   回调只做判定 + call_soon_threadsafe，实际执行在事件循环中串行完成。
+        input_instance.set_direct_submit_callback(
+            self._make_direct_submit_callback(session, state)
         )
         if self._chat_ui is not None:
             self._ui.setup_completion(input_instance)
@@ -585,6 +834,12 @@ class InteractiveLoop:
         # ★ 保存主事件循环引用：render 线程 ESC 中断经 run_coroutine_threadsafe
         #   调度杀后台任务（render 线程中 get_event_loop 必然抛错）
         self._loop = asyncio.get_running_loop()
+        # ★ 命令直连状态复位 + 串行锁在运行循环内创建（Py3.9 绑定当前循环）
+        self._round_active = False
+        self._generation_active = False
+        self._command_active_depth = 0
+        self._direct_cmd_lock = asyncio.Lock()
+        self._direct_tasks.clear()
 
         # ── 初始化 ChatUI ──
         self._setup_chat_ui()
@@ -652,6 +907,16 @@ class InteractiveLoop:
             raise
         finally:
             self._msg_done_ref = None
+            # ★ 取消未完成的直连命令任务（避免退出后仍有命令在写 UI）
+            for task in list(self._direct_tasks):
+                task.cancel()
+            if self._direct_tasks:
+                await asyncio.gather(*self._direct_tasks, return_exceptions=True)
+            self._direct_tasks.clear()
+            self._direct_cmd_lock = None
+            self._round_active = False
+            self._generation_active = False
+            self._command_active_depth = 0
             try:
                 session.stop_autosave()
             except Exception:

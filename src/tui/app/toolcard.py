@@ -66,6 +66,8 @@ __all__ = [
     "ToolCard", "tool_card_lines", "_tool_icon_runs", "_tool_status_index",
     "_tool_running_prefix_text", "_tool_finished_prefix_text",
     "_tool_md_content_width",
+    # 用户消息（2026-10-22）：与工具卡共用 tool_card 背景色与满宽填充语义
+    "card_bg_style", "apply_line_bg",
 ]
 
 # ── 工具类别配色（BEAUTY-35，2026-08-06 美化） ─────────────────────
@@ -152,6 +154,25 @@ def _card_bg_style() -> Style:
         style = Style(bg=bg)
         _bg_style_cache[bg] = style
     return style
+
+
+def card_bg_style() -> Style:
+    """工具卡 / 用户消息共用的满宽背景 Style（公开入口）。
+
+    2026-10-22 用户需求：用户消息使用 tool_card 背景色显示。颜色唯一真源仍为
+    本模块 ``_card_bg_style``（``ui_defaults.tool_card_bg``，默认 236），避免
+    两处硬编码漂移。
+    """
+    return _card_bg_style()
+
+
+def apply_line_bg(runs: list, width: int) -> list:
+    """给一行 runs 应用 tool_card 背景并填充到终端宽度（公开入口）。
+
+    与工具卡同一实现（``_apply_line_bg``）：超宽先截断并追加 ``…``，短行以
+    背景色空格填充到 ``width``，已有背景的 run 保持自身背景。
+    """
+    return _apply_line_bg(runs, width, _card_bg_style())
 
 
 def _apply_line_bg(runs: list, width: int, bg_style: Style) -> list:

@@ -26,6 +26,12 @@ class CommandMeta:
     description: str = ""
     usage: str = ""
     hidden: bool = False
+    #: 只能经用户消息队列串行执行（会改写会话历史 / 触发新一轮生成 /
+    #: 改写上下文预算等；即使在空闲时也保持原有排队语义）。
+    queue_only: bool = False
+    #: 是否可在 AI 生成 / 其他命令执行期间直接执行——仅限只读、不触碰
+    #: 会话与配置状态的展示类命令（/help /cost /usage）。
+    direct_during_round: bool = False
 
 
 class CommandPlugin(ABC):

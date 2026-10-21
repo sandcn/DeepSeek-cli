@@ -105,6 +105,7 @@ class LoopPlugin(InteractiveCommandPlugin):
             ),
             group="session",
             usage="[次数] <提词>",
+            queue_only=True,
         )
 
     async def async_execute(self, ctx: Any) -> bool:

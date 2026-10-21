@@ -416,7 +416,9 @@ from .base import CommandPlugin, CommandMeta, declare_command_plugin
 class ClearCommand(CommandPlugin):
     """清空当前对话"""
     def __init__(self):
-        self.meta = CommandMeta(name="clear", description="清空对话", group="session")
+        self.meta = CommandMeta(
+            name="clear", description="清空对话", group="session", queue_only=True,
+        )
 
     def execute(self, ctx: CommandContext) -> bool:
         return _cmd_clear(ctx)
@@ -434,7 +436,9 @@ class PinCommand(CommandPlugin):
 class UndoCommand(CommandPlugin):
     """撤销上一条助手消息"""
     def __init__(self):
-        self.meta = CommandMeta(name="undo", description="撤销上一轮对话", group="session")
+        self.meta = CommandMeta(
+            name="undo", description="撤销上一轮对话", group="session", queue_only=True,
+        )
 
     def execute(self, ctx: CommandContext) -> bool:
         return _cmd_undo(ctx)
@@ -443,7 +447,9 @@ class UndoCommand(CommandPlugin):
 class RetryCommand(CommandPlugin):
     """重试上一轮"""
     def __init__(self):
-        self.meta = CommandMeta(name="retry", description="重新生成上一条回答", group="session")
+        self.meta = CommandMeta(
+            name="retry", description="重新生成上一条回答", group="session", queue_only=True,
+        )
 
     def execute(self, ctx: CommandContext) -> bool:
         ctx.state["retry"] = True
@@ -453,7 +459,9 @@ class RetryCommand(CommandPlugin):
 class EditCommand(CommandPlugin):
     """编辑上一条用户消息"""
     def __init__(self):
-        self.meta = CommandMeta(name="edit", description="编辑并重新发送上一条输入", group="session")
+        self.meta = CommandMeta(
+            name="edit", description="编辑并重新发送上一条输入", group="session", queue_only=True,
+        )
 
     def execute(self, ctx: CommandContext) -> bool:
         return _cmd_edit(ctx)

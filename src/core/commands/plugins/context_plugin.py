@@ -44,6 +44,7 @@ class ContextPlugin(CommandPlugin):
             description="显示/设置上下文窗口",
             group="session",
             usage="[256k|1m|tokens]",
+            queue_only=True,
         )
 
     def execute(self, ctx: Any) -> bool:

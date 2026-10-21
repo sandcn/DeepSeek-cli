@@ -122,27 +122,31 @@ def _single_line_detail(detail: str) -> str:
 
 
 def _user_marker_styled_lines(block, start, stop, width):
-    """用户消息每行 `> ` 标记（渲染期变换，每行 `> {segment}` 顶格）。
+    """用户消息每行 `> ` 标记 + 白色粗体 + tool_card 满宽背景。
 
     输入为 ``build_user_line`` 产出的 AnsiLine（runs[0]=`> ` 前缀 run）：
     剥离前缀 run → 内容 wrap 到 ``inner=width-2`` → 重前缀（每段均 ``> ``，
     Claude Code 顶格列 0，续行同样带 ``> ``——≤ width 安全，满足行级 diff
     宽度不变量）。
 
+    ★ 2026-10-22 用户需求：用户消息文字统一白色粗体，并以工具卡背景色
+    （``toolcard.card_bg_style``，默认 236）整行填充到终端宽度——与工具卡
+    的「满宽背景」一致；背景在渲染期叠加，终端 resize 时按新宽度重排。
+
     Args:
         block: 用户块（ChatBlock.kind == "user"）。
         start: 起始 AnsiLine 下标。
         stop: 结束下标（不含）；None 表示到块末尾。
-        width: 文档宽度；<=0 时仅剥离前缀不换行。
+        width: 文档宽度；<=0 时仅剥离前缀不换行、不叠背景。
 
     Returns:
-        list[Line] — 用户消息 ink Line 列表。
+        list[Line] — 用户消息 ink Line 列表（width>0 时每行宽 == width）。
     """
-    from src.tui.app._theme import get_active_palette
+    from src.tui.app._theme import _S_USER_WHITE
+    from src.tui.app.toolcard import apply_line_bg
     from src.tui.ink import Line, StyledRun
     from src.renderer.ansi.helpers import AnsiLine, Run, wrap_line
-    pal = get_active_palette()
-    icon = pal.user_icon
+    icon = _S_USER_WHITE
     width = width if isinstance(width, int) and width > 0 else 0
     inner = max(1, width - 2) if width > 0 else 0
     out: list[Line] = []
@@ -164,8 +168,11 @@ def _user_marker_styled_lines(block, start, stop, width):
             else ([AnsiLine(content_runs)] if content_runs else [])
         )
         if not wrapped:
-            # 空消息 → 保留前缀行 `> `（不吞行）
-            out.append(Line([StyledRun("> ", icon)]))
+            # 空消息 → 保留前缀行 `> `（不吞行），同样叠满宽背景
+            empty_runs = [StyledRun("> ", icon)]
+            if width > 0:
+                empty_runs = apply_line_bg(empty_runs, width)
+            out.append(Line(empty_runs))
             continue
         for seg in wrapped:
             seg_runs = _attach_url_links(
@@ -180,6 +187,9 @@ def _user_marker_styled_lines(block, start, stop, width):
             if width > 0 and line.width > width:
                 from src.tui.ink.helpers import truncate_line
                 line = truncate_line(line, width)
+            # ★ 2026-10-22：tool_card 背景整行填充（短行补背景色空格到 width）
+            if width > 0:
+                line = Line(apply_line_bg(line.runs, width))
             out.append(line)
     return out
 

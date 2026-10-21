@@ -370,7 +370,10 @@ from .base import CommandPlugin, CommandMeta, declare_command_plugin
 class CostCommand(CommandPlugin):
     """显示费用统计"""
     def __init__(self):
-        self.meta = CommandMeta(name="cost", description="查看 token 用量和费用", group="model")
+        self.meta = CommandMeta(
+            name="cost", description="查看 token 用量和费用", group="model",
+            direct_during_round=True,
+        )
 
     def execute(self, ctx: CommandContext) -> bool:
         return _cmd_cost(ctx)
@@ -379,7 +382,9 @@ class CostCommand(CommandPlugin):
 class ThemeCommand(CommandPlugin):
     """切换主题"""
     def __init__(self):
-        self.meta = CommandMeta(name="theme", description="切换配色主题", group="ui")
+        self.meta = CommandMeta(
+            name="theme", description="切换配色主题", group="ui", queue_only=True,
+        )
 
     def execute(self, ctx: CommandContext) -> bool:
         return _cmd_theme(ctx)
@@ -388,7 +393,10 @@ class ThemeCommand(CommandPlugin):
 class ConfigCommand(CommandPlugin):
     """显示/编辑程序配置（独立界面）"""
     def __init__(self):
-        self.meta = CommandMeta(name="config", description="显示/编辑程序配置（/config 打开独立界面）", group="ui")
+        self.meta = CommandMeta(
+            name="config", description="显示/编辑程序配置（/config 打开独立界面）",
+            group="ui", queue_only=True,
+        )
 
     def execute(self, ctx: CommandContext) -> bool:
         return _cmd_config(ctx)

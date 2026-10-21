@@ -40,6 +40,7 @@ class CompactPlugin(InteractiveCommandPlugin):
             description="压缩上下文历史（结构化检查点）",
             group="session",
             usage="",
+            queue_only=True,
         )
 
     # ── 执行入口 ──────────────────────────────────────────

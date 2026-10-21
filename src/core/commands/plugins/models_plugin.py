@@ -28,6 +28,7 @@ class ModelsPlugin(InteractiveCommandPlugin):
             name="models",
             description="模型选择器（选择/新增/编辑模型档案：name/model/url/key/provider/温度/思考级别）",
             group="model",
+            queue_only=True,
         )
 
     async def async_execute(self, ctx: Any) -> bool:

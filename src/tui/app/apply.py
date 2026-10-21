@@ -23,7 +23,7 @@ from src.tui.core.style import Style
 from src.renderer.ansi.helpers import AnsiLine, ansi_to_line
 # 方向C 步骤4：_S_USER_ICON/_S_USER_TEXT/_S_NOTICE 迁入 app/_theme.py 共享池
 # （被 apply 多处使用；享元收敛原则：多处使用才共享）。
-from src.tui.app._theme import _S_NOTICE, get_active_palette
+from src.tui.app._theme import _S_NOTICE, _S_USER_WHITE
 
 _logger = logging.getLogger(__name__)
 
@@ -71,18 +71,18 @@ def build_user_line(content: str) -> list[AnsiLine]:
     """构建用户消息行列表（按 ``\\n`` 切分，每行 ``> {segment}`` 顶格）。
 
     Claude Code 视觉对齐：多行/换行内容每行都带 ``> `` 标记（顶格列 0；
-    续行前缀由 model 用户分支重前缀）。样式取自活动调色板槽位
-    （Claude TUI parity 步骤 2.3；dark 下与 _S_USER_ICON/_S_USER_TEXT 同值）。
+    续行前缀由 model 用户分支重前缀）。样式固定为白色粗体
+    （2026-10-22 用户需求；tool_card 背景由渲染层 ``_user_marker_styled_lines``
+    按终端宽度叠加并整行填充）。
 
     Returns:
         AnsiLine 列表（每行一条）。
     """
-    palette = get_active_palette()
     lines = []
     for segment in content.split("\n"):
-        line = AnsiLine.of("> ", palette.user_icon)
+        line = AnsiLine.of("> ", _S_USER_WHITE)
         if segment:
-            line.append(segment, palette.user_text)
+            line.append(segment, _S_USER_WHITE)
         lines.append(line)
     return lines
 

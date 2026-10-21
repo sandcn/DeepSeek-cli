@@ -51,6 +51,8 @@ _S_TIME = Style(fg=110)                  # 时间戳色（浅蓝）
 # 方向C 步骤4：收敛 apply.py / input_area.py 多处使用的样式常量（享元共享池）
 _S_USER_ICON = Style(fg=81, bold=True)   # 用户消息图标 `>`
 _S_USER_TEXT = Style(fg=252)             # 用户消息文本
+#: 用户消息固定样式（2026-10-22 用户需求：白色粗体；tool_card 背景在渲染期叠加）
+_S_USER_WHITE = Style(fg=255, bold=True)
 _S_NOTICE = Style(fg=242)                # 通知/助手消息前缀
 _S_TEXT = Style(fg=252)                  # 输入区输入文本
 
@@ -618,6 +620,7 @@ __all__ = [
     "_S_TIME",
     "_S_USER_ICON",
     "_S_USER_TEXT",
+    "_S_USER_WHITE",
     "_S_NOTICE",
     "_S_TEXT",
     "time_glow",

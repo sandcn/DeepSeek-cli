@@ -45,6 +45,7 @@ class DeitmsgPlugin(InteractiveCommandPlugin):
             name="deitmsg",
             description="直接编辑上一条消息（快捷版 /editmsg）",
             group="session",
+            queue_only=True,
         )
 
     async def async_execute(self, ctx: Any) -> bool:

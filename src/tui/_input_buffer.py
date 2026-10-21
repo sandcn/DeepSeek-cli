@@ -92,6 +92,10 @@ class InputBufferEditor:
         self._input_ready = threading.Event()
         self._lock = threading.Lock()
         self._echo_callback = echo_callback
+        #: 命令直连判定回调（``cb(text) -> bool``，由 app_loop 注入）。
+        #: 返回 True 表示本次 Enter 提交的斜杠命令已由上层直接调度执行，
+        #: 不进入排队输入（``_submitted_text`` / ``_input_ready``）。
+        self._direct_submit_callback: Callable[[str], bool] | None = None
 
         # ── 历史（原 InputBuffer） ──
         self._history: list[str] = []
@@ -133,6 +137,18 @@ class InputBufferEditor:
         cb 签名: (display_text: str, cursor_pos: int) -> None
         """
         self._echo_callback = cb
+
+    def set_direct_submit_callback(self, cb) -> None:
+        """设置命令直连判定回调（``cb(text) -> bool``）。
+
+        返回 True 表示该斜杠命令已由上层直接调度执行——本次 Enter 只清空
+        编辑缓冲并记录历史，**不**写入 ``_submitted_text`` / 不置位
+        ``_input_ready``，因此命令不会进入消息队列。
+
+        回调在 render 线程持 ``self._lock`` 调用，必须快速、非阻塞，且不得
+        回调本编辑器的方法（否则自锁）。
+        """
+        self._direct_submit_callback = cb
 
     # ═══════════════════════════════════════════════════════
     # 撤销 / 重做（2026-10-07 操作优化：Ctrl+Z / Ctrl+Y）
@@ -642,16 +658,30 @@ class InputBufferEditor:
                     return
                 text = self._buffer
                 applied_search = False
-                self._submitted_text = text
-                self._buffer = ""
-                self._cursor_pos = 0
-                self._input_ready.set()
-                if self._history_idx >= 0:
-                    self._history_idx = -1
-                # 提交后新输入从空开始：清空撤销/重做栈
-                self._undo_stack.clear()
-                self._redo_stack.clear()
-                self._undo_coalesce_key = None
+                # ★ 命令直连（2026-10-22 用户需求）：斜杠命令经上层判定后
+                #   可直接调度执行，不写入排队输入（不进 MessageQueue）。
+                direct_submit = self._offer_direct_submit_locked(text)
+                if direct_submit:
+                    # 命令已被上层接管：仅清理编辑态（历史/回显在锁外统一处理）
+                    self._buffer = ""
+                    self._cursor_pos = 0
+                    if self._history_idx >= 0:
+                        self._history_idx = -1
+                    # 提交后新输入从空开始：清空撤销/重做栈
+                    self._undo_stack.clear()
+                    self._redo_stack.clear()
+                    self._undo_coalesce_key = None
+                else:
+                    self._submitted_text = text
+                    self._buffer = ""
+                    self._cursor_pos = 0
+                    self._input_ready.set()
+                    if self._history_idx >= 0:
+                        self._history_idx = -1
+                    # 提交后新输入从空开始：清空撤销/重做栈
+                    self._undo_stack.clear()
+                    self._redo_stack.clear()
+                    self._undo_coalesce_key = None
         # P2（2026-08-07）：历史追加移出锁——``_append_history`` 内部
         # ``_HISTORY_DISK_WRITER.submit`` 获取 ``_submit_lock``；flush 并发
         # 持 ``_submit_lock`` 做同步文件 I/O 时，锁内 submit 阻塞 render 线程
@@ -668,6 +698,23 @@ class InputBufferEditor:
             self._echo(text)
         else:
             self._echo("")
+
+    def _offer_direct_submit_locked(self, text: str) -> bool:
+        """提交前询问上层是否直连处理该斜杠命令（调用方须持 ``self._lock``）。
+
+        回调只做策略判断 + 线程安全调度，必须快速返回；不得回调本编辑器
+        方法。返回 True 表示命令已被上层接管（不进入排队输入）。
+        """
+        cb = self._direct_submit_callback
+        if cb is None or not text.startswith("/"):
+            return False
+        try:
+            return bool(cb(text))
+        except Exception:
+            _logger.warning(
+                "直连命令判定回调异常，按普通提交处理", exc_info=True,
+            )
+            return False
 
     # ═══════════════════════════════════════════════════════
     # 反向历史搜索（方向D 步骤14，Ctrl+R 配置门控）

@@ -44,6 +44,7 @@ class EditmsgPlugin(InteractiveCommandPlugin):
             name="editmsg",
             description="编辑当前会话消息 (Ctrl+O)",
             group="session",
+            queue_only=True,
         )
 
     async def async_execute(self, ctx: Any) -> bool:

@@ -707,6 +707,15 @@ class Input:
         """
         self._buffer_editor.set_echo_callback(cb)
 
+    def set_direct_submit_callback(self, cb) -> None:
+        """设置命令直连判定回调（委托 InputBufferEditor）。
+
+        cb 签名: ``(text: str) -> bool``；返回 True 表示该斜杠命令由上层
+        直接调度执行，不进入排队输入 / MessageQueue。回调在 render 线程
+        持编辑器锁调用，必须快速、非阻塞。
+        """
+        self._buffer_editor.set_direct_submit_callback(cb)
+
     def set_special_key_callback(self, cb) -> None:
         """设置特殊按键回调（Ctrl+G/O/N/R/T/B 等组合键）。
 

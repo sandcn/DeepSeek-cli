@@ -140,6 +140,7 @@ class PluginCommand(CommandPlugin):
             name="plugin",
             description="查看当前已加载的插件（独立界面）",
             group="ui",
+            queue_only=True,
         )
 
     def execute(self, ctx: CommandContext) -> bool:

@@ -248,6 +248,7 @@ class UsageCommand(CommandPlugin):
     def __init__(self):
         self.meta = CommandMeta(
             name="usage", description="用量仪表盘（token / 上下文 / 费用）", group="model",
+            direct_during_round=True,
         )
 
     def execute(self, ctx: CommandContext) -> bool:

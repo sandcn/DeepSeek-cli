@@ -104,6 +104,7 @@ class SearchCommand(CommandPlugin):
     def __init__(self):
         self.meta = CommandMeta(
             name="search", description="对话内全文搜索（命中跳转）", group="ui",
+            queue_only=True,
         )
 
     def execute(self, ctx: CommandContext) -> bool:
