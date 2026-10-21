@@ -20,7 +20,6 @@ from ..internal.commands._command_core import (
 from ._session_cmd import (
     _cmd_clear,
     _cmd_pin,
-    _cmd_undo,
     _cmd_retry,
     _cmd_edit,
     _cmd_editmsg,
@@ -28,7 +27,6 @@ from ._session_cmd import (
     # 插件子类
     ClearCommand,
     PinCommand,
-    UndoCommand,
     RetryCommand,
     EditCommand,
     ChangesCommand,
@@ -43,11 +41,9 @@ from ._plugin_cmd import (
 )
 
 from ._config_cmd import (
-    _cmd_cost,
     _cmd_theme,
     _cmd_config,
     # 插件子类
-    CostCommand,
     ThemeCommand,
     ConfigCommand,
 )
@@ -58,7 +54,6 @@ from ._data_cmd import (
     # 插件子类
     LoadCommand,
     SessionsCommand,
-    HelpCommand,
 )
 
 from ._title_cmd import (
@@ -105,7 +100,6 @@ __all__ = [
     "_format_cost_duration",
     "_cmd_clear",
     "_cmd_pin",
-    "_cmd_undo",
     "_cmd_retry",
     "_cmd_edit",
     "_cmd_editmsg",
@@ -114,7 +108,6 @@ __all__ = [
     "_cmd_models",
     "_open_model_view",
     "_cmd_plugin",
-    "_cmd_cost",
     "_cmd_theme",
     "_cmd_config",
     "_cmd_load",
@@ -125,17 +118,14 @@ __all__ = [
     # 插件子类（兼容面）
     "ClearCommand",
     "PinCommand",
-    "UndoCommand",
     "RetryCommand",
     "EditCommand",
     "ChangesCommand",
     "PluginCommand",
-    "CostCommand",
     "ThemeCommand",
     "ConfigCommand",
     "LoadCommand",
     "SessionsCommand",
-    "HelpCommand",
     "TitleCommand",
     "ExportCommand",
 ]

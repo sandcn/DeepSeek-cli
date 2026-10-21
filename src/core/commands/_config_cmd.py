@@ -17,16 +17,14 @@ import time as _time
 
 from ..constants import GREEN, YELLOW, DIM, RESET, CYAN
 from ..adapters.output import get_default_output_port
-from ..internal.commands._command_core import CommandContext, show_cost
+from ..internal.commands._command_core import CommandContext
 
 # 向后兼容 re-export：/model 命令已独立到 _model_cmd.py
 from ._model_cmd import _cmd_model, _infer_model_provider  # noqa: F401
 
 __all__ = [
-    "_cmd_cost",
     "_cmd_theme",
     "_cmd_config",
-    "CostCommand",
     "ThemeCommand",
     "ConfigCommand",
     # 兼容面（/model 命令迁出后保留旧导入路径）
@@ -36,16 +34,6 @@ __all__ = [
 
 _logger = logging.getLogger(__name__)
 _out = get_default_output_port()
-
-
-def _cmd_cost(ctx):
-    """显示 token 用量和费用（有 ChatUI 时打开用量仪表盘视图）。"""
-    from ._usage_cmd import _open_usage_ui
-
-    if _open_usage_ui(ctx):
-        return True
-    show_cost(ctx)
-    return True
 
 
 def _cmd_theme(ctx):
@@ -367,18 +355,6 @@ def _cmd_config(ctx):
 from .base import CommandPlugin, CommandMeta, declare_command_plugin
 
 
-class CostCommand(CommandPlugin):
-    """显示费用统计"""
-    def __init__(self):
-        self.meta = CommandMeta(
-            name="cost", description="查看 token 用量和费用", group="model",
-            direct_during_round=True,
-        )
-
-    def execute(self, ctx: CommandContext) -> bool:
-        return _cmd_cost(ctx)
-
-
 class ThemeCommand(CommandPlugin):
     """切换主题"""
     def __init__(self):
@@ -403,6 +379,5 @@ class ConfigCommand(CommandPlugin):
 
 
 # ── 声明插件（注册由清单条目 / ctx.commands 服务按需触发） ──
-declare_command_plugin(CostCommand())
 declare_command_plugin(ThemeCommand())
 declare_command_plugin(ConfigCommand())

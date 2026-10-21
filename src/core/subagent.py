@@ -482,7 +482,7 @@ class SubAgent(BaseAgent):
         注意：token 统计由模型调用层统一累计（_call_model_impl → api 层
         stream_call_async/_call_sync_async 内部已 accumulate_usage），
         此处不再重复累计，否则 SubAgent 每次模型调用的 input/output/calls
-        会被统计两次，导致 /cost 输入 tok 翻倍（Bug 修复）。
+        会被统计两次，导致 /usage 输入 tok 翻倍（Bug 修复）。
         """
         from .events.display_types import UsageUpdatedEvent, ModelPhaseEvent
 

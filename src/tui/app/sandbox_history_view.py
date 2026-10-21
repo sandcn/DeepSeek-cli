@@ -1,6 +1,7 @@
 """sandbox_history_view — SandboxHistoryView 沙盒消息维度历史视图（2026-10）。
 
-``/sandbox history``（或沙盒概览视图按 ``h``）打开：App 在
+``/sandbox history`` 子命令已删除；视图保留为沙盒视图族能力（由概览视图按
+``h`` / 扩展入口打开）。App 在
 ``model.fullscreen == "sandbox_history"`` 时经全屏视图注册表**整屏只渲染本
 组件**，关闭后恢复完整聊天界面。视图按**消息索引**浏览文件沙盒的变更历史
 ——每条消息索引一行（消息 N · K 次修改 · M 个文件 · 时间），右栏汇总该消息

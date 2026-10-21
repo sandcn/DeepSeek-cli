@@ -178,9 +178,9 @@ class InteractiveLoop:
     # ``src/core/commands/base.py``）：
     #   1. 空闲（无生成、无命令执行）：除 ``queue_only`` 例外命令外，斜杠命令
     #      一律直连执行，不进入 MessageQueue；
-    #   2. 生成中 / 其他命令执行中：只有只读展示类命令（``direct_during_round``）
-    #      与未知命令直连（无状态副作用），其余命令保持原有排队语义，等当前轮 /
-    #      当前命令结束后再处理；
+    #   2. 生成中 / 其他命令执行中：只有展示 / 审查类命令（``direct_during_round``
+    #      ——/usage、/changes）与未知命令直连（无状态副作用），其余命令保持原有
+    #      排队语义，等当前轮 / 当前命令结束后再处理；
     #   3. ``queue_only`` 命令（改写会话历史 / 触发新一轮生成 / 改写上下文预算 /
     #      独占交互界面）始终经消息队列串行执行。
     #
@@ -590,9 +590,9 @@ class InteractiveLoop:
                     state.prefill = state_dict.get("prefill", "")
                     _logger.debug("_handle_command_msg: state.prefill set, len=%d, retry=%s", len(state.prefill), state.retry)
                 else:
-                    self._ui.write_line(f"  {YELLOW}未知命令: {content}，输入 /help 查看可用命令{RESET}")
+                    self._ui.write_line(f"  {YELLOW}未知命令: {content}，输入 / 查看可用命令（F1 帮助）{RESET}")
             else:
-                self._ui.write_line(f"  {YELLOW}未知命令: {content}，输入 /help 查看可用命令{RESET}")
+                self._ui.write_line(f"  {YELLOW}未知命令: {content}，输入 / 查看可用命令（F1 帮助）{RESET}")
         finally:
             self._command_active_depth -= 1
 

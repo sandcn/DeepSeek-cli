@@ -28,7 +28,7 @@ _logger = logging.getLogger(__name__)
 # 当无法从配置中获取价格时使用此默认值。
 # 对应 DeepSeek V4 Pro 标准定价（匹配 config/defaults.py 中 deepseek-v4-pro/flash 价格）。
 # ★ 单位修复（review 方向）：配置价格单位是「美元 / 百万 tokens」（见
-#   config/defaults.py 注释与 /cost 的 compute_cost 均按 1_000_000 计费），
+#   config/defaults.py 注释与 /usage 的 compute_cost 均按 1_000_000 计费），
 #   修复前命名为 _PER_1K 且按 /1000 计费，cost_usd 虚高 1000 倍。
 _DEFAULT_INPUT_PRICE_PER_1M = 0.55
 _DEFAULT_OUTPUT_PRICE_PER_1M = 2.19
@@ -101,7 +101,7 @@ def _estimate_cost(model, input_tokens, output_tokens, provider="unknown"):
         input_price = default_input
         output_price = default_output
 
-    # 单价单位为 USD/百万 tokens → 除以 1_000_000（与 /cost 的 compute_cost 一致）
+    # 单价单位为 USD/百万 tokens → 除以 1_000_000（与 /usage 的 compute_cost 一致）
     return (input_tokens / 1_000_000 * input_price) + (output_tokens / 1_000_000 * output_price)
 
 

@@ -10,7 +10,7 @@
     描述列展示分组 / 描述 / 用法）
   - 路径补全（非 / 开头）：文件系统路径
   - 参数补全（命令已完整输入后）：/model /theme /load /config（子命令 +
-    键名 + 可枚举值）、/title /skill /sandbox /context /loop 子命令与参数、
+    键名 + 可枚举值）、/title /skill /context /loop 子命令与参数、
     /export 输出路径
 """
 
@@ -167,9 +167,9 @@ def _rank_fuzzy(items: list[str], prefix: str) -> list[str]:
     """忽略大小写的语义排序：精确 > 大小写相等 > 前缀 > 子串 > 子序列。
 
     命令补全与可枚举参数值（子命令 / 配置值）共用：
-      - 空前缀保持**输入序**（命令注册表序 = ``/help`` 优先 + 字母序；参数
-        候选项保持定义顺序）——修复前 ``_ranked`` 把空前缀命令按名称长度
-        升序排列，``/`` 弹窗顺序为 ``/pin /cost /edit ...`` 而非字母序；
+      - 空前缀保持**输入序**（命令注册表序 = 字母序；参数候选项保持定义
+        顺序）——修复前 ``_ranked`` 把空前缀命令按名称长度升序排列，
+        ``/`` 弹窗顺序与字母序不一致；
       - 前缀/子串均忽略大小写（``/CON`` → ``/config``）；
       - 子序列模糊匹配要求查询长度 ≥ 2（单字符子序列与子串等价，无收益）。
 
@@ -313,10 +313,10 @@ class CompletionEngine:
     #   ——子命令（show/list/get/set/reset）+ 配置键名（view_model 构建）。
     # ★ 2026-10-20（用户需求：完善 / 命令输入补全）：补全范围从 4 个命令
     #   扩展到全部有可枚举参数的命令——/title 子命令、/skill 子命令+技能名、
-    #   /sandbox 子命令、/export 路径、/context token 容量、/loop 次数。
+    #   /export 路径、/context token 容量、/loop 次数。
     _PARAM_COMMANDS: frozenset = frozenset({
         "/model", "/theme", "/load", "/config",
-        "/title", "/skill", "/sandbox", "/export", "/context", "/loop",
+        "/title", "/skill", "/export", "/context", "/loop",
     })
 
     def __init__(
@@ -712,7 +712,7 @@ class CompletionEngine:
 
         候选匹配与排序见 ``_rank_fuzzy``：忽略大小写 + 子序列模糊匹配
         （``/modl`` → ``/model``），精确 > 大小写相等 > 前缀 > 子串 > 子序列；
-        仅输入 ``/`` 时保持注册表顺序（``/help`` 优先 + 字母序）。
+        仅输入 ``/`` 时保持注册表顺序（字母序）。
 
         描述列展示「分组 · 描述 · 用法」三段（数据源 ``command_meta``，
         缺失时回退 ``get_command_help`` 的注册表 help 文本）。
@@ -771,12 +771,6 @@ class CompletionEngine:
         ("refresh", "重新生成标题"),
         ("set", "设置标题（/title set <文本>）"),
         ("auto", "自动生成开关"),
-    )
-
-    #: /sandbox 子命令（与 ``_cmd_sandbox`` 分支一致）
-    _SANDBOX_SUBCOMMANDS: tuple = (
-        ("history", "消息维度的沙盒历史"),
-        ("records", "变更记录流水"),
     )
 
     #: /skill 子命令（与 SkillPlugin 分支一致）
@@ -913,12 +907,6 @@ class CompletionEngine:
                 self._TITLE_SUBCOMMANDS,
             )
 
-        elif key == "/sandbox":
-            return self._complete_choice_param(
-                cmd_name, param_words, param_last, replace_full,
-                self._SANDBOX_SUBCOMMANDS,
-            )
-
         elif key == "/loop":
             return self._complete_choice_param(
                 cmd_name, param_words, param_last, replace_full,
@@ -944,7 +932,7 @@ class CompletionEngine:
 
         return []
 
-    # ── 一级子命令补全（/title /sandbox /loop 共用） ─────────
+    # ── 一级子命令补全（/title /loop 共用） ─────────
 
     def _complete_choice_param(
         self, cmd_name: str, words: list[str], prefix: str,

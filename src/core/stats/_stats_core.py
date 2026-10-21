@@ -23,7 +23,7 @@ class _Stats:
         # ── 会话级 token 统计 ──────────────────────────────
         # input/output: 总输入/输出 token
         # input_cache_hit/input_cache_miss: 缓存命中/未命中的输入 token
-        #   （命中 + 未命中 = input，供 /cost 正确计算缓存折扣费用）
+        #   （命中 + 未命中 = input，供 /usage 正确计算缓存折扣费用）
         self.token_stats = {
             "input": 0,
             "output": 0,
@@ -54,7 +54,7 @@ class _Stats:
                 估计累计（SpeedHandler）应传 False——该累计不是一次真实
                 API 调用，只影响 token 展示；真实 usage 到达时由
                 accumulate_usage(..., increment_calls=True) 统一计一次
-                calls，避免 /cost 的调用次数虚高。
+                calls，避免 /usage 的调用次数虚高。
         """
         with self._lock:
             self.token_stats["input"] += usage.get("input", 0)

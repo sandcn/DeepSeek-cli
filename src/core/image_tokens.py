@@ -11,7 +11,7 @@ Anthropic ``image`` block）。文本提取 ``content_to_text`` 对图片只保�
 ``image_upload_keep_recent`` 张、长边按 ``image_upload_max_dimension`` 等比
 降采样——使估算接近模型实际收到的图片。
 
-计费口径无关：``/cost`` 的输入 token 来自 API 真实 usage（已含图片 token），
+计费口径无关：``/usage`` 的输入 token 来自 API 真实 usage（已含图片 token），
 不依赖本估算；本估算仅用于**上下文占用百分比与压缩判断**。
 
 配置项（可经 RC 覆盖，便于按模型/供应商扩展）：

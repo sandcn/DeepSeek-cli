@@ -1,4 +1,4 @@
-"""sandbox 命令族 — 文件沙盒视图数据构建 + ``/sandbox`` 命令 + 实时刷新器。
+"""sandbox 命令族 — 文件沙盒视图数据构建 + 实时刷新器。
 
 本模块是文件沙盒 TUI 界面的**命令层单一数据源**：文件沙盒（``SandboxManager``）
 的变更记录被构建成多种视图所需的纯数据（文件维度 / 消息维度 / 文件历史 /
@@ -15,8 +15,9 @@
   - :func:`apply_sandbox_action`：执行视图回传的动作（回滚 / 撤销回滚 /
     回滚全部 / 回滚到消息 / 清空）；
   - :func:`make_sandbox_refresher`：实时刷新器（数据签名变化时重建并写回状态）；
-  - ``/sandbox`` 命令（打开概览视图或文本回退）；``/changes`` 的视图打开
-    逻辑（:func:`open_changes_ui`）也在此收敛，供 ``_session_cmd`` 委托。
+  - ``/changes`` 的视图打开逻辑（:func:`open_changes_ui`）也在此收敛，供
+    ``_session_cmd`` 委托。``/sandbox`` 命令已删除；沙盒概览 / 历史 / 记录视图
+    保留为视图族能力（由内部视图切换使用），不再由斜杠命令打开。
 
 设计约束：本模块只依赖 ``core``（sandbox_manager / adapters），不依赖
 ``tui`` 具体组件（视图状态类型经 ``adapters.ui_runtime`` 桥接）。
@@ -26,13 +27,9 @@ from __future__ import annotations
 
 import logging
 
-from ..adapters.output import get_default_output_port
-from ..constants import CYAN, DIM, RESET, YELLOW
-from ..internal.commands._command_core import CommandContext
 from ..sandbox_manager import get_sandbox_manager
 
 _logger = logging.getLogger(__name__)
-_out = get_default_output_port()
 
 __all__ = [
     "change_label",
@@ -51,8 +48,6 @@ __all__ = [
     "open_sandbox_ui",
     "open_sandbox_history_ui",
     "open_sandbox_records_ui",
-    "SandboxCommand",
-    "sandbox_text",
 ]
 
 #: 变更标签（文件 / 目录共用；目录标签在 ``change_label`` 内按 is_dir 区分）。
@@ -637,60 +632,3 @@ def open_sandbox_records_ui(ctx) -> bool:
         state_cls=get_sandbox_records_view_state_cls(), setup=setup, on_tick=tick,
         close_hint="变更记录流水已关闭", timeout_hint="变更记录流水超时关闭",
     )
-
-
-def sandbox_text(ctx) -> bool:
-    """文本列出文件沙盒统计（无 ChatUI / 单次模式回退）。"""
-    sandbox = get_sandbox_manager()
-    if sandbox is None:
-        _out.write(f"{YELLOW}  ! 文件沙盒未初始化{RESET}", level="raw", source="cmd")
-        return True
-    sections = build_sandbox_sections(sandbox)
-    _out.write(f"\n{DIM}  \u2500 文件沙盒{RESET}", level="raw", source="cmd")
-    for sec in sections:
-        _out.write(f"  {CYAN}\u25b8 {sec.get('title', '')}{RESET}", level="raw", source="cmd")
-        for row in sec.get("rows") or []:
-            label, value = row[0], row[1]
-            _out.write(f"    {label}: {value}", level="raw", source="cmd")
-    return True
-
-
-def _cmd_sandbox(ctx) -> bool:
-    """打开文件沙盒视图（有 ChatUI）或文本列出（回退）。
-
-    参数（``ctx.arg``）：
-      - 空 → 概览视图（``/sandbox``）；
-      - ``history`` / ``h`` → 消息维度历史视图；
-      - ``records`` / ``r`` → 变更记录流水视图。
-    """
-    arg = str(getattr(ctx, "arg", "") or "").strip().lower()
-    if arg in ("history", "h"):
-        if open_sandbox_history_ui(ctx):
-            return True
-    elif arg in ("records", "record", "r"):
-        if open_sandbox_records_ui(ctx):
-            return True
-    elif open_sandbox_ui(ctx):
-        return True
-    return sandbox_text(ctx)
-
-
-# ── CommandPlugin 子类 ──────────────────────────────
-
-from .base import CommandMeta, CommandPlugin, declare_command_plugin
-
-
-class SandboxCommand(CommandPlugin):
-    """文件沙盒概览（/sandbox）"""
-
-    def __init__(self):
-        self.meta = CommandMeta(
-            name="sandbox", description="文件沙盒概览（统计 / 清理 / 历史）",
-            group="files", usage="[history|records]",
-        )
-
-    def execute(self, ctx: CommandContext) -> bool:
-        return _cmd_sandbox(ctx)
-
-
-declare_command_plugin(SandboxCommand())

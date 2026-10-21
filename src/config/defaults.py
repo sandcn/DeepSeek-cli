@@ -24,7 +24,7 @@ PROVIDERS = {
         "token_prices": {
             # 价格单位：美元 / 百万 tokens（高峰价；闲时（非 peak 时段）为高峰价一半）。
             # input_cache_hit 为缓存命中输入价格（DeepSeek 上下文缓存：命中部分
-            # 按未命中价 ~1/50 计费，缺失时 /cost 回退按 input 全价计费，保守不低估）。
+            # 按未命中价 ~1/50 计费，缺失时 /usage 回退按 input 全价计费，保守不低估）。
             # V4.1 Flash（deepseek-flash）：原生多模态，图片按 token 计费；
             # 旧名 deepseek-v4-flash / deepseek-v4-flash-vision-exp 的请求由
             # V4.1 Flash 承接，按相同单价计费。
@@ -63,7 +63,7 @@ PROVIDERS = {
         ],
         "token_prices": {
             # 美元 / 百万 tokens（标准档）；input_cache_hit = 缓存读取单价
-            # （缺失时 /cost 回退按 input 全价计费，保守不低估）。
+            # （缺失时 /usage 回退按 input 全价计费，保守不低估）。
             "claude-opus-5-5": {"input": 4.0, "output": 20.0, "input_cache_hit": 0.20},
             "claude-sonnet-5-5": {"input": 2.0, "output": 10.0, "input_cache_hit": 0.10},
             "claude-haiku-5-5": {"input": 0.10, "output": 0.50, "input_cache_hit": 0.01},
@@ -193,7 +193,7 @@ DEFAULTS = {
     # 图片视觉 token = ceil(w/patch) * ceil(h/patch)（长边先按
     # image_upload_max_dimension 降采样，仅计 image_upload_keep_recent 张）；
     # 无法读尺寸（http URL / 解码失败 / Pillow 缺失）时每图按 default 计。
-    # 计费（/cost 输入）来自 API 真实 usage，与本估算无关。
+    # 计费（/usage 输入）来自 API 真实 usage，与本估算无关。
     "multimodal_image_token_patch": 28,
     "multimodal_image_token_default": 800,
     # ── MCP（Model Context Protocol）外部工具服务器 ──

@@ -1,6 +1,7 @@
 """sandbox_records_view — SandboxRecordsView 沙盒变更记录流水视图（2026-10）。
 
-``/sandbox records``（或沙盒概览视图按 ``l``）打开：App 在
+``/sandbox records`` 子命令已删除；视图保留为沙盒视图族能力（由概览视图按
+``l`` / 扩展入口打开）。App 在
 ``model.fullscreen == "sandbox_records"`` 时经全屏视图注册表**整屏只渲染本
 组件**，关闭后恢复完整聊天界面。视图按**记录**逐条浏览文件沙盒的全部修改
 （每条 = 一次文件变更），右栏显示该次变更的差异；可按 ``x`` 回滚该文件。

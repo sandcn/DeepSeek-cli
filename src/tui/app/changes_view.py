@@ -29,6 +29,10 @@
 （``core.commands._sandbox_cmd``）；回滚等操作经 ``applied_seq`` 回传给命令
 线程执行（保持数据层与 UI 线程分离）。视图渲染期经 ``model.sandbox_refresher``
 实时刷新（沙盒数据签名变化时重建）——流式输出期间打开同样自动跟进。
+
+★ 流式输出期间（``model.status.status_active``）视图可直接打开并浏览 / 搜索 /
+查看 diff，但手动回滚（``x`` / ``u`` / ``X`` / ``R``）暂停到生成结束，避免与
+正在运行的工具写文件并发；生成结束后自动恢复。
 """
 
 from __future__ import annotations
@@ -116,10 +120,25 @@ __all__ = [
     "_message_deps",
     "_preview_deps",
     "_panel_deps",
+    "_rollback_blocked",
     # 兼容面：sandbox_common 常量 re-export
     "MAX_DIFF_ROWS",
     "S_LABEL",
 ]
+
+
+def _rollback_blocked(model) -> bool:
+    """生成中（``status_active``）暂停手动回滚。
+
+    ``/changes`` 在流式输出期间可直接打开并实时刷新（用户需求），但回滚会
+    改写文件，必须等生成结束——视图仍可浏览 / 搜索 / 查看 diff。
+    """
+    status = getattr(model, "status", None)
+    return bool(getattr(status, "status_active", False))
+
+
+_ROLLBACK_BLOCKED_MESSAGE = "生成中，回滚暂不可用（生成结束后可用）"
+
 
 _KEYMAP = [
     {"group": "浏览", "keys": "↑↓/jk", "desc": "选择文件"},
@@ -388,6 +407,8 @@ def ChangesView(props) -> object:
     width = props.get("width", 0) or 0
     cv = getattr(model, "changes_view", None)
     visible = bool(cv is not None and cv.visible and not cv.done)
+    # 生成中可打开查看 / 实时刷新，但回滚动作暂停（用户确认的流式语义）。
+    rollback_blocked = _rollback_blocked(model)
     entries = list(getattr(cv, "entries", None) or []) if cv is not None else []
     messages = list(getattr(cv, "messages", None) or []) if cv is not None else []
     sections = list(getattr(cv, "sections", None) or []) if cv is not None else []
@@ -536,6 +557,17 @@ def ChangesView(props) -> object:
             return base
         return f"{base} · 匹配 {_resync_matches()}"
 
+    def _deny_rollback() -> bool:
+        """生成中拒绝回滚动作（清确认态，避免生成结束后误触发）。"""
+        if not rollback_blocked:
+            return False
+        cv.status_message = _ROLLBACK_BLOCKED_MESSAGE
+        cv.revert_confirm = ""
+        cv.revert_all_confirm = False
+        cv.restore_mode = False
+        cv.restore_value = ""
+        return True
+
     def _handle(event) -> bool:
         if not visible or cv is None:
             return False
@@ -560,6 +592,8 @@ def ChangesView(props) -> object:
                 #   状态（等于隐式「回滚全部」），属危险的输入校验漏洞。现仅接受
                 #   非负整数（消息索引语义）。
                 if raw.isdigit():
+                    if _deny_rollback():
+                        return True
                     _apply({"action": "restore-message", "index": int(raw)})
                     cv.status_message = f"正在回滚到消息 {int(raw)}…"
                 else:
@@ -690,11 +724,15 @@ def ChangesView(props) -> object:
                 cv.status_message = "回滚预览" if cv.detail_mode == "preview" else "右栏：差异"
                 return True
             if ch == "R":
+                if _deny_rollback():
+                    return True
                 cv.restore_mode = True
                 cv.restore_value = ""
                 cv.status_message = "输入消息索引后回车回滚"
                 return True
             if ch == "x" and entry is not None:
+                if _deny_rollback():
+                    return True
                 if view_mode == "message":
                     # ★ 修复（2026-10）：消息条目没有 ``path``，此前按 ``x`` 会
                     #   进入「回滚 ''」流程（提示「再按 x 确认回滚「」」→
@@ -713,12 +751,16 @@ def ChangesView(props) -> object:
                     cv.status_message = f"再按 x 确认回滚「{path}」"
                 return True
             if ch == "u":
+                if _deny_rollback():
+                    return True
                 target = _target_entry()
                 path = str(target.get("path", "") or "")
                 _apply({"action": "undo-revert", "path": path})
                 cv.status_message = "正在撤销回滚…"
                 return True
             if ch == "X":
+                if _deny_rollback():
+                    return True
                 if revert_all_confirm:
                     _apply({"action": "revert-all"})
                     cv.status_message = "正在回滚全部…"
@@ -893,6 +935,8 @@ def ChangesView(props) -> object:
         segs.append(f" · 类型 {type_filter}")
     if filter_on and pattern:
         segs.append(f" · 过滤 {len(matches)}/{len(ordered)}")
+    if rollback_blocked:
+        segs.append(" · 生成中，回滚暂停")
     header_runs = build_header_runs(
         "\u258d\U0001f4dd 文件变更审查", S_TITLE, segs, hint, width,
         hint_style=S_HINT, sep_style=S_SEP,

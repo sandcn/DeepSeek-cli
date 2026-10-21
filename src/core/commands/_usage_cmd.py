@@ -1,7 +1,12 @@
-"""usage 命令 — ``/usage`` 用量仪表盘视图（全屏视图 / 文本回退）。
+"""usage 命令 — ``/usage`` 右侧实时用量浮窗（文本回退）。
 
-有活跃 ChatUI 时打开全屏「用量仪表盘」（``model.fullscreen == "usage"``）——
-可视化 token 用量 / 上下文窗口 / 费用统计；无 ChatUI 回退文本列出。
+有活跃 ChatUI 时，``/usage`` **打开 / 关闭右侧浮动窗口**（开关语义）：
+
+  - 首次执行：在终端右侧打开用量浮窗，内容按终端宽度自适应（60%，上限
+    60 列），token 用量 / 上下文窗口 / 费用统计**每帧实时刷新**；
+  - 已打开时再次执行：关闭浮窗（不阻塞生成，``direct_during_round=True``）。
+
+无 ChatUI（单次模式 / 测试桩）时回退为文本列出。
 
 数据源：``core.stats`` token 快照、``core.context_manager`` 上下文使用率、
 ``TOKEN_PRICES``（或 ``ctx.config_port``）费用计算。
@@ -89,7 +94,7 @@ def _token_prices(ctx, model: str) -> dict:
 
 
 def build_usage_sections(ctx) -> list:
-    """构建用量仪表盘统计区块。"""
+    """构建用量浮窗统计区块（供浮窗**每帧**重读，O(1) 无锁数据源）。"""
     from ..stats import (
         get_per_second_speed,
         get_session_elapsed,
@@ -194,27 +199,76 @@ def _context_rows(capacity: int, pct) -> list:
     return rows
 
 
-def _open_usage_ui(ctx) -> bool:
-    """打开全屏用量仪表盘视图（有 ChatUI 时）。"""
-    from ..adapters.ui_runtime import get_usage_view_state_cls
-    from ._view_opener import open_fullscreen_view
+def _active_chat_ui():
+    """取当前活跃 ChatUI（无则 None；测试可 monkeypatch 本函数）。"""
+    try:
+        from ..adapters.ui_runtime import get_active_chat_ui
 
-    refresh_seq = {"v": 0}
+        return get_active_chat_ui()
+    except Exception:
+        _logger.debug("/usage 获取活跃 ChatUI 失败", exc_info=True)
+        return None
 
-    def setup(model, state):
-        state.sections = build_usage_sections(ctx)
 
-    def tick(state) -> bool:
-        if state.refresh_seq > refresh_seq["v"]:
-            refresh_seq["v"] = state.refresh_seq
-            state.sections = build_usage_sections(ctx)
-        return False
+def _open_usage_float(ctx) -> bool | None:
+    """打开右侧用量浮窗（已打开时不动）。
 
-    return open_fullscreen_view(
-        ctx, view_id="usage", state_attr="usage_view",
-        state_cls=get_usage_view_state_cls(), setup=setup, on_tick=tick,
-        close_hint="用量仪表盘已关闭", timeout_hint="用量仪表盘超时关闭",
-    )
+    Returns:
+        True — 浮窗已打开；None — 无 ChatUI / 浮窗能力不可用（调用方回退）。
+    """
+    chat_ui = _active_chat_ui()
+    if chat_ui is None:
+        return None
+    is_open = getattr(chat_ui, "is_usage_floating_window_open", None)
+    if callable(is_open):
+        try:
+            if bool(is_open()):
+                return True
+        except Exception:
+            _logger.debug("/usage 读取浮窗状态失败", exc_info=True)
+    opener = getattr(chat_ui, "open_usage_floating_window", None)
+    if not callable(opener):
+        return None
+    try:
+        opened = bool(opener(lambda: build_usage_sections(ctx)))
+    except Exception:
+        _logger.debug("/usage 打开浮窗失败", exc_info=True)
+        return None
+    return True if opened else None
+
+
+def _toggle_usage_float(ctx) -> bool | None:
+    """开关右侧用量浮窗（``/usage`` 的开关语义）。
+
+    Returns:
+        True — 已打开或已关闭（命令已处理）；
+        None — 无 ChatUI / 浮窗能力不可用（调用方回退文本输出）。
+    """
+    chat_ui = _active_chat_ui()
+    if chat_ui is None:
+        return None
+
+    is_open = getattr(chat_ui, "is_usage_floating_window_open", None)
+    if callable(is_open):
+        try:
+            opened_now = bool(is_open())
+        except Exception:
+            _logger.debug("/usage 读取浮窗状态失败", exc_info=True)
+            opened_now = False
+        if opened_now:
+            closer = getattr(chat_ui, "close_usage_floating_window", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:
+                    _logger.debug("/usage 关闭浮窗失败", exc_info=True)
+                    return None
+                _out.write(
+                    f"  {DIM}用量浮窗已关闭{RESET}", level="raw", source="cmd",
+                )
+                return True
+
+    return _open_usage_float(ctx)
 
 
 def _usage_text(ctx) -> bool:
@@ -233,8 +287,8 @@ def _usage_text(ctx) -> bool:
 
 
 def _cmd_usage(ctx) -> bool:
-    """打开用量仪表盘（有 ChatUI）或文本列出（回退）。"""
-    if _open_usage_ui(ctx):
+    """开关右侧用量浮窗（有 ChatUI）或文本列出（回退）。"""
+    if _toggle_usage_float(ctx):
         return True
     return _usage_text(ctx)
 
@@ -243,11 +297,13 @@ from .base import CommandMeta, CommandPlugin, declare_command_plugin
 
 
 class UsageCommand(CommandPlugin):
-    """用量仪表盘（/usage）。"""
+    """用量浮窗（/usage：右侧实时刷新，再按一次关闭）。"""
 
     def __init__(self):
         self.meta = CommandMeta(
-            name="usage", description="用量仪表盘（token / 上下文 / 费用）", group="model",
+            name="usage",
+            description="用量浮窗（token / 上下文 / 费用，右侧实时刷新，再按关闭）",
+            group="model",
             direct_during_round=True,
         )
 

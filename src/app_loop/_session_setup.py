@@ -352,7 +352,7 @@ def _register_session_handlers(
             except Exception:
                 _logger.debug("注入会话日志刷新器异常", exc_info=True)
     # ★ 文件沙盒视图实时刷新器注入（幂等：重复注册覆盖为最新 session）——
-    #   F11 / ``/changes`` / ``/sandbox`` 打开后视图渲染期每帧调用（数据签名
+    #   F11 / ``/changes`` 打开后视图渲染期每帧调用（数据签名
     #   未变零重建），沙盒记录增长（工具写文件、回滚、清空）时自动重建并写回
     #   各沙盒视图状态；**流式输出期间亦可打开并实时跟进**。
     if chat_ui is not None:

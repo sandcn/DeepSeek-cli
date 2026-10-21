@@ -245,7 +245,7 @@ class StreamContext:
 
         流式期间 ``add_token_size`` 累加估算值；此处以
         ``真实 output - stream_added_tokens`` 修正全局总 tok，使状态栏
-        「总tok」与 /cost 的真实统计一致。
+        「总tok」与 /usage 的真实统计一致。
         """
         try:
             real = int(real_output or 0)

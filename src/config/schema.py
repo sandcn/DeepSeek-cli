@@ -287,7 +287,7 @@ def _validate_rc(rc):
                             "input": float(prices["input"]),
                             "output": float(prices["output"])
                         }
-                        # 保留可选缓存命中价格（缺失时 /cost 回退按 input 全价）
+                        # 保留可选缓存命中价格（缺失时 /usage 回退按 input 全价）
                         if "input_cache_hit" in prices:
                             entry["input_cache_hit"] = float(prices["input_cache_hit"])
                         cleaned[str(model)] = entry

@@ -100,17 +100,21 @@ def _make_loop(user_input: str = "/help") -> InteractiveLoop:
 
 
 def test_command_meta_declares_direct_policy():
-    from src.core.commands._config_cmd import CostCommand, ThemeCommand
-    from src.core.commands._data_cmd import HelpCommand, LoadCommand
+    from src.core.commands._config_cmd import ThemeCommand
+    from src.core.commands._data_cmd import LoadCommand
     from src.core.commands._export_cmd import ExportCommand
     from src.core.commands._search_cmd import SearchCommand
-    from src.core.commands._session_cmd import ClearCommand, RetryCommand
+    from src.core.commands._session_cmd import (
+        ChangesCommand,
+        ClearCommand,
+        RetryCommand,
+    )
     from src.core.commands._usage_cmd import UsageCommand
     from src.core.commands.plugins.editmsg_plugin import EditmsgPlugin
     from src.core.commands.plugins.model_plugin import ModelPlugin
 
-    # 只读展示类：生成中可直连
-    for cls in (HelpCommand, CostCommand, UsageCommand):
+    # 展示 / 审查类：生成中可直连（/changes 流式期间回滚动作暂停）
+    for cls in (UsageCommand, ChangesCommand):
         assert cls().meta.direct_during_round is True, cls
         assert cls().meta.queue_only is False, cls
 

@@ -20,8 +20,8 @@
   - Esc / Ctrl+H / F1 / Ctrl+/ 关闭（其余按键被模态吞掉，不落入输入缓冲）。
 
 数据源：核心命令插件注册表（``<command_core>._iter_help_commands``——分组/
-描述/别名）与 ``SHORTCUT_ROWS``（快捷键单一真源）——与 ``/help`` 文本输出
-同源，避免两处漂移。依赖约束：仅依赖 app 同层（_modal_view）与 ink 框架
+描述/别名）与 ``SHORTCUT_ROWS``（快捷键单一真源）——命令面板同源，避免两处
+漂移。依赖约束：仅依赖 app 同层（_modal_view）与 ink 框架
 （Layer 0/1）；核心命令数据经函数内延迟 import（避免模块级循环依赖）。
 """
 
@@ -49,7 +49,7 @@ _S_CUR_BG = Style(bg=237)              # 光标行背景
 _S_MATCH = Style(fg=0, bg=221)         # 搜索匹配高亮（黑字金底）
 _S_SEARCH = Style(fg=221)              # 搜索输入态文本（金）
 
-#: 命令名称列最小/最大宽度（与 /help 文本输出同口径）。
+#: 命令名称列最小/最大宽度（与命令面板同口径）。
 _CMD_COL_MIN = 8
 _CMD_COL_MAX = 20
 #: 头部预留行数（视图内容可见行 = 终端高 - 头部 1 行）。
@@ -488,7 +488,7 @@ def _highlight_matches(runs: list, query: str) -> list:
 
 
 def _shortcut_count() -> int:
-    """快捷键条目数（头部统计用；数据源与 /help 同源）。"""
+    """快捷键条目数（头部统计用；数据源与命令面板同源）。"""
     from src.core.internal.commands._command_core import SHORTCUT_ROWS
 
     return sum(len(row) for row in SHORTCUT_ROWS)

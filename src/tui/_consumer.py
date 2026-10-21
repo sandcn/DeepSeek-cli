@@ -432,25 +432,33 @@ class ChatUIConsumer:
         40 列浮窗；22 种动作含干饭/咀嚼/打嗝/追饭粒/吃撑躺平/跳舞/吃 tok。
         返回底层桥是否登记成功。
 
-        ``/loop`` 同时打开时把循环浮窗移到左侧，宠物保留右侧——两者不互相
-        遮挡；宠物关闭后循环浮窗恢复右侧。
+        ``/loop`` 同时打开时把循环浮窗移到左侧；``/usage`` 已占右侧时宠物
+        也开在左侧——浮窗之间不互相遮挡。
         """
         from src.tui.app.pet import pet_window_spec
 
-        if "loop" in self._floating_window_ids():
+        ids = self._floating_window_ids()
+        if "loop" in ids:
             self.update_floating_window("loop", x="left")
-        return self.open_floating_window(pet_window_spec())
+        spec = pet_window_spec()
+        if "usage" in ids:
+            spec = spec.copy_with(x="left")
+        return self.open_floating_window(spec)
 
     def close_pet_floating_window(self) -> bool:
         """关闭宠物浮窗（窗口不存在时返回 False）。
 
-        宠物关闭后若 ``/loop`` 仍打开，把它从左侧恢复到默认右侧。
+        宠物关闭后若 ``/loop`` 仍打开：``/usage`` 占右侧时循环浮窗保持左侧，
+        否则恢复到默认右侧。
         """
         from src.tui.app.pet import PET_WINDOW_ID
 
         closed = self.close_floating_window(PET_WINDOW_ID)
-        if closed and "loop" in self._floating_window_ids():
-            self.update_floating_window("loop", x="right")
+        ids = self._floating_window_ids()
+        if closed and "loop" in ids:
+            self.update_floating_window(
+                "loop", x="left" if "usage" in ids else "right",
+            )
         return closed
 
     def is_pet_floating_window_open(self) -> bool:
@@ -458,6 +466,52 @@ class ChatUIConsumer:
         from src.tui.app.pet import PET_WINDOW_ID
 
         return PET_WINDOW_ID in self._floating_window_ids()
+
+    # ── /usage 用量浮窗（/usage 命令使用） ─────────────
+
+    def open_usage_floating_window(self, provider) -> bool:
+        """打开右侧用量浮窗（``/usage``）。
+
+        Args:
+            provider: 无参可调用对象，返回 ``build_usage_sections`` 的统计
+                区块列表；浮窗每帧重建时调用（实时刷新）。
+
+        Returns:
+            True=已登记；False=底层桥不支持 / 无效规格。
+
+        右侧让给用量浮窗：已打开的 ``/loop`` / ``/pet`` 临时移到左侧，关闭
+        用量浮窗后由 ``close_usage_floating_window`` 恢复原布局。
+        """
+        from src.tui.app.floating import usage_window_spec
+
+        ids = self._floating_window_ids()
+        for window_id in ("loop", "pet"):
+            if window_id in ids:
+                self.update_floating_window(window_id, x="left")
+        return self.open_floating_window(usage_window_spec(provider))
+
+    def close_usage_floating_window(self) -> bool:
+        """关闭右侧用量浮窗并恢复 ``/loop`` / ``/pet`` 的左右布局。"""
+        from src.tui.app.floating import USAGE_WINDOW_ID
+
+        closed = self.close_floating_window(USAGE_WINDOW_ID)
+        if not closed:
+            return False
+        ids = self._floating_window_ids()
+        if "pet" in ids:
+            # 宠物回右侧；循环浮窗优先让到左侧（与 /pet 既有布局一致）。
+            self.update_floating_window("pet", x="right")
+            if "loop" in ids:
+                self.update_floating_window("loop", x="left")
+        elif "loop" in ids:
+            self.update_floating_window("loop", x="right")
+        return True
+
+    def is_usage_floating_window_open(self) -> bool:
+        """用量浮窗是否正在显示（供 ``/usage`` 做开关切换）。"""
+        from src.tui.app.floating import USAGE_WINDOW_ID
+
+        return USAGE_WINDOW_ID in self._floating_window_ids()
 
     # ── /loop 循环浮窗（/loop 命令使用） ─────────────
 
@@ -499,8 +553,8 @@ class ChatUIConsumer:
                 run_started_at=0.0,
             )
         spec = loop_window_spec()
-        if "pet" in self._floating_window_ids():
-            # 宠物占右侧时，循环浮窗让到左侧，避免被宠物窗口覆盖。
+        if "pet" in self._floating_window_ids() or "usage" in self._floating_window_ids():
+            # 右侧被宠物 / 用量浮窗占用时，循环浮窗让到左侧，避免互相遮挡。
             spec = spec.copy_with(x="left")
         self.open_floating_window(spec)
 

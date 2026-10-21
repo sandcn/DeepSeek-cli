@@ -1,6 +1,7 @@
 """sandbox_stats_view — SandboxStatsView 文件沙盒概览视图（模态全屏视图，2026-10）。
 
-``/sandbox`` 命令打开：App 在 ``model.fullscreen == "sandbox"`` 时经全屏视图
+``/sandbox`` 命令已删除；视图保留为沙盒视图族能力（由内部视图切换 / 扩展
+入口打开）。App 在 ``model.fullscreen == "sandbox"`` 时经全屏视图
 注册表**整屏只渲染本组件**，关闭后恢复完整聊天界面。视图汇总文件沙盒
 （``SandboxManager``）的统计（概览 / 变更类型 / 工具分布 / 缓存与回滚），
 并提供沙盒管理与子视图入口。
@@ -81,7 +82,7 @@ def _open_sub_view(model, view_id: str) -> None:
          再次进入子视图看到空白页。此处统一复位。
       2. **无刷新器时空白**：``visible`` 此前只由刷新器置位——无会话 / 沙盒
          缺失时目标视图 ``visible`` 保持 False。此处兜底置 True。
-      3. **命令线程悬挂**：``/sandbox`` 由命令线程打开并轮询 ``state.done``；
+      3. **命令线程悬挂**：旧 ``/sandbox`` 命令由命令线程打开并轮询 ``state.done``；
          切换子视图后父视图永不置终态，命令线程悬挂到 600s 超时（期间命令
          队列全部排队不可执行）。此处主动置父视图终态释放轮询。
     """

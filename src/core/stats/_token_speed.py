@@ -402,7 +402,7 @@ def adjust_token_size(size: int) -> None:
     """修正全局总 token（可为负）——真实 usage 覆盖流式估算偏差。
 
     流式期间 ``add_token_size`` 累加估算值，真实 usage 到达后用本函数传入
-    ``真实值 - 已累加估算`` 修正（通常为负），使状态栏总 tok 与 /cost 的
+    ``真实值 - 已累加估算`` 修正（通常为负），使状态栏总 tok 与 /usage 的
     真实统计口径一致。总计数钳制到 >= 0。
 
     Args:

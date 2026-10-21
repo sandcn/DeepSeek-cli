@@ -86,7 +86,7 @@ def _palette_cache_key() -> object | None:
 def _palette_entries() -> list:
     """构建命令目录（分组 / 描述 / 别名；按分组顺序 + 名称排序）。
 
-    数据源与 ``/help``、帮助速查视图同源（``_iter_help_commands``），额外
+    数据源与帮助速查视图同源（``_iter_help_commands``），额外
     追加 ``exit`` 伪命令。命令插件注册表未挂载时该函数自身回退旧命令表。
     注册表可用时按签名缓存（面板每帧渲染不重复扫描注册表）。
     """

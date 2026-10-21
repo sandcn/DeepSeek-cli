@@ -201,7 +201,7 @@ class AppModel(_ToolOutputMixin):
         self.sessions_view: SessionsViewState = SessionsViewState()
         self.changes_view: ChangesViewState = ChangesViewState()
         # 文件沙盒概览 / 消息维度历史 / 记录流水视图（2026-10——
-        # /sandbox 命令族；状态类型见 _state_types.py，组件见
+        # 沙盒视图族；状态类型见 _state_types.py，组件见
         # app/sandbox_stats_view.py / sandbox_history_view.py /
         # sandbox_records_view.py）。
         self.sandbox_view: SandboxStatsViewState = SandboxStatsViewState()
@@ -233,7 +233,7 @@ class AppModel(_ToolOutputMixin):
         self.palette_recent: list = []
         # 文件沙盒视图**实时刷新器**（装配注入 ``core.commands._sandbox_cmd.
         # make_sandbox_refresher(session, apply)`` 产出；``() -> bool``——数据
-        # 签名变化时重建并写回沙盒视图状态）。F11 / /changes / /sandbox 打开
+        # 签名变化时重建并写回沙盒视图状态）。F11 / /changes 打开
         # 后由视图渲染期每帧调用，支持流式输出期间打开并自动跟进；
         # None = 未注入（测试/无会话）。
         self.sandbox_refresher: object | None = None

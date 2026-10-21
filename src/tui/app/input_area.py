@@ -112,8 +112,8 @@ from src.tui.app._theme import sep_line as _theme_sep_line, time_glow, _S_ACCENT
 from src.presentation_data import LiveMapping
 
 # 占位符
-_PLACEHOLDER_TEXT = "输入消息 · /help 查看命令 · Ctrl+N 切换模型 · Tab 补全"
-_PLACEHOLDER_COMPACT = "/help · Ctrl+N · Tab"
+_PLACEHOLDER_TEXT = "输入消息 · /usage 查看用量 · Ctrl+N 切换模型 · Tab 补全"
+_PLACEHOLDER_COMPACT = "/usage · Ctrl+N · Tab"
 #: 流式占位符动画基文本（无尾点；BEAUTY-8 动态追加 0-3 个点循环）
 _PLACEHOLDER_STREAMING_BASE = "AI 生成中"
 
@@ -122,10 +122,10 @@ _PLACEHOLDER_STREAMING_BASE = "AI 生成中"
 #   流式时启用）。文本进入快照键（time_bucket 已隐式进键），桶边界自动刷新。
 _PLACEHOLDER_ROTATION = (
     _PLACEHOLDER_TEXT,
-    "输入消息 · /help 查看命令 · F2 命令面板 · Ctrl+H 轨迹视图 · F1 帮助速查",
+    "输入消息 · 输入 / 查看命令 · F2 命令面板 · Ctrl+H 轨迹视图 · F1 帮助速查",
     "输入消息 · Tab 补全 · Ctrl+N 切换模型 · Ctrl+B 切换模式",
     "输入消息 · 拖动文件到窗口插入路径 · Ctrl+O 编辑消息 · Ctrl+L 清屏",
-    "输入消息 · /cost 查看用量 · /theme 切换主题 · Ctrl+T 思考开关",
+    "输入消息 · /usage 查看用量 · /theme 切换主题 · Ctrl+T 思考开关",
     "输入消息 · Esc 清空输入 · Ctrl+G 外部编辑 · Ctrl+D 退出",
 )
 #: 占位提示轮播周期（秒）

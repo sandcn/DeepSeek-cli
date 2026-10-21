@@ -95,18 +95,16 @@ COMMANDS_HELP = (
     f"  {TEAL}/pet{RESET}      召唤/收回爱吃大白饭的蓝色大肥鱼宠物（右侧浮窗，干饭/吃 tok/跳舞等 22 种动作）\n"
     f"  {TEAL}/pin{RESET}      标记重要消息（压缩时保留）\n"
     f"  {TEAL}/editmsg{RESET}  编辑当前会话消息 (Ctrl+O)\n"
-    f"  {TEAL}/undo{RESET}     撤销上一轮对话\n"
     f"  {TEAL}/retry{RESET}    重新生成上一条回答（或 {TEAL}/r{RESET}）\n"
     f"  {TEAL}/edit{RESET}     编辑并重新发送上一条输入\n"
     f"  {TEAL}/model{RESET}    切换模型\n"
     f"  {TEAL}/models{RESET}   模型档案（新增/编辑：接口地址/密钥/温度/思考级别）\n"
-    f"  {TEAL}/cost{RESET}     查看 token 用量和费用\n"
+    f"  {TEAL}/usage{RESET}    右侧用量浮窗（token / 上下文 / 费用，再按一次关闭）\n"
     f"  {TEAL}/config{RESET}   显示/编辑配置（独立界面）: /config [show|get|set|reset]\n"
     f"  {TEAL}/plugin{RESET}   查看当前已加载的插件（独立界面）\n"
     f"  {TEAL}/load{RESET}     加载保存的对话 /load <id>\n"
     f"  {TEAL}/sessions{RESET} 列出所有保存的对话\n"
     f"  {TEAL}/theme{RESET}    切换配色主题: /theme <dark|light|high-contrast>\n"
-    f"  {TEAL}/help{RESET}     显示帮助\n"
     f"  {DIM}  exit 退出{RESET}"
     # ── 快捷键说明（2026-08-05 增加操作；readline 编辑键 + 会话操作键） ──
     f"\n{DIM}  \u2500 快捷键{RESET}\n"
@@ -203,7 +201,7 @@ def _fill_default_cache_price(model: str, prices: dict | None) -> dict | None:
 
     用户 RC 配置为旧格式（仅 input/output）时，DeepSeek 等提供商的缓存
     命中优惠价不会自动出现；这里按模型名在内置 PROVIDERS 默认值中查找，
-    补充 ``input_cache_hit``，使 /cost 能正确按优惠价计算命中费用。
+    补充 ``input_cache_hit``，使 /usage 能正确按优惠价计算命中费用。
     未匹配到默认价时原样返回（compute_cost 会回退按全价，保守不低估）。
     """
     if prices is not None and "input_cache_hit" in prices:
@@ -283,16 +281,15 @@ def _pop_assistant_tool_messages(messages):
 
 
 def get_registered_command_names() -> list[str]:
-    """返回所有已注册的命令名列表（排序）"""
-    names = set(_commands.keys())
-    return sorted(names, key=lambda x: (x != "/help", x))  # /help 排首位
+    """返回所有已注册的命令名列表（字母序）"""
+    return sorted(set(_commands.keys()))
 
 
 def get_command_help(name: str) -> str:
     """返回命令的帮助描述（注册表 ``info.help``；无则空串）。
 
-    Claude TUI parity 步骤 3.7：补全弹窗命令描述数据源。name 可带或不带
-    前导 ``/``（注册表 key 带 ``/``，如 ``/help``）。
+    TUI 补全弹窗命令描述数据源。name 可带或不带前导 ``/``（注册表 key 带
+    ``/``，如 ``/model``）。
     """
     info = _commands.get(name)
     if info is None:
@@ -315,8 +312,8 @@ GROUP_LABELS: dict = {
 #: 分组展示顺序（含标签未覆盖分组时按字母序补在末尾）。
 GROUP_ORDER: tuple = ("session", "model", "ui", "data", "files", "general")
 
-#: 快捷键速查（每行两项：``((按键, 说明), (按键, 说明))``）——/help 与
-#: 全屏「帮助速查」视图共用同一数据源（单一真源，避免两处漂移）。
+#: 快捷键速查（每行两项：``((按键, 说明), (按键, 说明))``）——帮助速查视图与
+#: 命令面板共用同一数据源（单一真源，避免两处漂移）。
 SHORTCUT_ROWS: tuple = (
     (("Ctrl+A/Home", "光标到行首"), ("Ctrl+E/End", "光标到行尾")),
     (("Ctrl+F/\u2192", "右移一字符"), ("Ctrl+B/\u2190", "左移一字符")),
@@ -391,7 +388,7 @@ def _disp_width(text: str) -> int:
 
 
 def _build_shortcut_section(dim: str, teal: str, reset: str) -> list[str]:
-    """构建快捷键小节文本行（两列按显示宽度对齐；/help 与全屏速查视图共用）。"""
+    """构建快捷键小节文本行（两列按显示宽度对齐；帮助速查视图共用）。"""
     key_w = max((len(k) for row in SHORTCUT_ROWS for k, _ in row), default=0)
     # 第一列（键 + 说明）的最大显示宽度——第二列据此对齐。
     left_w = 0
@@ -452,12 +449,3 @@ def get_dynamic_help_text() -> str:
     lines.append(f"{_CMD_INDENT}{TEAL}exit{RESET}{pad_exit}退出")
     lines.extend(_build_shortcut_section(DIM, TEAL, RESET))
     return "\n".join(lines)
-
-
-# ── /help 命令 ──────────────────────────────────────────
-def _cmd_help(ctx):
-    _get_out().write(get_dynamic_help_text(), level="raw", source="cmd")
-    return True
-
-
-# /help 命令通过 HelpCommand 插件注册（在 _data_cmd.py 中），此处不再重复注册。

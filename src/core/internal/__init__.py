@@ -54,7 +54,6 @@ _LAZY_EXPORTS = {
     "show_cost": (".commands._command_core", "show_cost"),
     "compute_cost": (".commands._command_core", "compute_cost"),
     "_pop_assistant_tool_messages": (".commands._command_core", "_pop_assistant_tool_messages"),
-    "_cmd_help": (".commands._command_core", "_cmd_help"),
     "get_dynamic_help_text": (".commands._command_core", "get_dynamic_help_text"),
     # ── shared 子包 ──
     "MessageStatsCache": (".shared", "MessageStatsCache"),
@@ -74,7 +73,7 @@ __all__ = [
     "CommandContext", "get_registered_command_names",
     "COMMANDS_HELP", "_commands",
     "_format_cost_duration", "show_cost", "compute_cost",
-    "_pop_assistant_tool_messages", "_cmd_help",
+    "_pop_assistant_tool_messages",
     "get_dynamic_help_text",
     # shared 子包
     "MessageStatsCache", "FileSnapshot",

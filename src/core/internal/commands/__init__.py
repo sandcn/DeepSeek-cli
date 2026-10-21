@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from ._command_core import (  # noqa: F401 — 显式重导出（替代 star import + 私有名）
-    _cmd_help,
     _commands,
     _format_cost_duration,
     _pop_assistant_tool_messages,
@@ -22,6 +21,6 @@ __all__ = [
     "CommandContext", "get_registered_command_names",
     "COMMANDS_HELP", "_commands",
     "_format_cost_duration", "show_cost", "compute_cost",
-    "_pop_assistant_tool_messages", "_cmd_help",
+    "_pop_assistant_tool_messages",
     "get_dynamic_help_text",
 ]

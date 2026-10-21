@@ -454,7 +454,7 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
                     Style(fg=110),
                 )
             # ★ 方向8（窄屏防溢出）：选项行超宽时截断至 width（不拆
-            #   CJK）——修复前 `` ▶ /help 显示帮助`` 在窄屏撑爆行宽。
+            #   CJK）——修复前 `` ▶ /model 切换模型`` 在窄屏撑爆行宽。
             if width > 0 and line.width > width:
                 from src.tui.ink.helpers import truncate_line
                 line = truncate_line(line, width)

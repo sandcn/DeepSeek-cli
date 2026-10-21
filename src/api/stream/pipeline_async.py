@@ -449,7 +449,7 @@ class AsyncStreamPipeline:
             # 修正值 = 真实值 - 估计值；合并为单次 accumulate_usage：
             # input += real_input，output += correction，
             # calls 恰 +1（对应一次真实 API 调用）。
-            # 此前 split 为两次调用导致 calls 多计 1 次（/cost 调用次数虚高）。
+            # 此前 split 为两次调用导致 calls 多计 1 次（/usage 调用次数虚高）。
             estimated_output = ctx.last_live_est
             correction = real_output - estimated_output
             # ★ 已用真实值修正会话 output；后续若仍有输出，SpeedHandler 以

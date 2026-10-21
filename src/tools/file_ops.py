@@ -544,7 +544,7 @@ async def async_record_sandbox_batch(changes: list[tuple]) -> None:
 
 
 async def async_makedirs_and_record(path: str, tool_name: str) -> None:
-    """创建目录（含父目录）并记录到沙盒，使 /undo 可正确清理。
+    """创建目录（含父目录）并记录到沙盒，使沙盒回滚可正确清理。
 
     与 async_makedirs 的区别：本函数会将所有隐式创建（原本不存在）的
     父目录一并记录到沙盒的 file_history 中，确保 restore_to_message()

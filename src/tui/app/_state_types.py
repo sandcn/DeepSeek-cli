@@ -873,7 +873,7 @@ class ChangesViewState(ListViewState):
 
 @dataclass
 class SandboxStatsViewState(ListViewState):
-    """文件沙盒概览视图状态（/sandbox 打开，SandboxStatsView 消费）。
+    """文件沙盒概览视图状态（SandboxStatsView 消费）。
 
     Attributes:
         sections: 统计区块列表（title/rows；命令线程构建）。
@@ -893,7 +893,7 @@ class SandboxStatsViewState(ListViewState):
 
 @dataclass
 class SandboxHistoryViewState(ListViewState):
-    """沙盒消息维度历史视图状态（/sandbox history 打开，SandboxHistoryView 消费）。
+    """沙盒消息维度历史视图状态（SandboxHistoryView 消费）。
 
     Attributes:
         entries: 消息维度条目（index/count/files/tools/time/changes）。
@@ -911,7 +911,7 @@ class SandboxHistoryViewState(ListViewState):
 
 @dataclass
 class SandboxRecordsViewState(ListViewState):
-    """沙盒变更记录流水视图状态（/sandbox records 打开，SandboxRecordsView 消费）。
+    """沙盒变更记录流水视图状态（SandboxRecordsView 消费）。
 
     Attributes:
         entries: 记录条目（path/index/tool/time/change_label/before/after）。
@@ -992,7 +992,7 @@ class McpViewState(ListViewState):
 
 @dataclass
 class UsageViewState(ListViewState):
-    """用量仪表盘视图状态（/usage 打开，UsageView 消费）。
+    """用量仪表盘全屏视图状态（UsageView 消费；``/usage`` 现为右侧浮窗）。
 
     Attributes:
         sections: 统计区块列表（title/rows；由命令线程构建）。

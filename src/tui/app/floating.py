@@ -1,4 +1,4 @@
-"""通用浮动窗口 — 规格 / 渲染包装 / 层级排序 / ``/loop`` 循环浮窗内容。
+"""通用浮动窗口 — 规格 / 渲染包装 / 层级排序 / ``/loop``、``/usage`` 浮窗内容。
 
 设计目标（2026-10-21 用户需求）：
 
@@ -56,6 +56,15 @@ DEFAULT_FLOAT_WIDTH = 30
 #: 进度条、「⏱ 本次 mm:ss … 生成状态」计时行与当前 / 下一轮提词。
 LOOP_FLOAT_WIDTH = 34
 
+#: ``/usage`` 用量浮窗 id。
+USAGE_WINDOW_ID = "usage"
+#: ``/usage`` 浮窗宽度比例（终端宽度的 60%；随终端 resize 每帧自适应）。
+USAGE_FLOAT_WIDTH_RATIO = 0.6
+#: ``/usage`` 浮窗宽度上限（列）——60% 终端宽但不无限变宽。
+USAGE_FLOAT_MAX_WIDTH = 60
+#: ``/usage`` 浮窗边框色（亮青）。
+_S_USAGE_BORDER = 45
+
 #: 浮窗默认背景色（不透明覆盖；None = 透明，底层内容会从空格处透出）。
 DEFAULT_FLOAT_BACKGROUND = "black"
 
@@ -87,6 +96,11 @@ class FloatingWindowSpec:
         priority: 层级优先级（数值越大越靠上——App 按升序拼装，后者绘制在
             上层；同优先级按加入顺序）。
         width: 窗口总宽（含边框）；None = 内容自适应宽度。
+        width_ratio: 窗口宽度占**终端宽度**的比例（0<ratio<=1；None = 不使用）。
+            与 ``width`` 同时给出时本字段优先；每帧按当前终端宽度重算，因此
+            terminal resize 后窗口自动缩放（``/usage`` 浮窗使用 0.6）。
+        max_width: 宽度上限（列；None = 不限制）。与 ``width_ratio`` 配合使用
+            （如「终端 60%，但不超过 60 列」）。
         x: 左边界列——int / ``"left"`` / ``"center"`` / ``"right"``（默认右）。
         bottom: 窗口**底行**锚点——int / ``"bottom_area"``（默认，底部框上方
             一行）/ ``"input_top"`` / ``"input_bottom"`` / ``"doc_bottom"`` /
@@ -151,7 +165,8 @@ class FloatingWindowSpec:
     """
 
     __slots__ = (
-        "id", "render", "priority", "width", "x", "bottom", "top",
+        "id", "render", "priority", "width", "width_ratio", "max_width",
+        "x", "bottom", "top",
         "offset_x", "offset_y", "border", "border_color", "border_style",
         "background", "padding_x", "padding_y", "title",
         "max_height", "scroll_top", "allow_cover_bottom", "over_fullscreen",
@@ -166,6 +181,8 @@ class FloatingWindowSpec:
         *,
         priority: int = 0,
         width: int | None = DEFAULT_FLOAT_WIDTH,
+        width_ratio: float | None = None,
+        max_width: int | None = None,
         x: Any = "right",
         bottom: Any = DEFAULT_FLOAT_BOTTOM,
         top: Any = None,
@@ -192,6 +209,8 @@ class FloatingWindowSpec:
         self.render = render
         self.priority = priority
         self.width = width
+        self.width_ratio = _safe_ratio(width_ratio)
+        self.max_width = None if max_width is None else max(1, _safe_int(max_width, 1))
         self.x = x
         self.bottom = bottom
         self.top = top
@@ -263,6 +282,19 @@ def _safe_interval(value) -> float | None:
     return interval
 
 
+def _safe_ratio(value) -> float | None:
+    """宽度比例归一化：None / 非有限值 / <=0 / >1 / 非法类型 → None。"""
+    if value is None:
+        return None
+    try:
+        ratio = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(ratio) or ratio <= 0 or ratio > 1:
+        return None
+    return ratio
+
+
 def FloatingWindow(props: dict) -> object:
     """浮窗渲染包装（函数组件）：边框 + 背景 + 内容组件。
 
@@ -329,10 +361,17 @@ def FloatingWindow(props: dict) -> object:
     except (TypeError, ValueError, OverflowError):
         max_height = None
 
-    # ── 窗口宽度：显式宽钳制到终端宽度；None = 内容自适应 ──
+    # ── 窗口宽度：比例宽 / 显式宽钳制到终端宽度；None = 内容自适应 ──
     raw_width = getattr(win, "width", None)
+    width_ratio = getattr(win, "width_ratio", None)
+    max_width = getattr(win, "max_width", None)
     box_w: int | None = None
-    if raw_width is not None:
+    if width_ratio is not None:
+        # 比例宽每帧按当前终端宽度重算——resize 后自动缩放（/usage 浮窗）。
+        box_w = max(1, min(term_width, int(round(term_width * float(width_ratio)))))
+        if max_width is not None:
+            box_w = max(1, min(box_w, _safe_int(max_width, box_w)))
+    elif raw_width is not None:
         want = _safe_int(raw_width, DEFAULT_FLOAT_WIDTH)
         # ★ 至少 1 列、不超过终端宽度（2026-10-21 行宽不变量修复）：修复前
         #   下限写成 ``max(3, ...)``——终端宽度 < 3 列时窗口宽度反超终端宽，
@@ -654,6 +693,265 @@ def loop_window_spec() -> FloatingWindowSpec:
     )
 
 
+#: ``/usage`` 浮窗配色（与全屏用量视图同族：青标题 / 蓝标签 / 绿黄红状态）。
+_S_USAGE_GROUP = Style(fg=110, bold=True)
+_S_USAGE_HINT = Style(fg=242)
+_S_USAGE_SEP = Style(fg=238)
+_S_USAGE_LABEL = Style(fg=75)
+_S_USAGE_VALUE = Style(fg=252)
+_S_USAGE_OK = Style(fg=40)
+_S_USAGE_WARN = Style(fg=214)
+_S_USAGE_ERR = Style(fg=196)
+_S_USAGE_BAR_FILL = Style(fg=40)
+_S_USAGE_BAR_MID = Style(fg=214)
+_S_USAGE_BAR_LOW = Style(fg=196)
+_S_USAGE_BAR_EMPTY = Style(fg=238)
+
+
+def _usage_value_style(kind: str) -> Style:
+    """统计值配色（kind: info/ok/warn/error）。"""
+    if kind == "error":
+        return _S_USAGE_ERR
+    if kind == "warn":
+        return _S_USAGE_WARN
+    if kind == "ok":
+        return _S_USAGE_OK
+    return _S_USAGE_VALUE
+
+
+def _usage_item_fields(item):
+    """统计条目 → ``(label, value, kind, ratio)``；非法条目返回 None。"""
+    if isinstance(item, (list, tuple)) and len(item) >= 2:
+        return (
+            item[0], item[1],
+            item[2] if len(item) > 2 else "",
+            item[3] if len(item) > 3 else None,
+        )
+    if isinstance(item, dict):
+        return (
+            item.get("label", ""), item.get("value", ""),
+            item.get("kind", ""), item.get("bar"),
+        )
+    return None
+
+
+def _usage_label_col(sections: list) -> int:
+    """标签列宽（显示列）：最宽标签 + 1 列间隔，钳制到 [8, 18]。"""
+    widest = 0
+    for sec in sections or []:
+        if not isinstance(sec, dict):
+            continue
+        for item in sec.get("rows") or []:
+            fields = _usage_item_fields(item)
+            if fields is None:
+                continue
+            widest = max(widest, wcswidth_simple(str(fields[0])))
+    return max(8, min(18, widest + 1))
+
+
+def _usage_pad_label(label, width: int) -> str:
+    """按显示宽度截断并右补空格（CJK 标签对齐；单行）。"""
+    text = truncate_width(str(label), max(0, width))
+    return text + " " * max(0, width - wcswidth_simple(text))
+
+
+def _usage_bar_runs(ratio, bar_width: int) -> list:
+    """进度条 runs（>90% 红、>70% 黄、其余绿；窄条省略百分比文本）。"""
+    try:
+        r = max(0.0, min(1.0, float(ratio)))
+    except (TypeError, ValueError):
+        r = 0.0
+    bar_width = max(1, int(bar_width))
+    filled = max(0, min(bar_width, int(round(r * bar_width))))
+    fill_style = _S_USAGE_BAR_FILL
+    if r >= 0.9:
+        fill_style = _S_USAGE_BAR_LOW
+    elif r >= 0.7:
+        fill_style = _S_USAGE_BAR_MID
+    runs = [
+        StyledRun("█" * filled, fill_style),
+        StyledRun("░" * (bar_width - filled), _S_USAGE_BAR_EMPTY),
+    ]
+    if bar_width >= 8:
+        runs.append(StyledRun(f" {r * 100:.0f}%", _S_USAGE_VALUE))
+    return runs
+
+
+def _usage_item_by_label(rows, label: str):
+    """按标签取统计条目 ``(label, value, kind, ratio)``；未找到返回 None。"""
+    for item in rows or []:
+        fields = _usage_item_fields(item)
+        if fields is not None and str(fields[0]) == label:
+            return fields
+    return None
+
+
+def _compact_usage_sections(sections: list) -> list:
+    """把完整统计区块压缩为浮窗可容纳的精简区块（合并次要行，不丢关键指标）。
+
+    浮窗从底部向上展开，内容超过可视高度时顶部会被裁掉——因此浮窗只展示
+    「输入/输出 · 合计/调用/速度」「容量 · 使用率」「输入/输出费用 ·
+    合计（含节省）」「时长」等关键行；无法识别的区块原样保留（向前兼容）。
+    """
+    compact: list = []
+    for sec in sections or []:
+        if not isinstance(sec, dict):
+            continue
+        title = str(sec.get("title", ""))
+        rows = list(sec.get("rows") or [])
+        fields = []
+        if title == "Token 用量":
+            miss = _usage_item_by_label(rows, "输入（未命中）")
+            output = _usage_item_by_label(rows, "输出")
+            total = _usage_item_by_label(rows, "合计")
+            calls = _usage_item_by_label(rows, "API 调用")
+            speed = _usage_item_by_label(rows, "输出速度")
+            if miss and output and total:
+                fields.append((
+                    "输入/输出", f"{miss[1]} / {output[1]}", "info", None,
+                ))
+                summary = str(total[1])
+                if calls:
+                    summary += f" · {calls[1]} 次"
+                if speed:
+                    summary += f" · {speed[1]}"
+                fields.append(("合计", summary, "info", None))
+        elif title == "上下文窗口":
+            cap = _usage_item_by_label(rows, "容量")
+            usage = _usage_item_by_label(rows, "使用率")
+            if cap and usage:
+                fields.append(cap)
+                fields.append(usage)
+        elif title == "费用估算":
+            input_cost = _usage_item_by_label(rows, "输入费用")
+            output_cost = _usage_item_by_label(rows, "输出费用")
+            total = _usage_item_by_label(rows, "合计")
+            saved = _usage_item_by_label(rows, "缓存节省")
+            if input_cost and output_cost and total:
+                fields.append((
+                    "输入/输出", f"{input_cost[1]} / {output_cost[1]}",
+                    "info", None,
+                ))
+                summary = str(total[1])
+                if saved:
+                    summary += f"（省 {saved[1]}）"
+                fields.append(("合计", summary, "warn", None))
+        elif title == "会话":
+            duration = _usage_item_by_label(rows, "时长")
+            if duration:
+                fields.append(("时长", duration[1], "info", None))
+        if fields:
+            compact.append({"title": title, "rows": fields})
+        else:
+            compact.append(sec)
+    return compact
+
+
+def _usage_content_rows(sections: list, width: int) -> list:
+    """统计区块 → 浮窗内容行（每项单行；宽度不足时按终端宽度截断）。"""
+    width = max(1, int(width))
+    label_col = _usage_label_col(sections)
+    rows: list = []
+    for sec in sections or []:
+        if not isinstance(sec, dict):
+            continue
+        title = str(sec.get("title", ""))
+        prefix = f"\u25b8 {title} "
+        pad = max(0, width - wcswidth_simple(prefix) - 1)
+        rows.append([
+            StyledRun(prefix, _S_USAGE_GROUP),
+            StyledRun("\u2500" * pad, _S_USAGE_SEP),
+        ])
+        for item in sec.get("rows") or []:
+            fields = _usage_item_fields(item)
+            if fields is None:
+                continue
+            label, value, kind, ratio = fields
+            value_text = str(value)
+            runs = [
+                StyledRun("  " + _usage_pad_label(label, label_col), _S_USAGE_LABEL),
+                StyledRun(value_text, _usage_value_style(str(kind))),
+            ]
+            if ratio is not None:
+                try:
+                    r = max(0.0, min(1.0, float(ratio)))
+                except (TypeError, ValueError):
+                    r = 0.0
+                used = 2 + label_col + wcswidth_simple(value_text)
+                avail = width - used - 3
+                if avail >= 6:
+                    bar_width = max(4, min(12, avail))
+                    runs.append(StyledRun(" ", None))
+                    runs.extend(_usage_bar_runs(r, bar_width))
+                else:
+                    runs.append(StyledRun(f" {r * 100:.0f}%", _S_USAGE_VALUE))
+            rows.append(runs)
+    if not rows:
+        rows.append([StyledRun("(暂无统计)", _S_USAGE_HINT)])
+    return rows
+
+
+def UsageFloatingWindow(props: dict, provider=None) -> object:
+    """``/usage`` 用量浮窗内容（token / 上下文 / 费用，按帧重读）。
+
+    ``provider`` 为无参可调用对象（由命令层注入 ``build_usage_sections``）——
+    每次组件重建都重新构建统计区块，因此窗口打开期间数值随生成进度实时变化。
+
+    Args:
+        props: 浮窗渲染 props（``width`` = 内容可用宽度，``window`` 等）。
+        provider: ``Callable[[], list]``；异常时显示「暂无统计」而不是崩溃。
+    """
+    width = max(1, _safe_int(props.get("width"), 1))
+    sections: list = []
+    if callable(provider):
+        try:
+            sections = list(provider() or [])
+        except Exception:
+            _logger.debug("/usage 浮窗统计构建失败", exc_info=True)
+            sections = []
+    rows = _usage_content_rows(_compact_usage_sections(sections), width)
+    rows.append([StyledRun("↻ 实时刷新 · /usage 关闭", _S_USAGE_HINT)])
+
+    children: list = []
+    for index, runs in enumerate(rows):
+        trimmed = truncate_runs(runs, width)
+        children.append(h(TEXT, {
+            "key": f"usage-{index}",
+            "height": 1,
+            "styled": trimmed or [StyledRun(" ", None)],
+        }))
+    return h(FRAGMENT, {"key": "usage-body"}, children)
+
+
+def usage_window_spec(provider=None) -> FloatingWindowSpec:
+    """``/usage`` 用量浮窗规格：右侧、底框上方、宽度自适应（60%，上限 60 列）。
+
+    - ``width=None`` + ``width_ratio=0.6`` + ``max_width=60``：每帧按终端宽度
+      重算窗口宽度，resize 后自动缩放；
+    - **不声明** ``refresh_interval``：浮窗打开期间按帧重建（用户确认「每帧
+      刷新」），provider 每帧重读 token / 上下文 / 费用；
+    - 无 ``close_on_escape``：关闭语义固定为「再次输入 /usage」（Esc 继续承担
+      中断 / 清空输入）。
+    """
+    def _render(props: dict) -> object:
+        return UsageFloatingWindow(props, provider)
+
+    return FloatingWindowSpec(
+        id=USAGE_WINDOW_ID,
+        render=_render,
+        priority=130,
+        width=None,
+        width_ratio=USAGE_FLOAT_WIDTH_RATIO,
+        max_width=USAGE_FLOAT_MAX_WIDTH,
+        x="right",
+        bottom=DEFAULT_FLOAT_BOTTOM,
+        border=True,
+        border_color=_S_USAGE_BORDER,
+        border_style="round",
+        background=DEFAULT_FLOAT_BACKGROUND,
+    )
+
+
 def window_hit_test(window_or_geometry, col, row) -> tuple[int, int] | None:
     """鼠标命中测试：``(终端列, 终端行)`` 落在窗口内时返回窗口内局部坐标。
 
@@ -705,7 +1003,12 @@ __all__ = [
     "FloatingWindowSpec",
     "LOOP_FLOAT_WIDTH",
     "LoopFloatingWindow",
+    "USAGE_FLOAT_MAX_WIDTH",
+    "USAGE_FLOAT_WIDTH_RATIO",
+    "USAGE_WINDOW_ID",
+    "UsageFloatingWindow",
     "floating_layer_elements",
     "loop_window_spec",
+    "usage_window_spec",
     "window_hit_test",
 ]

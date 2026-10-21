@@ -51,7 +51,7 @@ def _refresh_ctx_usage(ctx, force: bool = False) -> None:
 def _remap_sandbox_removed(original_len: int, new_len: int) -> None:
     """消息尾部删除后重映射沙盒索引（删除区间 ``[new_len, original_len)``）。
 
-    /undo、/retry 等直接 pop 消息的命令必须在删除后同步沙盒记录索引，
+    /retry 等直接 pop 消息的命令必须在删除后同步沙盒记录索引，
     否则沙盒记录与消息列表错位（后续 /editmsg、回滚定位到错误消息）。
     """
     if new_len >= original_len:
@@ -165,28 +165,6 @@ def _cmd_pin(ctx):
     return True
 
 
-def _cmd_undo(ctx):
-    original_len = len(ctx.messages)
-    removed = _pop_assistant_tool_messages(ctx.messages)
-    if len(ctx.messages) > 1 and ctx.messages[-1]["role"] == "user":
-        ctx.messages.pop()
-        removed += 1
-    # ★ 同步沙盒索引（修复）：已删除消息对应的文件变更记录失效——修复前
-    #   /undo 只删消息、不重映射沙盒，记录与消息列表错位。
-    if removed > 0:
-        _remap_sandbox_removed(original_len, len(ctx.messages))
-    # 撤销后如果最后一条是 user 消息，标记需要重新生成
-    if ctx.messages and ctx.messages[-1].get("role") == "user":
-        ctx.state["retry"] = True
-    # ★ 2026-08-19（editmsg 同根因修复：/undo 撤销后上下文百分比不更新）：
-    #   消息被移除（长度变化）后刷新上下文使用率全局快照——refresh_usage
-    #   按 len 变化自动 resync 重算（O(n)，撤销为低频路径可接受）。
-    if removed > 0:
-        _refresh_ctx_usage(ctx)
-    _out.write(f"{GREEN}  + 已撤销 {removed} 条消息{RESET}", level="raw", source="cmd")
-    return True
-
-
 def _cmd_retry(ctx):
     original_len = len(ctx.messages)
     removed = _pop_assistant_tool_messages(ctx.messages)
@@ -253,7 +231,7 @@ def _cmd_edit(ctx):
 
 
 def _cmd_loop(ctx):
-    """循环命令：在 consumer 中被拦截执行，此处仅做校验和展示（使 /help 可见）。"""
+    """循环命令：在 consumer 中被拦截执行，此处仅做校验和展示（使命令面板可见）。"""
     parts = ctx.arg.split(maxsplit=1)
     if not parts or not parts[0].strip():
         _out.write(f"{YELLOW}  ! 用法: /loop [次数] <提词>{RESET}", level="raw", source="cmd")
@@ -433,17 +411,6 @@ class PinCommand(CommandPlugin):
         return _cmd_pin(ctx)
 
 
-class UndoCommand(CommandPlugin):
-    """撤销上一条助手消息"""
-    def __init__(self):
-        self.meta = CommandMeta(
-            name="undo", description="撤销上一轮对话", group="session", queue_only=True,
-        )
-
-    def execute(self, ctx: CommandContext) -> bool:
-        return _cmd_undo(ctx)
-
-
 class RetryCommand(CommandPlugin):
     """重试上一轮"""
     def __init__(self):
@@ -468,9 +435,14 @@ class EditCommand(CommandPlugin):
 
 
 class ChangesCommand(CommandPlugin):
-    """显示变更记录"""
+    """显示变更记录（流式输出期间可直接打开并实时刷新，回滚动作暂停）"""
     def __init__(self):
-        self.meta = CommandMeta(name="changes", description="显示文件沙盒中被改变文件的 diff", group="files")
+        self.meta = CommandMeta(
+            name="changes",
+            description="显示文件沙盒中被改变文件的 diff（流式期间可打开，回滚暂停）",
+            group="files",
+            direct_during_round=True,
+        )
 
     def execute(self, ctx: CommandContext) -> bool:
         return _cmd_changes(ctx)
@@ -479,7 +451,6 @@ class ChangesCommand(CommandPlugin):
 # ── 声明插件（注册由清单条目 / ctx.commands 服务按需触发） ──
 declare_command_plugin(ClearCommand())
 declare_command_plugin(PinCommand())
-declare_command_plugin(UndoCommand())
 declare_command_plugin(RetryCommand())
 declare_command_plugin(EditCommand())
 declare_command_plugin(ChangesCommand())

@@ -613,7 +613,7 @@ class SandboxManager:
     def fold_indices(self, removed_indices: List[int], insert_index: Optional[int] = None):
         """上下文压缩后的索引折叠重映射（保留记录，不丢弃）。
 
-        与 ``remap_indices``（消息删除即失效，用于 /undo、/editmsg 等会回滚
+        与 ``remap_indices``（消息删除即失效，用于 /retry、/editmsg 等会回滚
         文件的路径）不同：上下文压缩只把历史消息折叠为一条摘要，磁盘上的
         文件变更仍然有效，因此**不得丢弃**被折叠区间内的沙盒记录，否则
         ``/changes`` 与后续回滚都丢失这些文件的历史。

@@ -614,19 +614,6 @@ class SessionsCommand(CommandPlugin):
         return _cmd_sessions(ctx)
 
 
-class HelpCommand(CommandPlugin):
-    """显示帮助"""
-    def __init__(self):
-        self.meta = CommandMeta(
-            name="help", description="显示帮助", group="ui", direct_during_round=True,
-        )
-
-    def execute(self, ctx: CommandContext) -> bool:
-        from ..internal.commands._command_core import _cmd_help
-        return _cmd_help(ctx)
-
-
 # ── 声明插件（注册由清单条目 / ctx.commands 服务按需触发） ──
 declare_command_plugin(LoadCommand())
 declare_command_plugin(SessionsCommand())
-declare_command_plugin(HelpCommand())
