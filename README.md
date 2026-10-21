@@ -785,9 +785,9 @@ chat_ui.clear_floating_windows()                            # 关闭全部
 ├── chat.py                # 入口脚本（asyncio.run(main())）
 ├── pyproject.toml         # 项目配置与依赖
 ├── prompts/               # 系统提示词（7 个文件）
-│   ├── prompts_export_main.md    # 主 Agent 系统提示词（标准模式）
-│   ├── prompts_export_main_simple.md  # 主 Agent 系统提示词（简单模式）
-│   ├── prompts_export_main_empty.md  # 主 Agent 系统提示词（精简/空版本）
+│   ├── prompts_export_main.md    # 主 Agent 系统提示词（标准模式：子代理编排范式）
+│   ├── prompts_export_main_simple.md  # 主 Agent 系统提示词（简单模式：命令式精简规则集）
+│   ├── prompts_export_main_empty.md  # 主 Agent 系统提示词（空模式：单体完整规则集；「空」指不含子代理编排，非规则量最少）
 │   ├── prompts_export_map.md     # map SubAgent 探底提示词
 │   ├── prompts_export_plan.md    # plan SubAgent 计划提示词
 │   ├── prompts_export_execute.md  # execute SubAgent 提示词

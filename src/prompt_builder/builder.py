@@ -57,15 +57,16 @@ from .vcs_info import _build_vcs_info
 _PROMPTS_DIR: str | None = None
 
 # ── 主 agent 运行模式（Ctrl+B 循环切换，默认空模式） ─────────
-# 三态（规则量递增）：空模式 → 简单模式 → 标准模式 → 空模式。
-#   empty    : prompts_export_main_empty.md（仅基础安全/通用规范）
-#   simple   : prompts_export_main_simple.md（基础规范 + 少量工具/验证规则）
-#   standard : prompts_export_main.md（完整规则集）
-# 默认 empty：启动即进入空模式。
+# 三态是三种**提词范式**，不是「规则量递增」的三档：
+#   empty    : prompts_export_main_empty.md（单体执行范式：第零条授权闸门 +
+#              工具与验证 + 交付输出的完整单体规则集，规则量最大、禁止 subagent）
+#   simple   : prompts_export_main_simple.md（命令式精简规则集，规则量最小）
+#   standard : prompts_export_main.md（子代理编排范式：map/plan/execute/review）
+# 「空」指不含子代理编排，不表示规则更少或约束更松。默认 empty：启动即进入空模式。
 _MODE_EMPTY = "empty"
 _MODE_SIMPLE = "simple"
 _MODE_STANDARD = "standard"
-#: Ctrl+B 循环顺序的静态兜底（规则量递增）；生效顺序来自运行模式注册表
+#: Ctrl+B 循环顺序的静态兜底（empty→simple→standard，非规则量递增）；生效顺序来自运行模式注册表
 _MODE_CYCLE = (_MODE_EMPTY, _MODE_SIMPLE, _MODE_STANDARD)
 #: 当前模式（真源；模式元数据 label/export/order 来自 ``modes`` 注册表）
 _MODE: str = _MODE_EMPTY

@@ -44,7 +44,10 @@ fiber 引用**（use_ref 持有）使 ``_build_lines`` 的快照/换行布局缓
 模式行（2026-08-14）：时间戳分隔线（下分隔线）下方新增一行——行最右侧
 显示主 Agent 运行模式（Ctrl+B 循环切换，``src/prompt_builder.builder`` 的
 ``get_mode()``）：「空模式」（金色 178 强调——特殊状态醒目）/「简单模式」
-（亮青 45——介于空/标准之间）/「标准模式」（暗灰 dim——常规状态零打扰）。
+（亮青 45——中间态强调）/「标准模式」（暗灰 dim——常规状态零打扰）。
+三模式是三种提词范式而非规则量的三档：「空」指不含子代理编排、由单体
+规则集驱动，其规则量最大；「标准」为子代理编排范式；「简单」为命令式
+精简规则集。
 左侧无分隔线填充（用户反馈要求仅最右侧显示）。模式状态同时作为
 ``_build_lines`` snap_key 与 InputArea ``_input_snap_key``（use_memo deps）
 字段——Ctrl+B 切换后即时重建模式行（无需额外同步链路）。
@@ -151,19 +154,19 @@ _S_MEM = Style(fg=214)
 _MODE_EMPTY_TEXT = "空模式"
 #: 简单模式显示文本（系统提词 prompts_export_main_simple.md）
 _MODE_SIMPLE_TEXT = "简单模式"
-#: 标准模式显示文本（系统提词 prompts_export_main.md，完整规则集）
+#: 标准模式显示文本（系统提词 prompts_export_main.md，子代理编排范式）
 _MODE_STANDARD_TEXT = "标准模式"
 #: 空模式文本强调色（金色 178——特殊状态醒目，与解析阶段标签同色系）
 _S_MODE_EMPTY = Style(fg=178)
-#: 简单模式文本强调色（亮青 45——介于空/标准之间，与 accent 同色系）
+#: 简单模式文本强调色（亮青 45——中间态强调，与 accent 同色系）
 _S_MODE_SIMPLE = Style(fg=45)
 #: 模式 → 显示文本（实时视图；真源 == 表现层数据注册表 mode_text 表）
 _MODE_TEXTS: Mapping[str, str] = LiveMapping("mode_text")
 #: 模式 → 图标（模式行右侧视觉标识；与 mode_text 表同键集）。
 _MODE_ICONS: dict = {
-    "empty": "\u25c7",      # ◇ 空模式（轻量/无约束）
+    "empty": "\u25c7",      # ◇ 空模式（单体完整规则集，非轻量）
     "simple": "\u25b8",     # ▸ 简单模式
-    "standard": "\u25a3",   # ▣ 标准模式（完整规则集）
+    "standard": "\u25a3",   # ▣ 标准模式（子代理编排范式）
 }
 #: 模式 → 文本样式（empty 金色 / simple 亮青 / standard 暗灰；实时取注册表）
 
@@ -294,7 +297,7 @@ def _build_mode_line(width: int, mode,
 
     Ctrl+B 循环切换三态模式（``src/prompt_builder.builder.get_mode()``）：
       - 空模式（empty）：显示「空模式」（金色 178 强调——特殊状态醒目）；
-      - 简单模式（simple）：显示「简单模式」（亮青 45——介于空/标准之间）；
+      - 简单模式（simple）：显示「简单模式」（亮青 45——中间态强调）；
       - 标准模式（standard）：显示「标准模式」（暗灰 dim——常规状态零打扰）。
     ★ 兼容 bool 旧调用：``True`` 等价空模式、``False`` 等价标准模式。
     ★ 行首（2026-08-19 用户需求）：主 Agent 上下文使用百分比 + 后台任务
