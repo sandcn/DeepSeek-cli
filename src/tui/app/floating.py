@@ -790,8 +790,9 @@ def _compact_usage_sections(sections: list) -> list:
     """把完整统计区块压缩为浮窗可容纳的精简区块（合并次要行，不丢关键指标）。
 
     浮窗从底部向上展开，内容超过可视高度时顶部会被裁掉——因此浮窗只展示
-    「输入/输出 · 合计/调用/速度」「容量 · 使用率」「输入/输出费用 ·
-    合计（含节省）」「时长」等关键行；无法识别的区块原样保留（向前兼容）。
+    「输入/输出 · 合计/调用/速度 · 缓存命中率」「容量/使用率」
+    「输入/输出费用 · 合计（含节省）」「时长」等关键行；无法识别的区块
+    原样保留（向前兼容）。
     """
     compact: list = []
     for sec in sections or []:
@@ -806,6 +807,7 @@ def _compact_usage_sections(sections: list) -> list:
             total = _usage_item_by_label(rows, "合计")
             calls = _usage_item_by_label(rows, "API 调用")
             speed = _usage_item_by_label(rows, "输出速度")
+            hit_rate = _usage_item_by_label(rows, "缓存命中率")
             if miss and output and total:
                 fields.append((
                     "输入/输出", f"{miss[1]} / {output[1]}", "info", None,
@@ -816,11 +818,34 @@ def _compact_usage_sections(sections: list) -> list:
                 if speed:
                     summary += f" · {speed[1]}"
                 fields.append(("合计", summary, "info", None))
+                # 缓存命中率（dsh 口径）单独一行：保留精度，不塞进可能被
+                # 窄浮窗截断的「合计」长文本。
+                if hit_rate:
+                    fields.append(hit_rate)
         elif title == "上下文窗口":
             cap = _usage_item_by_label(rows, "容量")
             usage = _usage_item_by_label(rows, "使用率")
             if cap and usage:
+                # 合并为一行：为 Token 区块新增的「缓存命中率」腾出一行，
+                # 保持浮窗总高度不变——浮窗自底部向上展开，多一行会把最顶部
+                # 的分区标题裁出可视区（实测 70 列 / 50 行终端均会丢失
+                # 「▸ Token 用量」标题）。紧凑文本比进度条更省列：去掉
+                # 「 tokens」后缀并保留百分比，窄浮窗下两个数字都能完整显示。
+                cap_text = str(cap[1])
+                if cap_text.endswith(" tokens"):
+                    cap_text = cap_text[: -len(" tokens")]
+                if usage[3] is not None:
+                    try:
+                        ratio = max(0.0, min(1.0, float(usage[3])))
+                        cap_text += f" · {ratio * 100:.0f}%"
+                    except (TypeError, ValueError, OverflowError):
+                        pass
+                elif usage[1]:
+                    cap_text += f" · {usage[1]}"
+                fields.append(("容量/使用率", cap_text, usage[2] or "info", None))
+            elif cap:
                 fields.append(cap)
+            elif usage:
                 fields.append(usage)
         elif title == "费用估算":
             input_cost = _usage_item_by_label(rows, "输入费用")
@@ -878,13 +903,18 @@ def _usage_content_rows(sections: list, width: int) -> list:
                 except (TypeError, ValueError):
                     r = 0.0
                 used = 2 + label_col + wcswidth_simple(value_text)
-                avail = width - used - 3
-                if avail >= 6:
+                # 进度条实际占用 = 1 列间隔 + bar_width + （宽度 >= 8 时
+                # " NN%" 4 列）。预留 5 列，修复前只预留 3 列——窄浮窗下
+                # 整行会超宽 2 列，百分比被 truncate_runs 截掉。
+                avail = width - used - 5
+                if avail >= 4:
                     bar_width = max(4, min(12, avail))
                     runs.append(StyledRun(" ", None))
                     runs.extend(_usage_bar_runs(r, bar_width))
                 else:
-                    runs.append(StyledRun(f" {r * 100:.0f}%", _S_USAGE_VALUE))
+                    pct_text = f" {r * 100:.0f}%"
+                    if width - used >= wcswidth_simple(pct_text):
+                        runs.append(StyledRun(pct_text, _S_USAGE_VALUE))
             rows.append(runs)
     if not rows:
         rows.append([StyledRun("(暂无统计)", _S_USAGE_HINT)])

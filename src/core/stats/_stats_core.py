@@ -1,5 +1,7 @@
 """会话级 token 统计核心 — _Stats 类 + 模块级单例。"""
 
+from __future__ import annotations
+
 import time
 import threading
 
@@ -108,6 +110,42 @@ def get_session_elapsed() -> float:
 def get_token_stats():
     """返回 token_stats 的快照副本（线程安全）。"""
     return _stats.get_stats_snapshot()
+
+
+def compute_cache_hit_rate(stats) -> float | None:
+    """缓存命中率（dsh 口径）＝ 命中 / (命中 + 未命中)。
+
+    口径与 dsh 的 ``cacheReadTokens / (cacheReadTokens + uncachedInputTokens
+    + cacheWriteTokens)`` 对齐：**只算输入侧**，输出 token 不进分母。本项目
+    stats 只有「命中 / 未命中」两桶、未单列 cache write，因此分母取现有两桶
+    之和——DeepSeek / OpenAI（无 cache write 字段）与 dsh 完全一致；
+    Anthropic 的 cache creation 目前未单独计入任一桶（沿用既有 stats 口径）。
+
+    Args:
+        stats: token_stats 快照（``input_cache_hit`` / ``input_cache_miss``）。
+
+    Returns:
+        0.0~1.0 的命中率；**无缓存拆分数据**（缺少 ``input_cache_miss`` /
+        二者合计为 0，例如 provider 未上报缓存字段或尚未收到真实 usage）
+        返回 ``None``——调用方必须显示「—」，不得冒充 0%。真实零命中
+        （``hit=0`` 且 ``miss>0``）返回 0.0。
+    """
+    if not isinstance(stats, dict):
+        return None
+    miss_raw = stats.get("input_cache_miss")
+    if miss_raw is None:
+        return None
+    try:
+        hit = int(stats.get("input_cache_hit", 0) or 0)
+        miss = int(miss_raw or 0)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    hit = max(0, hit)
+    miss = max(0, miss)
+    total = hit + miss
+    if total <= 0:
+        return None
+    return hit / total
 
 
 def get_last_tool_parse_elapsed():

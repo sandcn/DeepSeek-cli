@@ -96,3 +96,40 @@ def test_removed_commands_not_declared():
 
     for name in sorted(_REMOVED):
         assert declared_command_plugin(name) is None, name
+
+
+def _cache_hit_rate_row(monkeypatch, stats):
+    """构建统计区块并取出「缓存命中率」行（固定价格，屏蔽真实配置）。"""
+    import src.core.stats as stats_mod
+
+    monkeypatch.setattr(stats_mod, "get_token_stats", lambda: stats)
+    monkeypatch.setattr(stats_mod, "get_per_second_speed", lambda: 0.0)
+    monkeypatch.setattr(stats_mod, "get_session_elapsed", lambda: 0.0)
+    monkeypatch.setattr(usage_cmd, "_token_prices", lambda _ctx, _model: {
+        "input": 1.0, "output": 2.0, "input_cache_hit": 0.1,
+    })
+    sections = usage_cmd.build_usage_sections(_ctx())
+    token = next(sec for sec in sections if sec["title"] == "Token 用量")
+    return next(item for item in token["rows"] if item[0] == "缓存命中率")
+
+
+def test_build_usage_sections_includes_cache_hit_rate(monkeypatch):
+    row = _cache_hit_rate_row(monkeypatch, {
+        "input": 1000,
+        "output": 120,
+        "calls": 3,
+        "input_cache_hit": 875,
+        "input_cache_miss": 125,
+    })
+    assert row[1] == "87.5%"
+
+
+def test_build_usage_sections_shows_dash_without_cache_split(monkeypatch):
+    row = _cache_hit_rate_row(monkeypatch, {
+        "input": 1000,
+        "output": 120,
+        "calls": 1,
+        "input_cache_hit": 0,
+        "input_cache_miss": 0,
+    })
+    assert row[1] == "\u2014"

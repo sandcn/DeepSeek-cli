@@ -17,6 +17,7 @@ from ..core.stats import (  # noqa: F401
     add_token_size,
     add_token_size_batch,
     adjust_token_size,
+    compute_cache_hit_rate,
     get_avg_token_speed,
     get_last_stream_speed,
     get_last_tool_parse_elapsed,
@@ -42,6 +43,7 @@ from ..core.stats import (  # noqa: F401
 __all__ = [
     "_Stats",
     "_TokenSpeedTracker",
+    "compute_cache_hit_rate",
     "get_session_start_time",
     "get_token_stats",
     "get_last_tool_parse_elapsed",

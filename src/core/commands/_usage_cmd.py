@@ -3,7 +3,8 @@
 有活跃 ChatUI 时，``/usage`` **打开 / 关闭右侧浮动窗口**（开关语义）：
 
   - 首次执行：在终端右侧打开用量浮窗，内容按终端宽度自适应（60%，上限
-    60 列），token 用量 / 上下文窗口 / 费用统计**每帧实时刷新**；
+    60 列），token 用量（含**缓存命中率**，dsh 口径）/ 上下文窗口 / 费用统计
+    **每帧实时刷新**；
   - 已打开时再次执行：关闭浮窗（不阻塞生成，``direct_during_round=True``）。
 
 无 ChatUI（单次模式 / 测试桩）时回退为文本列出。
@@ -35,6 +36,16 @@ def _fmt_tokens(n) -> str:
     if n >= 1000:
         return f"{n / 1000:.1f}k"
     return str(n)
+
+
+def _fmt_cache_hit_rate(rate) -> str:
+    """缓存命中率 → 百分比文本（None / 非法值 → 「—」不可用）。"""
+    if rate is None:
+        return "\u2014"
+    try:
+        return f"{float(rate) * 100:.1f}%"
+    except (TypeError, ValueError, OverflowError):
+        return "\u2014"
 
 
 def _fmt_duration(seconds) -> str:
@@ -94,8 +105,13 @@ def _token_prices(ctx, model: str) -> dict:
 
 
 def build_usage_sections(ctx) -> list:
-    """构建用量浮窗统计区块（供浮窗**每帧**重读，O(1) 无锁数据源）。"""
+    """构建用量浮窗统计区块（供浮窗**每帧**重读，O(1) 无锁数据源）。
+
+    ``Token 用量`` 区块含缓存命中率（dsh 口径：命中 / (命中 + 未命中)），
+    无缓存拆分数据时显示「—」而非 0%。
+    """
     from ..stats import (
+        compute_cache_hit_rate,
         get_per_second_speed,
         get_session_elapsed,
         get_token_stats,
@@ -110,6 +126,7 @@ def build_usage_sections(ctx) -> list:
     calls = int(stats.get("calls", 0) or 0)
     cache_hit = int(stats.get("input_cache_hit", 0) or 0)
     cache_miss = int(stats.get("input_cache_miss", total_input) or 0)
+    cache_hit_rate = compute_cache_hit_rate(stats)
     try:
         speed = float(get_per_second_speed() or 0.0)
     except Exception:
@@ -141,6 +158,7 @@ def build_usage_sections(ctx) -> list:
             "rows": [
                 ("输入（未命中）", _fmt_tokens(cache_miss) + "t", "info", None),
                 ("输入（缓存命中）", _fmt_tokens(cache_hit) + "t", "ok", None),
+                ("缓存命中率", _fmt_cache_hit_rate(cache_hit_rate), "info", None),
                 ("输出", _fmt_tokens(output) + "t", "info", None),
                 ("合计", _fmt_tokens(total_input + output) + "t", "info", None),
                 ("API 调用", str(calls), "info", None),

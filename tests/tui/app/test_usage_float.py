@@ -20,6 +20,7 @@ def _sections():
             "title": "Token 用量",
             "rows": [
                 ("输入（未命中）", "1.2kt", "info", None),
+                ("缓存命中率", "87.5%", "info", None),
                 ("输出", "3.4kt", "info", None),
             ],
         },
@@ -62,6 +63,8 @@ def test_usage_content_rows_render_all_sections_and_values():
     assert "Token 用量" in joined
     assert "输入（未命中）" in joined
     assert "1.2kt" in joined
+    assert "缓存命中率" in joined
+    assert "87.5%" in joined
     assert "上下文窗口" in joined
     assert "42%" in joined
 
@@ -77,6 +80,7 @@ def test_usage_float_is_compact_to_avoid_top_clipping():
                 ("合计", "4.6kt", "info", None),
                 ("API 调用", "2", "info", None),
                 ("输出速度", "9.0 tok/s", "info", None),
+                ("缓存命中率", "98.1%", "info", None),
             ],
         },
         {
@@ -91,12 +95,45 @@ def test_usage_float_is_compact_to_avoid_top_clipping():
         },
     ])
     token_rows = compact[0]["rows"]
-    assert len(token_rows) == 2
+    assert len(token_rows) == 3
     assert token_rows[0][0] == "输入/输出"
+    assert token_rows[1][0] == "合计"
     assert "2 次" in token_rows[1][1]
+    assert token_rows[2][0] == "缓存命中率"
+    assert token_rows[2][1] == "98.1%"
     cost_rows = compact[1]["rows"]
     assert len(cost_rows) == 2
     assert "省" in cost_rows[1][1]
+
+
+def test_usage_ratio_bar_never_exceeds_width():
+    """进度条 + 百分比在窄宽度下不得超宽（修复前预留列数少 2 列）。"""
+    sections = [{
+        "title": "x",
+        "rows": [("使用率", "", "ok", 0.42)],
+    }]
+    for width in (20, 22, 23, 25, 30):
+        rows = _usage_content_rows(sections, width)
+        for row in rows:
+            text = "".join(run.text for run in row)
+            assert len(text) <= width, (width, text)
+
+
+def test_compact_usage_sections_merges_context_capacity_and_usage():
+    """容量与使用率合并一行，为「缓存命中率」腾出浮窗高度。"""
+    compact = _compact_usage_sections([{
+        "title": "上下文窗口",
+        "rows": [
+            ("容量", "1M tokens", "info", None),
+            ("使用率", "", "ok", 0.42),
+        ],
+    }])
+    rows = compact[0]["rows"]
+    assert len(rows) == 1
+    assert rows[0][0] == "容量/使用率"
+    assert rows[0][1] == "1M · 42%"
+    assert rows[0][2] == "ok"
+    assert rows[0][3] is None
 
 
 def test_usage_component_uses_provider_and_hint():

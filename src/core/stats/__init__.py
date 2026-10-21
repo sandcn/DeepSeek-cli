@@ -11,6 +11,7 @@
 
 from ._stats_core import (
     _Stats,
+    compute_cache_hit_rate,
     get_session_elapsed,
     get_session_start_time,
     get_token_stats,
@@ -49,6 +50,7 @@ from ._stream_lifecycle import (
 __all__ = [
     "_Stats",
     "_TokenSpeedTracker",
+    "compute_cache_hit_rate",
     "get_session_elapsed",
     "get_session_start_time",
     "get_token_stats",

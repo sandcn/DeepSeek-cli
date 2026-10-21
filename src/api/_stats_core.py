@@ -14,6 +14,7 @@ from ..core.stats._stats_core import (  # noqa: F401
     _Stats,
     _stats,
     accumulate_usage,
+    compute_cache_hit_rate,
     get_last_stream_speed,
     get_last_tool_parse_elapsed,
     get_session_start_time,
@@ -30,6 +31,7 @@ from ..core.stats._stats_core import (  # noqa: F401
 __all__ = [
     "_Stats",
     "_stats",
+    "compute_cache_hit_rate",
     "get_session_start_time",
     "get_token_stats",
     "get_last_tool_parse_elapsed",
