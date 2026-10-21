@@ -232,3 +232,31 @@ def test_stage_dimensions_match_constants() -> None:
     # 内容组件内部使用固定舞台：窗口高度不会随小动作抖动。
     assert PET_STAGE_WIDTH == 30
     assert PET_STAGE_HEIGHT == 12
+
+
+def test_runtime_type_alias_avoids_pep604_for_python39() -> None:
+    """回归：模块级运行期别名不得用 ``X | None``（PEP 604 需 3.10+）。
+
+    ``Cell`` 是运行期赋值（不是注解），Python 3.9 下 ``Style | None`` 会让
+    模块导入直接抛 TypeError——``/pet`` 因此被误报「当前界面不支持宠物浮窗」。
+    用 AST 静态检查，避免只在 3.10+ 环境跑测试时漏检。
+    """
+    import ast
+    import inspect
+
+    from src.tui.app import pet as pet_module
+
+    tree = ast.parse(inspect.getsource(pet_module))
+    cell_assigns = [
+        node for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "Cell" for t in node.targets)
+    ]
+    assert cell_assigns, "未找到 Cell 运行期别名"
+    for node in cell_assigns:
+        pep604 = [
+            sub for sub in ast.walk(node.value)
+            if isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.BitOr)
+        ]
+        assert not pep604, "运行期类型别名必须兼容 Python 3.9（用 Optional）"
+

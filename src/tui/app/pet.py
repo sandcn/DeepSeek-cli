@@ -24,6 +24,7 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Iterable
+from typing import Optional
 
 from src.tui._width import truncate_width, wcswidth_simple
 from src.tui.core.style import Style
@@ -72,7 +73,9 @@ _S_HEART = Style(fg=211, bold=True)         # 爱心
 _S_MOTION = Style(fg=45)                    # 冲刺速度线
 
 #: 单元格 = (字符, 样式)；空单元格固定为 (" ", None)。
-Cell = tuple[str, Style | None]
+#  ★ 运行期别名不能用 ``X | None``（PEP 604 需 Python 3.10+，项目兼容
+#    3.9）：模块导入时即求值会抛 TypeError，导致 /pet 被误报「界面不支持」。
+Cell = tuple[str, Optional[Style]]
 _EMPTY: Cell = (" ", None)
 
 #: 会冒出的搞怪台词（短句，避免撑宽窗口）。
