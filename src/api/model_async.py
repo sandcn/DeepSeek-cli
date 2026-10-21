@@ -242,7 +242,7 @@ async def _call_sync_async(
     except Exception:
         _logger.debug("真实 prompt token 校准上下文使用率失败", exc_info=True)
 
-    accumulate_usage(usage)
+    accumulate_usage(usage, label=label, model=model)
     # ★ 非流式调用（直接调用 call_model_sync 的场景，非压缩摘要——压缩摘要走
     #   流式管线 call_model_summarize_async）的生成 token 计入状态栏
     #   「总tok / tok/s」：本调用结束时才拿到真实 usage，故以「已知耗时的批量

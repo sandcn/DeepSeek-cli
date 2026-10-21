@@ -1,4 +1,4 @@
-"""Token 速度快照惰性加载共享模块 — 零依赖。
+"""状态栏 token 快照惰性加载共享模块 — 仅依赖标准库。
 
 消除 bottom_bar/status.py 和 status_bar_widget.py 中的重复实现。
 本模块不依赖 src/tui/widgets/bottom_bar/ 下的任何模块，避免循环导入。
@@ -7,10 +7,16 @@
   - 从 src/tui/widgets/_snapshot.py 迁移至 TUI 根层级
   - 导入路径更新为 ..core.stats
 
+快照内容（2026-10-22 用户需求）：在 token 速度统计之上合并
+``total_input_tokens``——**所有 Agent**（主 Agent + 所有 SubAgent）的
+上下文增量累计输入 token（本次 input − 同 Agent 上次 input；首次 / 缩小 /
+切模型计全量，内部压缩 / 标题调用不计），供状态行常驻展示。费用与缓存明细
+仍使用 ``get_total_input_tokens()`` 的 API 计费口径。
+
 消费方说明（2026-07-31 方向F）：本模块仅含私有函数 ``_get_snapshot``，
 **非死代码**——被 ``src/tui/app/status_bar.py`` 的 ``_snapshot()``（状态栏
 token/速度展示）与 ``src/tui/_ink_bridge.py`` 的 ``get_status_elapsed()``
-消费（惰性加载 ``get_token_speed_snapshot``，异常静默）。
+消费（惰性加载，异常静默）。
 **保留不删**；恢复 Token 速度展示或迁移至统一快照源时须同步上述消费方。
 
 ★ review 方向（2026-08-05）：docstring 中旧消费方 ``src/tui/_bottom_bar/_bar.py``
@@ -33,8 +39,32 @@ _logger = logging.getLogger(__name__)
 _TOKEN_SPEED_SNAPSHOT: Callable[[], Any] | bool | None = None  # 也可赋值为 False（标记不可用）
 
 
+def _build_snapshot() -> dict:
+    """构建状态栏 token 快照：速度统计 + 全 Agent 输入总量。
+
+    Returns:
+        ``get_token_speed_snapshot()`` 的字典（``total_tokens`` /
+        ``per_second_speed`` 等）+ ``total_input_tokens``（所有 Agent 的
+        上下文增量累计输入 token）。读取失败时：速度快照回退空字典、输入
+        总量回退 0，绝不向上抛异常（状态栏渲染是 best-effort 路径）。
+    """
+    from ..core.stats import get_token_speed_snapshot, get_total_agent_input_tokens
+
+    try:
+        data = dict(get_token_speed_snapshot() or {})
+    except Exception:
+        _logger.debug("token 速度快照读取失败", exc_info=True)
+        data = {}
+    try:
+        data["total_input_tokens"] = max(0, int(get_total_agent_input_tokens() or 0))
+    except Exception:
+        _logger.debug("Agent 新增输入 token 读取失败", exc_info=True)
+        data["total_input_tokens"] = 0
+    return data
+
+
 def _get_snapshot():
-    """获取 get_token_speed_snapshot 函数引用（惰性加载，异常静默）。
+    """获取状态栏 token 快照函数引用（惰性加载，异常静默）。
 
     ★ P3（review）：异常集与「异常静默」声明对齐——修复前仅捕获
     ``ImportError``，stats 模块内部其它异常（如依赖缺失导致的其它错误）
@@ -44,8 +74,9 @@ def _get_snapshot():
     global _TOKEN_SPEED_SNAPSHOT
     if _TOKEN_SPEED_SNAPSHOT is None:
         try:
-            from ..core.stats import get_token_speed_snapshot
-            _TOKEN_SPEED_SNAPSHOT = get_token_speed_snapshot
+            # 仅探测依赖可用性；实际读取由 ``_build_snapshot`` 执行（含异常兜底）。
+            from ..core.stats import get_token_speed_snapshot  # noqa: F401
+            _TOKEN_SPEED_SNAPSHOT = _build_snapshot
         except Exception:
             _logger.debug("token 速度快照惰性加载失败，标记不可用", exc_info=True)
             _TOKEN_SPEED_SNAPSHOT = False  # 标记不可用

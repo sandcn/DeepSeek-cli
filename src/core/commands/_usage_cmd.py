@@ -107,8 +107,13 @@ def _token_prices(ctx, model: str) -> dict:
 def build_usage_sections(ctx) -> list:
     """构建用量浮窗统计区块（供浮窗**每帧**重读，O(1) 无锁数据源）。
 
-    ``Token 用量`` 区块含缓存命中率（dsh 口径：命中 / (命中 + 未命中)），
-    无缓存拆分数据时显示「—」而非 0%。
+    ``Token 用量`` 区块的输入展示分两类口径：
+
+    - ``输入（Agent 新增）``：各 Agent 上下文增量累计——同一 Agent 本次
+      input 减上次 input，首次/上下文缩小/切模型计全量，不含重复发送的
+      历史上下文；主 Agent + 所有 SubAgent，内部压缩/标题调用不计。
+    - ``输入（未命中）`` / ``输入（缓存命中）`` / ``缓存命中率``：保持 API
+      每次请求的原始计费口径（费用估算不变）。
     """
     from ..stats import (
         compute_cache_hit_rate,
@@ -122,6 +127,7 @@ def build_usage_sections(ctx) -> list:
     model = _current_model(ctx)
 
     total_input = int(stats.get("input", 0) or 0)
+    agent_input = int(stats.get("input_delta", 0) or 0)
     output = int(stats.get("output", 0) or 0)
     calls = int(stats.get("calls", 0) or 0)
     cache_hit = int(stats.get("input_cache_hit", 0) or 0)
@@ -156,11 +162,12 @@ def build_usage_sections(ctx) -> list:
         {
             "title": "Token 用量",
             "rows": [
+                ("输入（Agent 新增）", _fmt_tokens(agent_input) + "t", "info", None),
                 ("输入（未命中）", _fmt_tokens(cache_miss) + "t", "info", None),
                 ("输入（缓存命中）", _fmt_tokens(cache_hit) + "t", "ok", None),
                 ("缓存命中率", _fmt_cache_hit_rate(cache_hit_rate), "info", None),
                 ("输出", _fmt_tokens(output) + "t", "info", None),
-                ("合计", _fmt_tokens(total_input + output) + "t", "info", None),
+                ("合计", _fmt_tokens(agent_input + output) + "t", "info", None),
                 ("API 调用", str(calls), "info", None),
                 ("输出速度", f"{speed:.1f} tok/s", "info", None),
             ],

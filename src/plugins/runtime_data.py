@@ -166,8 +166,11 @@ class StatsService(Service):
     def reset_speed(self) -> None:
         self._mod().reset_token_speed()
 
-    def accumulate_usage(self, usage: dict, increment_calls: bool = True) -> None:
-        self._mod().accumulate_usage(usage, increment_calls=increment_calls)
+    def accumulate_usage(self, usage: dict, increment_calls: bool = True,
+                         label=None, model=None) -> None:
+        self._mod().accumulate_usage(
+            usage, increment_calls=increment_calls, label=label, model=model,
+        )
 
     def add_token_size(self, size: int) -> None:
         self._mod().add_token_size(size)
@@ -189,6 +192,9 @@ class StatsService(Service):
 
     def total_input_tokens(self) -> int:
         return self._mod().get_total_input_tokens()
+
+    def total_agent_input_tokens(self) -> int:
+        return self._mod().get_total_agent_input_tokens()
 
     def total_output_tokens(self) -> int:
         return self._mod().get_total_output_tokens()

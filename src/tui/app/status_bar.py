@@ -51,6 +51,7 @@ from src.tui.app._theme import sep_style as _theme_sep_style
 # 模块级 re-export 保持 patch("src.tui.app.status_bar._format_duration") 路径有效。
 from src.tui._format import format_duration as _format_duration
 from src.tui._format import format_speed as _format_speed
+from src.tui._format import format_tokens as _format_tokens
 
 _S_TOKEN = Style(fg=68)
 _S_SPEED = Style(fg=214)
@@ -196,17 +197,17 @@ _LOOP_PROMPT_TOKEN_GRACE_SEC = 8.0
 
 
 def _tokens_visible(status_active: bool, status, now: float) -> bool:
-    """「总tok / tok/s」段是否可见。
+    """「tok/s」段是否可见（token 入/出段常驻，不受本门控）。
 
     可见条件（任一）：
       - 活跃期（``status_active``，原有语义）；
       - 正在压缩（``compaction_active > 0``）——空闲期手动 ``/compact`` 也可见；
       - 压缩结束后的 ``_COMPACTION_TOKEN_GRACE_SEC`` 宽限期内——压缩摘要为
-        静默后台流式调用（不进入活跃期门控），宽限期让用户看得到「总tok」
-        增量与该次压缩的「tok/s」；
+        静默后台流式调用（不进入活跃期门控），宽限期让用户看得到该次压缩的
+        「tok/s」；
       - 正在生成会话标题，或标题生成结束后的 ``_TITLE_TOKEN_GRACE_SEC``
-        宽限期内（用户需求 2026-10-20：标题请求的 token / tok/s 也要在
-        status 行可见；标题同样是静默后台流式调用）。
+        宽限期内（用户需求 2026-10-20：标题请求的 tok/s 也要在 status 行
+        可见；标题同样是静默后台流式调用）。
 
     Args:
         status_active: 状态栏是否处于活跃期（轮次进行中）。
@@ -215,7 +216,7 @@ def _tokens_visible(status_active: bool, status, now: float) -> bool:
             ``title_last_end_ts`` 同源）。
 
     Returns:
-        True 表示 tokens / speed 段应渲染。
+        True 表示 speed 段应渲染。
     """
     if status_active:
         return True
@@ -287,10 +288,10 @@ class StatusContext:
         self.model = model
         self.status = status
         self.status_active = status_active
-        #: 总 tok / tok/s 段是否可见（活跃期，或压缩中/压缩刚结束的宽限期——
-        #: 压缩摘要是静默后台流式调用，空闲期（手动 ``/compact``）产生的 token
-        #: 只有放开活跃期门控才看得到）。未显式传入时跟随 ``status_active``
-        #: （向后兼容既有构造调用）。
+        #: tok/s 段是否可见（活跃期，或压缩中/压缩刚结束的宽限期——压缩摘要
+        #: 是静默后台流式调用，空闲期（手动 ``/compact``）产生的速度只有放开
+        #: 活跃期门控才看得到）。token 入/出段**常驻**，不读本字段。未显式
+        #: 传入时跟随 ``status_active``（向后兼容既有构造调用）。
         self.tokens_visible = bool(status_active) if tokens_visible is None else bool(tokens_visible)
         self.dot_elapsed = dot_elapsed
         self.spinner_char = spinner_char
@@ -394,17 +395,37 @@ def _elapsed_segment(ctx: StatusContext) -> list:
 
 
 def _tokens_segment(ctx: StatusContext) -> list:
-    """token 段（活跃期或压缩期/压缩宽限期；◆ 图标 + 呼吸色）。"""
-    if not ctx.tokens_visible:
-        return []
-    total = ctx.get("total_tokens", 0)
-    if total <= 0:
+    """token 段（常驻；◆ 入/出 累计 tok + 活跃期呼吸色）。
+
+    显示口径（2026-10-22 用户需求）：
+      - ``入``：**所有 Agent**（主 Agent + 所有 SubAgent）的上下文增量
+        累计输入 token——同一 Agent 本次 input 减上次 input；首次 / 上下文
+        缩小 / 切模型计全量；压缩 / 标题等内部调用不计。不是每次完整
+        prompt 的简单累加（避免重复计历史上下文）；
+      - ``出``：全局生成 token 总量（现有 ``total_tokens`` 口径）。
+    输入总量只在请求结束（真实 usage 到达）时更新，因此本段**空闲也常驻**，
+    不受 ``tokens_visible`` 的活跃期门控。某一侧为 0 / 不可用时只显示另一侧，
+    避免在失败路径显示误导性的 ``入 0t``。
+    """
+    try:
+        total_input = max(0, int(ctx.get("total_input_tokens", 0) or 0))
+    except (TypeError, ValueError, OverflowError):
+        total_input = 0
+    try:
+        total_output = max(0, int(ctx.get("total_tokens", 0) or 0))
+    except (TypeError, ValueError, OverflowError):
+        total_output = 0
+    if total_input <= 0 and total_output <= 0:
         return []
     # ★ BEAUTY-20：token 计数呼吸（活跃期紫蓝 68→78，12s 周期）。
     # ★ BEAUTY-36：token 加 ◆ 图标前缀。
     token_style = Style(fg=time_glow(68, 78, 12.0)) if ctx.status_active else _S_TOKEN
-    tok = f"{total / 1000:.1f}k" if total >= 1000 else str(total)
-    return [StyledRun(f"\u25c6 {tok}t", token_style)]
+    parts: list[str] = []
+    if total_input > 0:
+        parts.append(f"入 {_format_tokens(total_input)}t")
+    if total_output > 0:
+        parts.append(f"出 {_format_tokens(total_output)}t")
+    return [StyledRun("\u25c6 " + " \u00b7 ".join(parts), token_style)]
 
 
 def _speed_segment(ctx: StatusContext) -> list:
@@ -511,10 +532,11 @@ def _build_status_items(model, dot_elapsed: float = 0.0,
     段由 ``src.tui.app._status_segments`` 注册表提供（每个段一个清单条目）：
     ``model`` 段为模型名部分（不与其它段用 `` · `` 连接），其余段（tools/
     elapsed/messages/tokens/speed）按声明顺序用 `` · `` 连接。各段自行门控
-    可见性：tools/elapsed 仅活跃期渲染；tokens/speed 在活跃期或压缩中/压缩
-    结束宽限期内渲染（``_tokens_visible``，压缩摘要是静默后台流式调用，空闲期
-    ``/compact`` 产生的 token 也要看得到）；messages 为常驻段（空闲也显示
-    ——2026-10-07 状态栏信息增强）。
+    可见性：tools/elapsed 仅活跃期渲染；tokens 为**常驻段**（空闲也显示
+    全 Agent 累计输入/输出——2026-10-22 用户需求）；speed 在活跃期或压缩中/
+    压缩结束宽限期内渲染（``_tokens_visible``，压缩摘要是静默后台流式调用，
+    空闲期 ``/compact`` 产生的速度也要看得到）；messages 为常驻段（空闲也
+    显示——2026-10-07 状态栏信息增强）。
 
     Args:
         model: AppModel 实例。
@@ -538,15 +560,20 @@ def _build_status_items(model, dot_elapsed: float = 0.0,
     # ★ P3（review）：与同函数其它字段（tool_total/tool_count 等）防御风格
     #   统一——测试桩模型缺字段时回退默认值而非 AttributeError。
     status_active = bool(getattr(st, "status_active", False))
-    # ★ 2026-10（用户需求）：压缩消耗的 token 要能在状态栏看到——tokens/speed
-    #   段除活跃期外，压缩中与压缩结束宽限期内也可见（空闲期手动 /compact
-    #   也能看到本次压缩的 总tok / tok/s）。快照仅在需要展示时查询（空闲且
-    #   无压缩时不查，保持零开销）。
+    # ★ 2026-10（用户需求）：压缩消耗的速度要能在状态栏看到——speed 段除
+    #   活跃期外，压缩中与压缩结束宽限期内也可见。
+    # ★ 2026-10-22（用户需求）：token 入/出段**常驻**（空闲也显示全 Agent
+    #   累计输入/输出），因此快照空闲也必须查询；1s TTL 与状态栏 1s 时间桶
+    #   对齐，额外开销仅为一次 O(1) 快照读取。
     tokens_visible = _tokens_visible(status_active, st, time.monotonic())
-    # 压缩驱动的展示期（非活跃期）用短快照 TTL——压缩摘要结束后 token 才入账，
-    # 长 TTL 会让压缩期缓存的旧快照（总 tok=0）拖慢显示。
-    snap_ttl = _SNAPSHOT_TTL if status_active else _COMPACTION_SNAPSHOT_TTL
-    snap = _snapshot(model, snap_ttl) if tokens_visible else {}
+    # 压缩/标题驱动的展示期（非活跃期）用短快照 TTL——压缩摘要结束后 token
+    # 才入账，长 TTL 会让展示期缓存的旧快照拖慢显示；其余场景用 1s TTL。
+    snap_ttl = (
+        _COMPACTION_SNAPSHOT_TTL
+        if (tokens_visible and not status_active)
+        else _SNAPSHOT_TTL
+    )
+    snap = _snapshot(model, snap_ttl)
     ctx = StatusContext(
         model=model, status=st, status_active=status_active,
         dot_elapsed=dot_elapsed, spinner_char=spinner_char,

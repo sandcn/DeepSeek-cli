@@ -15,7 +15,7 @@ from ._utils import _non_system_messages
 
 from ._session_factory import create_session
 from ..core.constants import DIM, RESET
-from ..core.stats import reset_token_speed
+from ..core.stats import reset_agent_input_baseline, reset_token_speed
 from ..api.escape_monitor import EscapeMonitor
 
 _logger = logging.getLogger(__name__)
@@ -83,6 +83,9 @@ class _RoundResult:
 
 def _setup_session(loaded_data: dict | None = None, chat_ui=None) -> tuple:
     """初始化会话并加载历史消息（内核 sessions 服务优先）"""
+    # 新会话 / 加载会话：Agent 新增输入的基线从头开始（首次请求计全量），
+    # 避免沿用上一会话末尾的 input 得到一个无意义的差值。
+    reset_agent_input_baseline()
     session = create_session(event_agent=True)
 
     state: SessionState = SessionState(model=session.model)

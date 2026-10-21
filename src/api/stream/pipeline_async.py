@@ -457,12 +457,16 @@ class AsyncStreamPipeline:
             ctx.last_live_est = ctx.token_estimate
             # ★ 标记最终 usage 已接收，后续 SpeedHandler 跳过重复累积
             ctx.final_usage_received = True
-            accumulate_usage({
-                "input": real_input,
-                "output": correction,
-                "input_cache_hit": real_hit,
-                "input_cache_miss": real_miss,
-            })
+            accumulate_usage(
+                {
+                    "input": real_input,
+                    "output": correction,
+                    "input_cache_hit": real_hit,
+                    "input_cache_miss": real_miss,
+                },
+                label=ctx.label,
+                model=ctx.model,
+            )
             # ★ 状态栏「总tok」/速度分子同样以真实 output 修正——修复前流式
             #   路径只累加逐 delta 估算（高估且不修正），非流式路径累加真实
             #   output，两路径口径不一致。

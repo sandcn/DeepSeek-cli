@@ -803,14 +803,17 @@ def _compact_usage_sections(sections: list) -> list:
         fields = []
         if title == "Token 用量":
             miss = _usage_item_by_label(rows, "输入（未命中）")
+            # 展示输入优先用「Agent 新增」（各 Agent 上下文增量累计）；
+            # 旧统计 / 外部调用方未提供该行时回退未命中行（保持向后兼容）。
+            agent_input = _usage_item_by_label(rows, "输入（Agent 新增）") or miss
             output = _usage_item_by_label(rows, "输出")
             total = _usage_item_by_label(rows, "合计")
             calls = _usage_item_by_label(rows, "API 调用")
             speed = _usage_item_by_label(rows, "输出速度")
             hit_rate = _usage_item_by_label(rows, "缓存命中率")
-            if miss and output and total:
+            if agent_input and output and total:
                 fields.append((
-                    "输入/输出", f"{miss[1]} / {output[1]}", "info", None,
+                    "输入/输出", f"{agent_input[1]} / {output[1]}", "info", None,
                 ))
                 summary = str(total[1])
                 if calls:

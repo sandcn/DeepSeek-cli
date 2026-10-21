@@ -98,8 +98,8 @@ def test_removed_commands_not_declared():
         assert declared_command_plugin(name) is None, name
 
 
-def _cache_hit_rate_row(monkeypatch, stats):
-    """构建统计区块并取出「缓存命中率」行（固定价格，屏蔽真实配置）。"""
+def _token_rows(monkeypatch, stats):
+    """构建统计区块并返回 Token 用量行（固定价格，屏蔽真实配置）。"""
     import src.core.stats as stats_mod
 
     monkeypatch.setattr(stats_mod, "get_token_stats", lambda: stats)
@@ -110,7 +110,12 @@ def _cache_hit_rate_row(monkeypatch, stats):
     })
     sections = usage_cmd.build_usage_sections(_ctx())
     token = next(sec for sec in sections if sec["title"] == "Token 用量")
-    return next(item for item in token["rows"] if item[0] == "缓存命中率")
+    return token["rows"]
+
+
+def _cache_hit_rate_row(monkeypatch, stats):
+    rows = _token_rows(monkeypatch, stats)
+    return next(item for item in rows if item[0] == "缓存命中率")
 
 
 def test_build_usage_sections_includes_cache_hit_rate(monkeypatch):
@@ -133,3 +138,18 @@ def test_build_usage_sections_shows_dash_without_cache_split(monkeypatch):
         "input_cache_miss": 0,
     })
     assert row[1] == "\u2014"
+
+
+def test_build_usage_sections_uses_agent_input_for_display_total(monkeypatch):
+    rows = _token_rows(monkeypatch, {
+        "input": 1000,
+        "input_delta": 300,
+        "output": 100,
+        "calls": 2,
+        "input_cache_hit": 875,
+        "input_cache_miss": 125,
+    })
+    by_label = {row[0]: row for row in rows}
+    assert by_label["输入（Agent 新增）"][1] == "300t"
+    assert by_label["输入（未命中）"][1] == "125t"  # 计费明细保持原始值
+    assert by_label["合计"][1] == "400t"  # Agent 新增 300 + 输出 100

@@ -19,6 +19,7 @@ def _sections():
         {
             "title": "Token 用量",
             "rows": [
+                ("输入（Agent 新增）", "800t", "info", None),
                 ("输入（未命中）", "1.2kt", "info", None),
                 ("缓存命中率", "87.5%", "info", None),
                 ("输出", "3.4kt", "info", None),
@@ -61,6 +62,8 @@ def test_usage_content_rows_render_all_sections_and_values():
     texts = ["".join(run.text for run in row) for row in rows]
     joined = "\n".join(texts)
     assert "Token 用量" in joined
+    assert "输入（Agent 新增）" in joined
+    assert "800t" in joined
     assert "输入（未命中）" in joined
     assert "1.2kt" in joined
     assert "缓存命中率" in joined
@@ -74,6 +77,7 @@ def test_usage_float_is_compact_to_avoid_top_clipping():
         {
             "title": "Token 用量",
             "rows": [
+                ("输入（Agent 新增）", "1.2kt", "info", None),
                 ("输入（未命中）", "1.2kt", "info", None),
                 ("输入（缓存命中）", "0t", "ok", None),
                 ("输出", "3.4kt", "info", None),
@@ -97,6 +101,7 @@ def test_usage_float_is_compact_to_avoid_top_clipping():
     token_rows = compact[0]["rows"]
     assert len(token_rows) == 3
     assert token_rows[0][0] == "输入/输出"
+    assert token_rows[0][1] == "1.2kt / 3.4kt"  # 输入取 Agent 新增，不取计费未命中
     assert token_rows[1][0] == "合计"
     assert "2 次" in token_rows[1][1]
     assert token_rows[2][0] == "缓存命中率"

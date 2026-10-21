@@ -5,9 +5,13 @@ from __future__ import annotations
 class DefaultStatsAdapter:
     """默认统计适配器 — 包装 src/api/stats"""
 
-    def accumulate_usage(self, input_tokens: int, output_tokens: int) -> None:
+    def accumulate_usage(self, input_tokens: int, output_tokens: int,
+                         label=None, model=None) -> None:
         from ..stats import accumulate_usage
-        accumulate_usage({"input": input_tokens, "output": output_tokens})
+        accumulate_usage(
+            {"input": input_tokens, "output": output_tokens},
+            label=label, model=model,
+        )
 
     def set_tool_parse_elapsed(self, elapsed: float) -> None:
         from ..stats import set_tool_parse_elapsed
@@ -56,7 +60,8 @@ class MockStatsAdapter:
         self.stream_speed = 0.0
         self._speeds: list[float] = []
 
-    def accumulate_usage(self, input_tokens: int, output_tokens: int) -> None:
+    def accumulate_usage(self, input_tokens: int, output_tokens: int,
+                         label=None, model=None) -> None:
         self.input_tokens += input_tokens
         self.output_tokens += output_tokens
 
