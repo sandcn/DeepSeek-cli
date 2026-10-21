@@ -26,10 +26,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable
 
 from src.tui._width import truncate_width
 from src.tui.ink import BOX, FRAGMENT, TEXT, h
+
+_logger = logging.getLogger(__name__)
 
 #: 默认浮窗宽度（列，含边框）。内容自适应（spec.width=None）时不设置。
 DEFAULT_FLOAT_WIDTH = 30
@@ -60,7 +63,11 @@ class FloatingWindowSpec:
             = 窗口底边位于锚点行上方一行）。
         border: 是否绘制单线边框。
         border_color: 边框颜色（颜色名或 256 色号；None = 默认深青）。
-        background: 背景色（默认黑色，保证覆盖不透明；None = 透明）。
+        background: 背景色（默认黑色，保证覆盖不透明）。**None = 透明**：
+            只有窗口实际绘制了字符的列覆盖底层内容，空白列透出下方原内容
+            （2026-10-21 修复：此前帧末合成层会清掉整个窗口矩形，透明实际
+            等同于抹成空格）。注意：窗口覆盖到**跨列宽字符**（CJK/emoji）时，
+            终端无法只覆盖它的某一列——相邻那一列会被清成空白。
         padding_x / padding_y: 边框内边距。
         title: 可选标题行（显示在内容上方）；空串不显示。
     """
@@ -108,11 +115,20 @@ class FloatingWindowSpec:
 
     # ── 复制（更新窗口字段用：不可变替换，避免调用方原地改共享对象） ──
     def copy_with(self, **changes) -> FloatingWindowSpec:
-        """返回修改了指定字段的新规格（未知字段忽略，防拼写错误污染对象）。"""
+        """返回修改了指定字段的新规格（未知字段忽略，记 warning 便于发现拼写错误）。
+
+        ★ 2026-10-21：未知字段此前**静默**忽略——``update_floating_window``
+        传错字段名（如 ``x_="left"``）会返回 True 却什么都没改，调用方无从
+        察觉。行为保持（不污染对象），但补 warning 日志。
+        """
         values = {name: getattr(self, name) for name in self.__slots__}
         for key, value in changes.items():
             if key in values:
                 values[key] = value
+            else:
+                _logger.warning(
+                    "浮窗规格字段不存在，已忽略：id=%r key=%r", self.id, key,
+                )
         return FloatingWindowSpec(**values)
 
     def __repr__(self) -> str:  # pragma: no cover - 调试友好
@@ -145,7 +161,10 @@ def FloatingWindow(props: dict) -> object:
     """
     win = props.get("window")
     if win is None:
-        return h(BOX, {"key": "float-empty"})
+        # 兜底：无规格时不绘制任何内容。★ 2026-10-21：此前的兜底是一个**普通**
+        #   BOX（无 position/dataFloatWindow）——若真被走到会占一个正常流位置。
+        #   FRAGMENT 是透明分组容器，零尺寸零占位（``layout_children`` 展开）。
+        return h(FRAGMENT, {"key": "float-empty"}, [])
     term_width = max(1, _safe_int(props.get("width"), 80))
     pad_x = max(0, _safe_int(getattr(win, "padding_x", 0), 0))
     pad_y = max(0, _safe_int(getattr(win, "padding_y", 0), 0))
@@ -156,8 +175,10 @@ def FloatingWindow(props: dict) -> object:
     box_w: int | None = None
     if raw_width is not None:
         want = _safe_int(raw_width, DEFAULT_FLOAT_WIDTH)
-        # 至少保留 3 列（边框 + 1 列内容）；不超过终端宽度
-        box_w = max(3, min(want, term_width))
+        # ★ 至少 1 列、不超过终端宽度（2026-10-21 行宽不变量修复）：修复前
+        #   下限写成 ``max(3, ...)``——终端宽度 < 3 列时窗口宽度反超终端宽，
+        #   合成后的帧行宽 > 文档宽，破坏行级 diff / 光标定位的不变量。
+        box_w = max(1, min(want, term_width))
     # 内容可用宽度（扣除左右边框 + 左右内边距）
     if box_w is not None:
         content_w = max(1, box_w - 2 * border - 2 * pad_x)
@@ -216,6 +237,13 @@ def floating_layer_elements(model, width: int) -> list:
 
     App 把返回值追加在正常界面/全屏视图之后：绝对定位层不占高度；后绘制
     的窗口覆盖先绘制的（高优先级在上）。无浮窗时返回空列表（零额外节点）。
+
+    ★ id 防御（2026-10-21）：``None`` / 空串 id 与**重复 id** 直接跳过——
+    空串 id 此前会生成 ``dataFloatWindow=""``：既不被 ``_collect_float_fibers``
+    收集（也进不了合成层），又仍是 absolute 节点 → 固定画在文档左上角且被
+    committed 前缀拼接截断。重复 id 会在同一父容器下产生重复 key（调和器
+    warning + 两个窗口同时绘制），bridge 的 open 有去重但直接改 model 的
+    路径没有，这里统一兜底（保留先出现的，高优先级排序后仍然生效）。
     """
     windows = getattr(model, "floating_windows", None) or []
     if not windows:
@@ -226,12 +254,20 @@ def floating_layer_elements(model, width: int) -> list:
         key=lambda w: _safe_int(getattr(w, "priority", 0), 0),
     )
     elements: list = []
+    seen: set = set()
     for win in ordered:
         wid = getattr(win, "id", None)
         if wid is None:
             continue
+        wid_text = str(wid)
+        if not wid_text.strip():
+            continue
+        if wid_text in seen:
+            _logger.warning("浮窗 id 重复，已忽略后者：id=%r", wid_text)
+            continue
+        seen.add(wid_text)
         elements.append(h(FloatingWindow, {
-            "key": f"float-{wid}",
+            "key": f"float-{wid_text}",
             "window": win,
             "model": model,
             "width": width,

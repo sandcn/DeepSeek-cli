@@ -336,6 +336,12 @@ class Fiber:
     #: committed 前缀超宽行截断结果缓存 ``(src_prefix, src_len, truncated,
     #: width)``——``components.render_frame`` 维护（仅超宽前缀路径使用）。
     _truncated_prefix_cache: Any = None
+    #: 浮窗锚点/输入区查找缓存（``ink._floating`` 维护）：
+    #: ``{"input": fiber, "anchors": {anchor: fiber}}``——命中前校验
+    #: ``deleted`` 与对应 props 标记（``dataInputArea`` / ``dataFloatAnchor``），
+    #: 与 ``_committed_chat_cache`` 同语义：树结构跨帧稳定时免掉每帧对输入区
+    #: 锚点、底部框锚点的多次全树 DFS（浮窗开启时原本每帧 4 次以上）。
+    _float_anchor_cache: Any = None
     #: 静态行帧前缀缓存 ``(key, prefix, all_ok)``——``widgets.staticlines``
     #: 维护（命中即跳过画布写入，增量提交仅追加新增行）；
     #: ``components.render_frame`` 读取（前缀复用 + 行宽守卫；顶部/非顶部

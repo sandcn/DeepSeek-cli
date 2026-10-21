@@ -30,10 +30,13 @@ from src.tui.core.style import Style
 from .fiber import Fiber
 from .layout import layout_tree, wrap_text_lines, _skip_function
 from .output import Frame, Line
+from ._layout_transform import _translate_subtree_x, _translate_subtree_y
 from ._paint_canvas import (
     _merge_line,
     _slice_line_with_offset,
     _canvas_row_to_line,
+    _ensure_row_dict,
+    _entry3,
     _line_as_dict,
 )
 from src.tui._width import wcswidth_simple
@@ -111,7 +114,12 @@ def _paint(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) -> None
     # ★ 浮窗隐藏（2026-10-21）：锚点缺失（输入区 / 底部框未渲染，如整屏
     #   视图）时由 ``apply_floating_layout`` 标记隐藏——整树绘制阶段直接
     #   跳过，避免窗口贴到文档底部与弹窗重叠。
-    if fiber.props.get("dataFloatWindow") and getattr(fiber, "_float_hidden", False):
+    # ★ ``is not None``（不是真值判定）：空串 id 也是合法浮窗标记（见
+    #   ``_floating._collect_float_fibers`` 同一口径）。
+    if (
+        fiber.props.get("dataFloatWindow") is not None
+        and getattr(fiber, "_float_hidden", False)
+    ):
         return
     try:
         _paint_impl(fiber, canvas, clip, inherit_bg)
@@ -390,6 +398,103 @@ def _has_floating_layer(root: Fiber) -> bool:
     return False
 
 
+def _apply_float_positions(root: Fiber, width: int,
+                           viewport_height: int = 0) -> None:
+    """布局完成后修正浮窗坐标（幂等；异常只记 debug，不影响主界面）。
+
+    ★ 2026-10-21（公共渲染 API 缺浮窗定位修复）：此前只有 InkSession 的渲染
+    帧调用 ``apply_floating_layout``——``renderToString`` / ``render()`` 独立
+    会话渲染 App 树时浮窗从不定位，停在根内容区左上角（压住标题栏），隐藏
+    规则也不生效。现由 ``render_frame`` 统一调用，所有帧构建入口一致。
+    ``apply_floating_layout`` 的目标坐标只由 props 与文档几何决定，重复调用
+    位移恒为 0（幂等），调用方额外再调一次也安全。
+    """
+    if not _has_floating_layer(root):
+        return
+    from ._floating import apply_floating_layout
+
+    try:
+        apply_floating_layout(root, width, viewport_height=viewport_height)
+    except Exception:  # pragma: no cover - 防御：单帧失败不影响主界面
+        _logger.debug("浮窗定位异常（本帧保持原坐标）", exc_info=True)
+
+
+def _merge_window_row(base_line, rowdata, win_x: int, win_w: int,
+                      width: int, opaque: bool):
+    """把浮窗一行合成到底层帧行，返回新 Line（无内容返回 None）。
+
+    单元格级合并（2026-10-21 重写）：
+      - **不透明窗口**（``backgroundColor`` 非 None）：矩形整段占用——矩形内
+        底层字符全部清除，再由窗口单元格覆盖（背景铺满整段，视觉与旧实现
+        一致）；
+      - **透明窗口**（``backgroundColor is None``）：只占用**实际绘制了字符
+        的列**——空白列保留底层原内容。修复前无论透明与否都清除整个矩形，
+        ``background=None`` 的"底层内容从空格处透出"语义实际失效（底层被
+        抹成空格）。
+
+    宽字符：清除与占用列重叠的底层字符（含跨越窗口左右边界的宽字符首列）
+    ——终端无法只覆盖宽字符的某一列，保留残字会让行宽推导错位。代价是
+    窗口外与窗口相邻的那一列会变成空白（终端能力限制，见 ``app.floating``
+    docstring）。
+
+    Args:
+        base_line: 底层帧行（Line）。
+        rowdata: 浮窗画布行（列键为**窗口局部列**——画布已平移使窗口位于
+            原点；元素为 ``(ch, style, link)`` 或 2 元组）。
+        win_x: 窗口左边界（文档列）。
+        win_w: 窗口宽度（列）。
+        width: 文档宽度（合并结果按此钳制，维护行宽不变量）。
+        opaque: 窗口是否不透明。
+
+    Returns:
+        合并后的 Line；窗口在本行没有任何单元格时返回 None（该行不变）。
+    """
+    cells: dict = {}
+    for col, value in _ensure_row_dict(rowdata).items():
+        try:
+            local = int(col)
+        except (TypeError, ValueError):
+            continue
+        if local < 0 or local >= win_w:
+            continue
+        screen_col = win_x + local
+        if screen_col < 0 or screen_col >= width:
+            continue  # 出屏列丢弃（终端写不到，也与行宽不变量冲突）
+        cells[screen_col] = value
+    if not cells:
+        return None
+    # 占用列集合：不透明 = 整个矩形；透明 = 实际字符占用列（宽字符占 2 列）
+    occupied: set = set()
+    if opaque:
+        occupied.update(range(max(0, win_x), min(width, win_x + win_w)))
+    else:
+        for col, value in cells.items():
+            ch = _entry3(value)[0]
+            cw = wcswidth_simple(ch) or 1
+            occupied.update(range(col, col + cw))
+    base = _line_as_dict(base_line)
+    for col in list(base):
+        ch = base[col][0]
+        cw = wcswidth_simple(ch) or 1
+        if any(c in occupied for c in range(col, col + cw)):
+            del base[col]
+    for col in sorted(cells):
+        value = cells[col]
+        ch = _entry3(value)[0]
+        if (wcswidth_simple(ch) or 1) > 1:
+            # 宽字符只写首列键；第二列若有底层残留必须清掉（否则行宽推导
+            # 把宽字符按 1 列处理，后续内容错位）。
+            base.pop(col + 1, None)
+        base[col] = value
+    line = _canvas_row_to_line(base)
+    if line.width > width:
+        # ★ 行宽不变量兜底（E-OVERFLOW-GUARD）：窗口贴右边界时有宽字符跨越
+        #   终端右边界（终端不可见的半列）→ 截断，保证 diff/光标定位正确。
+        from .helpers import truncate_line
+        line = truncate_line(line, width)
+    return line
+
+
 def _overlay_floating(root: Fiber, frame: Frame, width: int) -> Frame:
     """把浮窗层合成到最终帧（覆盖 committed 前缀复用区域）。
 
@@ -397,13 +502,14 @@ def _overlay_floating(root: Fiber, frame: Frame, width: int) -> Frame:
     历史前缀路径直接复用缓存前缀行（``prefix[:fit]``）并**丢弃**画布中对应
     区域的绘制——浮窗若覆盖到 committed 区（短文档 / 小历史时常见），首轮
     ``_paint`` 的浮窗内容会被前缀拼接覆盖，只显示窗口下半部分。本函数在
-    帧拼装完成后，把浮窗子树重新绘制到「仅浮窗覆盖行」的画布上并逐行合并
-    ——窗口完整、不透明、关闭后前缀行原样恢复（下一帧无浮窗 → 直接返回原
-    frame）。
+    帧拼装完成后，把浮窗子树重新绘制并逐行合并——窗口完整、关闭后前缀行
+    原样恢复（下一帧无浮窗 / 无前缀复用 → 直接返回原 frame）。
 
-    性能：仅当树中存在浮窗时执行；画布长度 = 帧行数，只有浮窗 box 覆盖的行
-    被写入/合并（O(浮窗面积)）。与 committed 前缀区间相交时取消
-    ``stable_prefix`` 标记（被覆盖行已非前缀原行，不能再跳过 diff 比较）。
+    性能：画布只按**窗口矩形**分配（``[None] * win_h``）——绘制前把浮窗子树
+    临时平移到原点、绘制完立即平移回来，因此绘制/合并都是 O(浮窗面积)，
+    与帧行数无关（修复前每窗每帧分配 ``[None] * 帧行数``，长文档下是 O(文档)
+    的额外分配）。与 committed 前缀区间相交时取消 ``stable_prefix`` 标记
+    （被覆盖行已非前缀原行，不能再跳过 diff 比较）。
     """
     if not _has_floating_layer(root):
         return frame
@@ -415,52 +521,53 @@ def _overlay_floating(root: Fiber, frame: Frame, width: int) -> Frame:
     lines = list(frame.lines)
     touched: list[int] = []
     # ★ 逐窗口按**矩形列范围**合并（2026-10-21 用户反馈修复：同一行只显示
-    #   浮窗内容、左侧/右侧原内容丢失）。此前把所有窗口画到同一画布后整行
-    #   ``_merge_line(lines[row], 0, overlay)``——``_canvas_row_to_line`` 会为
-    #   浮窗左侧的列补空格，整行合并时这些空格覆盖了底层原内容。现只取窗口
-    #   box 的 [x, x+w) 列片段合并到对应列，窗口外原内容原样保留。
+    #   浮窗内容、左侧/右侧原内容丢失）。只把窗口自己的单元格合并到对应列，
+    #   窗口外原内容原样保留（见 ``_merge_window_row``）。
     for fiber in windows:
         box = fiber.layout_box
         if box is None or box.w <= 0 or box.h <= 0:
             continue
-        canvas: list = [None] * len(lines)
+        win_x = int(box.x)
+        win_y = int(box.y)
+        win_w = int(box.w)
+        win_h = int(box.h)
+        if win_x >= width or win_x + win_w <= 0:
+            continue  # 完全在屏幕右侧外
+        # ★ O(窗口面积)：临时平移到原点画到 h 行小画布，再平移回去（异常也
+        #   恢复坐标——``layout_box`` 必须保持文档坐标供下一帧继续使用）。
+        canvas: list = [None] * win_h
         try:
-            _paint(fiber, canvas)
+            if win_x:
+                _translate_subtree_x(fiber, -win_x)
+            if win_y:
+                _translate_subtree_y(fiber, -win_y)
+            try:
+                _paint(fiber, canvas)
+            finally:
+                if win_y:
+                    _translate_subtree_y(fiber, win_y)
+                if win_x:
+                    _translate_subtree_x(fiber, win_x)
         except Exception:
             _logger.warning(
                 "浮窗合成绘制异常 id=%r",
                 fiber.props.get("dataFloatWindow"), exc_info=True,
             )
             continue
-        x0 = max(0, int(box.x))
-        x1 = max(x0, int(box.x) + int(box.w))
-        row_start = max(0, int(box.y))
-        row_end = min(len(lines), int(box.y) + int(box.h))
-        for row in range(row_start, row_end):
-            rowdata = canvas[row]
-            if rowdata is None:
+        opaque = fiber.props.get("backgroundColor") is not None
+        for i in range(win_h):
+            row = win_y + i
+            if row < 0 or row >= len(lines):
                 continue
-            overlay = _canvas_row_to_line(rowdata)
-            if overlay.width <= 0:
+            rowdata = canvas[i]
+            if not rowdata:
                 continue
-            piece, offset = _slice_line_with_offset(overlay, x0, x1)
-            if piece.width <= 0:
+            merged = _merge_window_row(
+                lines[row], rowdata, win_x, win_w, width, opaque,
+            )
+            if merged is None:
                 continue
-            draw_x = x0 + offset
-            end_x = draw_x + piece.width
-            # ★ CJK 边界（2026-10-21）：先清除窗口片段覆盖列上的底层字符
-            #   （含跨越左右边界的宽字符首列）——终端无法只覆盖宽字符的
-            #   第二列，保留残字会使 ``_canvas_row_to_line`` 跳过窗口边框
-            #   列（边框缺一列/错位）。清除后间隙由 ``_canvas_row_to_line``
-            #   补空格，窗口片段完整覆盖。
-            base = _line_as_dict(lines[row])
-            for col in list(base):
-                ch = base[col][0]
-                cw = wcswidth_simple(ch) or 1
-                if col < end_x and col + cw > draw_x:
-                    del base[col]
-            merged = _merge_line(base, draw_x, piece)
-            lines[row] = _canvas_row_to_line(merged)
+            lines[row] = merged
             touched.append(row)
     if not touched:
         return frame
@@ -481,12 +588,17 @@ def _overlay_floating(root: Fiber, frame: Frame, width: int) -> Frame:
     )
 
 
-def render_frame(root: Fiber, width: int) -> Frame:
+def render_frame(root: Fiber, width: int, viewport_height: int = 0) -> Frame:
     """渲染布局好的 host 树为整帧 Frame。
+
+    浮窗定位（``apply_floating_layout``）在本函数内统一执行——所有帧构建
+    入口（InkSession / renderToString / render()）因此共用同一套定位语义。
 
     Args:
         root: 根 fiber（ROOT 或 APP host）。
         width: 文档宽度（终端列宽）。
+        viewport_height: 终端可见高度（行）；> 0 时浮窗被钳进可视区
+            （渲染器只重写可见行）。0 = 整帧输出（headless），不钳制。
 
     Returns:
         完整文档的 Frame。
@@ -498,6 +610,11 @@ def render_frame(root: Fiber, width: int) -> Frame:
         total_h = box.h
     else:
         total_h = layout_tree(root, width)
+    # ★ 浮窗定位（2026-10-21 统一入口）：必须在布局之后、绘制之前——所有
+    #   帧构建路径（InkSession / renderToString / render()）都经此处，
+    #   修复「公共渲染 API 渲染 App 时浮窗不定位、粘在左上角」。幂等，调用方
+    #   重复调用无副作用。
+    _apply_float_positions(root, width, viewport_height)
     # ★ 画布惰性行（方向4）：初始 None——仅未命中行创建 dict（行级缓存优化；
     #   TEXT 命中行直接放 Line 对象，免逐字符重绘）。
     canvas: list = [None] * max(1, total_h)
@@ -610,11 +727,12 @@ def render_frame(root: Fiber, width: int) -> Frame:
                 ),
                 width,
             )
-    return _overlay_floating(
-        root,
-        Frame(_to_line(row, width) for row in canvas),
-        width,
-    )
+    # ★ 无 committed 前缀复用：画布已完整绘制（含浮窗，浮窗是根的最后子节点
+    #   → 绘制顺序在正常界面之后，覆盖关系天然正确），无需再走合成层——
+    #   省掉每帧一次的浮窗二次绘制与浮窗 fiber 收集（2026-10-21 性能）。
+    #   合成层只在**前缀复用路径**必需（那里画布中浮窗覆盖的 committed 行
+    #   被缓存前缀整体覆盖）。
+    return Frame(_to_line(row, width) for row in canvas)
 
 
 __all__ = ["render_frame"]

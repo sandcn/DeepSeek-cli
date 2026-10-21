@@ -165,6 +165,13 @@ def _make_idle_frame_predicate(model, session):
                 return False
             if getattr(model, "subagent_lines", None):
                 return False
+            # ★ 浮窗（2026-10-21）：浮窗内容组件每帧从 model 重建（框架无法
+            #   判定其内容是否静态）。若有浮窗时仍复用上一帧，浮窗内容依赖的
+            #   model 字段一旦**不经 request_bottom_redraw** 变化就会冻结在
+            #   旧值，而静态态下没有脏事件来纠正（与「Esc 关全屏视图不刷新」
+            #   同一类问题）。开窗是短时行为，保守重建的代价可接受。
+            if getattr(model, "floating_windows", None):
+                return False
             completion = getattr(model, "completion", None)
             if completion is not None and getattr(completion, "visible", False):
                 return False

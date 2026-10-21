@@ -460,6 +460,7 @@ def _canvas_row_to_line(row) -> Line:
 __all__ = [
     "_line_as_dict",
     "_ensure_row_dict",
+    "_entry3",
     "_overlaps_wide_second_col",
     "_overwrites_wide_second_col",
     "_merge_line",

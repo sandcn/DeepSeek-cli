@@ -18,21 +18,6 @@ from ..base import CommandMeta, declare_command_plugin
 _logger = logging.getLogger(__name__)
 
 
-def _loop_window_call(chat_ui, method: str, *args, **kwargs) -> None:
-    """调用 ChatUI 的循环浮窗方法（不存在/异常时静默降级，不阻断循环）。
-
-    浮窗是展示增强：旧版 ChatUI / 测试桩未实现对应方法时循环照常运行；
-    浮窗更新失败只记 debug（不冒泡中断 ``run_round``）。
-    """
-    fn = getattr(chat_ui, method, None) if chat_ui is not None else None
-    if not callable(fn):
-        return
-    try:
-        fn(*args, **kwargs)
-    except Exception:
-        _logger.debug("/loop 浮窗调用失败 method=%s", method, exc_info=True)
-
-
 class LoopPlugin(InteractiveCommandPlugin):
     """循环执行 N 次指定提词 (/loop)
 
@@ -61,6 +46,13 @@ class LoopPlugin(InteractiveCommandPlugin):
         # 延迟导入避免模块加载时级联依赖（app_loop → plugins → app_loop 循环导入）
         from ...constants import DIM, RESET, GREEN, YELLOW
         from ....app_loop import _save_loop_snapshot
+        # ★ 浮窗控制收敛（2026-10-21）：与旧版主循环（app_loop._loop）共用
+        #   同一入口——此前两处各复制一份"静默降级调用 + 三处开/更/关"。
+        from ....app_loop._float_window import (
+            close_loop_window,
+            open_loop_window,
+            set_loop_window_status,
+        )
         from ...interrupt_state import reset_interrupt_async
         from ...stats import reset_token_speed
 
@@ -87,7 +79,7 @@ class LoopPlugin(InteractiveCommandPlugin):
         # ── /loop 浮动窗口（2026-10-21 用户需求）────
         # 锚定输入区最上方的分隔线右端、向上展开（带边框），显示总次数 /
         # 提词 / 当前运行次数；关闭后原内容由下一帧整帧重建自动还原。
-        _loop_window_call(chat_ui, "open_loop_floating_window", count, prompt)
+        open_loop_window(chat_ui, count, prompt)
         # ── /loop 模式：启用状态行持续活跃 + 跨轮累加耗时 ────
         try:
             # _loop_mode + enable_status + write_line 全部在 try 内，
@@ -102,7 +94,7 @@ class LoopPlugin(InteractiveCommandPlugin):
             for i in range(count):
                 chat_ui.write_line(f"  {DIM}  ─ 第 {i+1}/{count} 轮 · 第1次 ─{RESET}")
                 # 浮窗进度：当前轮第 1 次运行
-                _loop_window_call(chat_ui, "set_loop_status", round=i + 1, run=1)
+                set_loop_window_status(chat_ui, round=i + 1, run=1)
                 # 清空对话（每轮开始前清空）
                 reset_interrupt_async()
                 session.clear_messages()
@@ -118,7 +110,7 @@ class LoopPlugin(InteractiveCommandPlugin):
                 # 第2次运行（固定提词"继续完成所有"）
                 chat_ui.write_line(f"  {DIM}  ─ 第 {i+1}/{count} 轮 · 第2次 ─{RESET}")
                 # 浮窗进度：当前轮第 2 次运行
-                _loop_window_call(chat_ui, "set_loop_status", round=i + 1, run=2)
+                set_loop_window_status(chat_ui, round=i + 1, run=2)
                 reset_interrupt_async()
                 result2 = await session.run_round("继续完成所有")
                 if result2.get("interrupted", False):
@@ -133,7 +125,7 @@ class LoopPlugin(InteractiveCommandPlugin):
             # ── /loop 结束：清理 _loop_mode 标志 + 重置状态 ────
             # 先关闭浮窗（无论正常结束还是中断）——关闭后下一帧整帧重建，
             # 被浮窗覆盖的输入区上方区域恢复原样。
-            _loop_window_call(chat_ui, "close_loop_floating_window")
+            close_loop_window(chat_ui)
             loop_state["_loop_mode"] = False
             if chat_ui is not None:
                 chat_ui.bottom_bar.disable_status()

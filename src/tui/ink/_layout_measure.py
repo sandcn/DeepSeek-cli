@@ -827,7 +827,12 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     for c in children:
         if c.props.get("position") == "absolute":
             has_abs = True
-            if c.props.get("dataFloatWindow"):
+            # ★ ``is not None``（不是真值判定）：空串 id 也是合法浮窗标记
+            #   （与 ``_floating._collect_float_fibers`` / ``components._paint``
+            #   同一口径）——修复前空 id 浮窗不置位 _has_float_present，
+            #   render_frame 随后跳过合成层，覆盖到 committed 前缀区的窗口
+            #   显示残缺。
+            if c.props.get("dataFloatWindow") is not None:
                 has_float = True
     if has_abs:
         # ★ 性能（PERF-17）：置位 root absolute 存在标志——layout_tree

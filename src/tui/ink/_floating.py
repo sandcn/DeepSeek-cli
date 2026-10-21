@@ -27,6 +27,19 @@
     ``"input_bottom"`` / ``"doc_bottom"`` / ``"doc_top"``
   - ``floatTop``: 窗口**顶行**锚点（与 ``floatBottom`` 同时给出时优先）
   - ``floatOffsetX`` / ``floatOffsetY``: 额外偏移（列 / 行）
+
+坐标与可视区（2026-10-21 修复）：
+  浮窗坐标是**文档坐标**，而渲染器只能重写屏幕可见行（``renderer`` 把首
+  差异行钳到 ``_screen_offset``）。绝对坐标 / ``doc_*`` 锚点的窗口在长文档
+  里可能落在可视区上方 → 永远看不见。``apply_floating_layout`` 因此接受
+  ``viewport_height``：给出视口高度时把窗口**钳进可视区**（只会向下移动，
+  不会把底部框上方的循环浮窗顶出原位）。未给视口高度（headless 整帧渲染 /
+  公共 ``renderToString``）时不钳制，按文档坐标输出。
+
+空 id / 重复 id：
+  ``dataFloatWindow`` 用 **``is not None`` 判定**（不是真值判定）——空串
+  也是合法标记，保证「标记存在」与「是否定位」口径一致；重复/空 id 的
+  过滤在 ``app.floating.floating_layer_elements`` 完成。
 """
 
 from __future__ import annotations
@@ -73,9 +86,42 @@ def _as_int(value, default: int | None = None) -> int | None:
         return default
 
 
+def _float_cache(root_fiber) -> dict:
+    """浮窗查找缓存（挂在 root fiber 上，跨帧复用；结构损坏时重建）。
+
+    Returns:
+        ``{"input": fiber|缺失, "anchors": {anchor: fiber}}``。
+    """
+    cache = getattr(root_fiber, "_float_anchor_cache", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        root_fiber._float_anchor_cache = cache
+    if not isinstance(cache.get("anchors"), dict):
+        cache["anchors"] = {}
+    return cache
+
+
+def _cached(cache: dict, key: str, check) -> object | None:
+    """取缓存 fiber 并校验（未删除 + ``check(fiber)`` 为真），否则丢弃。"""
+    fiber = cache.get(key)
+    if fiber is None:
+        return None
+    if getattr(fiber, "deleted", False) or not getattr(fiber, "is_host", False):
+        cache.pop(key, None)
+        return None
+    try:
+        if not check(fiber):
+            cache.pop(key, None)
+            return None
+    except Exception:  # pragma: no cover - 属性异常按失效处理
+        cache.pop(key, None)
+        return None
+    return fiber
+
+
 def _resolve_row(value, *, doc_height: int, input_top: int,
                  input_bottom: int, bottom_area_top: int = -1) -> int | None:
-    """解析行锚点 → 文档行号；无法解析返回 None（调用方回退）。
+    """解析行锚点 → 文档行号；无法解析返回 None（调用方回退，记 debug）。
 
     Args:
         value: int 行号或锚点名（``bottom_area`` / ``input_top`` /
@@ -100,7 +146,12 @@ def _resolve_row(value, *, doc_height: int, input_top: int,
         return max(0, doc_height - 1)
     if key in _ANCHOR_DOC_TOP:
         return 0
-    return _as_int(key)
+    parsed = _as_int(key)
+    if parsed is None:
+        # ★ 可诊断性（2026-10-21）：非法锚点（如 ``3.7`` / 拼写错误）此前
+        #   静默回退到调用方默认值，浮窗"莫名出现在文档底部"难以定位。
+        _logger.debug("浮窗行锚点无法解析（回退默认锚点）: %r", value)
+    return parsed
 
 
 def _resolve_x(value, *, width: int, win_w: int) -> int:
@@ -121,7 +172,11 @@ def _resolve_x(value, *, width: int, win_w: int) -> int:
     if key in _X_RIGHT:
         return width - win_w
     parsed = _as_int(key)
-    return parsed if parsed is not None else width - win_w
+    if parsed is None:
+        # ★ 可诊断性（2026-10-21）：非法列锚点（拼写错误等）此前静默右对齐。
+        _logger.debug("浮窗列锚点无法解析（回退右对齐）: %r", value)
+        return width - win_w
+    return parsed
 
 
 def _collect_float_fibers(root_fiber, include_hidden: bool = False) -> list:
@@ -147,7 +202,10 @@ def _collect_float_fibers(root_fiber, include_hidden: bool = False) -> list:
             continue
         if (
             f.is_host
-            and f.props.get(FLOAT_PROP)
+            # ★ is not None（不是真值判定）：空串 id 也是合法浮窗标记——
+            #   修复前 ``dataFloatWindow=""`` 既不被收集也不被隐藏，导致它
+            #   既不定位也不进合成层（停在左上角且被前缀拼接截断）。
+            and f.props.get(FLOAT_PROP) is not None
             and (include_hidden or not getattr(f, "_float_hidden", False))
         ):
             found.append(f)
@@ -167,14 +225,27 @@ def _collect_float_fibers(root_fiber, include_hidden: bool = False) -> list:
 
 
 def _find_anchor_fiber(root_fiber, anchor: str):
-    """查找带 ``dataFloatAnchor == anchor`` 标记的 host fiber（首个）。
+    """查找带 ``dataFloatAnchor == anchor`` 标记的 host fiber（首个，带缓存）。
 
     输入区最上方的分隔线（CPU/MEM 行）由 ``InputArea`` 打上
     ``input_separator`` 标记——浮窗 ``input_top`` 锚点据此精确定位到分隔线
     （输入区容器首行可能是不可见的补全弹窗空行，直接用容器 y 会差 1 行）。
+
+    ★ 缓存（2026-10-21）：锚点 fiber 跨帧稳定（调和器按 key 复用），每帧
+    重新全树 DFS 纯属浪费（浮窗开启时每帧 2 次）。缓存挂在 root fiber 上，
+    命中前校验 ``deleted`` 与标记 props；未命中（含首次 / 标记视图切换后）
+    才 DFS。与 ``_find_committed_chat`` 的缓存契约一致。
     """
     if root_fiber is None:
         return None
+    cache = _float_cache(root_fiber)
+    anchors = cache["anchors"]
+    hit = _cached(
+        anchors, anchor,
+        lambda f: f.props.get("dataFloatAnchor") == anchor,
+    )
+    if hit is not None:
+        return hit
     pushed: set = set()
     stack = [root_fiber]
     pushed.add(id(root_fiber))
@@ -183,6 +254,7 @@ def _find_anchor_fiber(root_fiber, anchor: str):
         if getattr(f, "deleted", False):
             continue
         if f.is_host and f.props.get("dataFloatAnchor") == anchor:
+            anchors[anchor] = f
             return f
         sibs = []
         s = f.sibling
@@ -196,6 +268,23 @@ def _find_anchor_fiber(root_fiber, anchor: str):
             pushed.add(id(f.child))
             stack.append(f.child)
     return None
+
+
+def _find_input_fiber(root_fiber):
+    """输入区 fiber（带缓存，语义同 ``_cursor.find_input_fiber``）。"""
+    if root_fiber is None:
+        return None
+    cache = _float_cache(root_fiber)
+    hit = _cached(
+        cache, "input",
+        lambda f: f.type == "input-area" or bool(f.props.get("dataInputArea")),
+    )
+    if hit is not None:
+        return hit
+    fiber = find_input_fiber(root_fiber)
+    if fiber is not None:
+        cache["input"] = fiber
+    return fiber
 
 
 def _document_height(root_fiber) -> int:
@@ -213,7 +302,7 @@ def _input_row_range(root_fiber) -> tuple[int, int]:
     ``input_top`` 锚点使用；标记缺失（旧组件树/测试桩）时回退输入区容器
     首行。``bottom`` 为输入区容器末行（模式行）。
     """
-    fiber = find_input_fiber(root_fiber)
+    fiber = _find_input_fiber(root_fiber)  # 带缓存（每帧免全树 DFS）
     box = getattr(fiber, "layout_box", None) if fiber is not None else None
     if box is None:
         return -1, -1
@@ -308,12 +397,15 @@ def _anchor_kind(props) -> str:
     return "doc"
 
 
-def apply_floating_layout(root_fiber, width: int) -> int:
+def apply_floating_layout(root_fiber, width: int, viewport_height: int = 0) -> int:
     """布局后修正全部浮窗坐标（就地平移子树）。返回定位的浮窗数量。
 
-    由渲染帧在 ``reconciler.render``（内部完成布局）之后调用；只修改
-    ``layout_box`` 坐标（不重新测量、不改变文档高度）。浮窗行超出文档顶部
-    /底部时由 ``_paint`` 的行越界检查自然裁剪。
+    **幂等**：目标坐标只由 props + 文档几何决定（不读当前 ``layout_box``），
+    重复调用只是再算一次同样的 ``(x, y)`` → 位移为 0。因此所有帧构建入口
+    （``components.render_frame`` 内部统一调用 + 直接调用）都能安全重复执行。
+
+    只修改 ``layout_box`` 坐标（不重新测量、不改变文档高度）。浮窗行超出文档
+    顶部 / 底部时由绘制阶段的行越界检查自然裁剪。
 
     **锚点缺失时的隐藏规则**：
 
@@ -326,6 +418,14 @@ def apply_floating_layout(root_fiber, width: int) -> int:
     隐藏的窗口本帧标记 ``_float_hidden``：整树绘制与合成层都跳过；锚点恢复
     （输入区/底部框重新渲染）后下一帧自动回到原位、原内容原样还原。
 
+    Args:
+        root_fiber: 组件树根（ROOT / host 根均可）。
+        width: 文档宽度（终端列宽）。
+        viewport_height: 终端可见高度（行）。> 0 时把窗口**钳进可视区**——
+            渲染器只能重写可见行（``renderer`` 把首差异行钳到
+            ``_screen_offset``），文档坐标落在可视区上方的窗口否则永不显示。
+            0（默认，headless 整帧渲染）表示不钳制。
+
     异常安全：单个窗口解析/平移失败只记 debug，不影响其它窗口与主界面。
     """
     windows = _collect_float_fibers(root_fiber, include_hidden=True)
@@ -337,6 +437,11 @@ def apply_floating_layout(root_fiber, width: int) -> int:
     has_input = input_top >= 0
     bottom_area_top = _bottom_area_top(root_fiber)
     has_bottom_area = bottom_area_top >= 0
+    # 可视区首行（文档坐标）：窗口不得高于它（否则写不到终端）。
+    viewport_h = max(0, int(viewport_height or 0))
+    view_min_y = 0
+    if viewport_h > 0 and doc_height > viewport_h:
+        view_min_y = doc_height - viewport_h
     if not has_input:
         # 无输入区：文档锚点（doc_bottom/doc_top）/绝对坐标窗口仍可解析
         input_top = max(0, doc_height - 1)
@@ -360,10 +465,21 @@ def apply_floating_layout(root_fiber, width: int) -> int:
                 input_top=input_top, input_bottom=input_bottom,
                 bottom_area_top=bottom_area_top,
             )
-            if rect is None:
+            box = fiber.layout_box
+            if rect is None or box is None:
+                # 无法解析（无布局盒 / 零尺寸）→ 隐藏。修复前直接 continue：
+                # 窗口既不定位也不隐藏，停在上一次（或默认 0,0）位置。
+                fiber._float_hidden = True
                 continue
             x, y = rect
-            box = fiber.layout_box
+            win_h = max(1, int(box.h))
+            # ★ 可视区钳制（2026-10-21）：只向下移动（不把底部锚定的窗口顶出
+            #   原位）；窗口比视口还高时优先保证底部可见（顶行可被裁掉）。
+            max_y = max(0, doc_height - win_h)
+            if y > max_y:
+                y = max_y
+            if view_min_y and y < view_min_y:
+                y = min(view_min_y, max_y)
             dx = int(x - box.x)
             dy = int(y - box.y)
             if dx:

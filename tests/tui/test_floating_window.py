@@ -400,3 +400,226 @@ def test_spec_copy_with_returns_updated_copy():
     assert spec.priority == 1 and spec.x == "left"
     # 未知字段忽略（不污染对象）
     assert updated.copy_with(unknown_field=1).priority == 9
+
+
+# ── 2026-10-21 缺陷修复回归 ───────────────────────────────
+#
+# 覆盖「浮窗定位只在 InkSession 路径生效」「透明背景实际不透明」「行宽不变量
+# 缺口」「空/重复 id」「可视区钳制」「空闲帧复用预测漏浮窗」「两套 /loop
+# 实现重复」等本轮修复项。
+
+
+def _render_twice(model, width: int = 70):
+    """同一 fiber 树连续渲染两帧（第二帧命中 committed 前缀复用 → 走合成层）。"""
+    rec = Reconciler()
+    rec.hook_context.install_headless(width, 40)
+    root = Reconciler.create_root()
+    element = h(App, {"model": model, "width": width})
+    rec.render(root, element, width, 40)
+    apply_floating_layout(root, width)
+    ink_components.render_frame(root, width)  # 首帧：建立 staticlines 前缀缓存
+    rec.render(root, element, width, 40)
+    apply_floating_layout(root, width)
+    frame = ink_components.render_frame(root, width)
+    return _plain_lines(frame), frame
+
+
+def test_render_to_string_applies_float_layout():
+    """公共渲染 API（renderToString）同样执行浮窗定位——不再粘在文档左上角。"""
+    from src.tui.ink import renderToString
+
+    model = _model_with_loop(total=3)
+    out = renderToString(h(App, {"model": model, "width": 70}), {"columns": 70})
+    # renderToString 返回 ANSI 文本——断言前先去样式序列（与 _plain_component 一致）
+    lines = [strip_ansi(line) for line in out.split("\n")]
+    assert "总次数: 3" in out
+    # 文档第 0 行是顶部标题栏：浮窗必须锚定底部框上方，绝不压在上面
+    assert "\u250c" not in lines[0]
+    # 右对齐生效（窗口右上角落在终端最后一列）
+    assert any(line.endswith("\u2510") for line in lines)
+
+
+def test_transparent_window_keeps_underlying_content():
+    """``background=None``（透明）窗口只覆盖实际字符列，空白列透出底层内容。"""
+    model = AppModel()
+    model.committed_lines = [Line.of("A" * 60) for _ in range(6)]
+    model.floating_windows = [FloatingWindowSpec(
+        id="ghost",
+        render=lambda props: h("text", {"children": "WIN"}),
+        width=20,
+        x=0,
+        top=2,
+        bottom=None,
+        border=True,
+        background=None,
+    )]
+    lines, _ = _render_twice(model, 70)
+    assert lines[3][0] == "\u2502"       # 左/右边框仍绘制
+    assert "WIN" in lines[3]
+    # 内容右侧的空白列（含右内边距）不覆盖底层 —— 修复前被清成空格
+    assert lines[3][5:19] == "A" * 14
+    assert lines[3][19] == "\u2502"
+
+    # 对照：默认不透明背景（black）覆盖整段矩形
+    model.floating_windows = [FloatingWindowSpec(
+        id="solid",
+        render=lambda props: h("text", {"children": "WIN"}),
+        width=20,
+        x=0,
+        top=2,
+        bottom=None,
+        border=True,
+    )]
+    lines_solid, _ = _render_twice(model, 70)
+    assert "WIN" in lines_solid[3]
+    assert lines_solid[3][5:19] == " " * 14
+
+
+def test_merge_window_row_truncates_to_terminal_width():
+    """窗口贴右边界 + 宽字符跨越终端边界时，合并结果仍不超过终端宽度。"""
+    from src.tui.ink.components import _merge_window_row
+
+    base = Line.of("A" * 5)
+    merged = _merge_window_row(
+        base, {0: ("\u4e2d", None, None)}, 4, 2, 5, False,
+    )
+    assert merged is not None
+    assert merged.width <= 5
+
+
+def test_floating_box_width_never_exceeds_terminal():
+    """极窄终端（1/2/3 列）下浮窗宽度不放大于终端宽度。"""
+    from src.tui.app.floating import FloatingWindow
+
+    spec = loop_window_spec()
+    for term in (1, 2, 3, 5):
+        el = FloatingWindow({"window": spec, "model": AppModel(), "width": term})
+        assert el.props["width"] <= term
+
+
+def test_empty_and_duplicate_window_ids_are_dropped():
+    """空 id / 重复 id 不生成浮窗节点（重复 key + 左上角残留窗口的来源）。"""
+    model = AppModel()
+    model.floating_windows = [
+        FloatingWindowSpec(id=""),
+        FloatingWindowSpec(id="   "),
+        FloatingWindowSpec(id="dup", width=10, x=0, top=1, bottom=None),
+        FloatingWindowSpec(id="dup", width=12, x=0, top=1, bottom=None),
+    ]
+    els = floating_layer_elements(model, 60)
+    assert [el.props["window"].id for el in els] == ["dup"]
+    assert els[0].props["window"].width == 10  # 保留先出现的规格
+
+
+def test_window_clamped_into_viewport():
+    """绝对坐标浮窗落在可视区上方时被钳进可视区（否则终端永不显示）。"""
+    width = 70
+    model = AppModel()
+    model.committed_lines = [Line.of(f"hist {i}") for i in range(40)]
+    model.floating_windows = [FloatingWindowSpec(
+        id="fixed",
+        render=lambda props: h("text", {"children": "FIXED"}),
+        width=12,
+        x=0,
+        top=0,
+        bottom=None,
+    )]
+    rec = Reconciler()
+    rec.hook_context.install_headless(width, 40)
+    root = Reconciler.create_root()
+    rec.render(root, h(App, {"model": model, "width": width}), width, 40)
+    frame = ink_components.render_frame(root, width, viewport_height=10)
+    lines = _plain_lines(frame)
+    assert "FIXED" in "\n".join(lines)
+    top = next(i for i, line in enumerate(lines) if "\u250c" in line)
+    assert top >= len(lines) - 10, (top, len(lines))
+
+
+def test_invalid_anchor_values_fall_back_quietly():
+    """非法锚点/坐标不再静默落到"看着像 bug"的位置（解析失败返回 None + 记 debug）。"""
+    from src.tui.ink._floating import _resolve_row, _resolve_x
+
+    assert _resolve_row(
+        "bogus", doc_height=10, input_top=6, input_bottom=9,
+    ) is None
+    assert _resolve_row(3.5, doc_height=10, input_top=6, input_bottom=9) is None
+    assert _resolve_x("bogus", width=80, win_w=10) == 70
+
+
+def test_zero_size_window_is_hidden_not_stuck_at_origin():
+    """无法解析出矩形（零尺寸布局盒）的浮窗被隐藏，而不是停在左上角。"""
+    from src.tui.ink._floating import apply_floating_layout as _apply
+
+    model = AppModel()
+    model.floating_windows = [FloatingWindowSpec(
+        id="zero",
+        render=lambda props: h("text", {"children": "Z"}),
+        width=10, x=0, top=1, bottom=None,
+    )]
+    rec = Reconciler()
+    rec.hook_context.install_headless(70, 40)
+    root = Reconciler.create_root()
+    rec.render(root, h(App, {"model": model, "width": 70}), 70, 40)
+    _apply(root, 70)
+    # 人为把窗口盒置零（模拟布局盒缺失/零尺寸），再定位一次
+    from src.tui.ink._floating import _collect_float_fibers
+
+    fiber = _collect_float_fibers(root, include_hidden=True)[0]
+    fiber.layout_box.w = 0
+    fiber.layout_box.h = 0
+    _apply(root, 70)
+    assert fiber._float_hidden is True
+    assert "Z" not in "\n".join(_plain_lines(ink_components.render_frame(root, 70)))
+
+
+def test_idle_frame_predicate_disabled_by_floating_window():
+    """有浮窗时禁止空闲帧复用（避免浮窗内容冻结在旧帧）。"""
+    from src.tui._assembly_steps import _make_idle_frame_predicate
+
+    model = AppModel()
+    assert _make_idle_frame_predicate(model, None)() is True
+    model.floating_windows = [loop_window_spec()]
+    assert _make_idle_frame_predicate(model, None)() is False
+
+
+def test_loop_window_helpers_share_one_entry_point():
+    """两套 /loop 实现共用的浮窗控制入口（静默降级 + 三参兼容）。"""
+    from src.app_loop._float_window import (
+        close_loop_window,
+        open_loop_window,
+        set_loop_window_status,
+    )
+
+    class _Stub:
+        def __init__(self):
+            self.calls = []
+
+        def open_loop_floating_window(self, total, prompt):
+            self.calls.append(("open", total, prompt))
+
+        def set_loop_status(self, **fields):
+            self.calls.append(("status", dict(fields)))
+
+        def close_loop_floating_window(self):
+            self.calls.append(("close",))
+
+    stub = _Stub()
+    open_loop_window(stub, 3, "继续完成所有")
+    set_loop_window_status(stub, round=1, run=2)
+    close_loop_window(stub)
+    assert stub.calls == [
+        ("open", 3, "继续完成所有"),
+        ("status", {"round": 1, "run": 2}),
+        ("close",),
+    ]
+
+    # 无方法 / 方法异常 / 旧两参签名收到 runs_per_round 时静默降级（绝不抛）
+    open_loop_window(None, 1, "x")
+
+    class _Broken:
+        def open_loop_floating_window(self, *args, **kwargs):
+            raise RuntimeError("boom")
+
+    open_loop_window(_Broken(), 1, "x")
+    open_loop_window(stub, 1, "x", runs_per_round=3)  # _Stub 只有两参 → 忽略
+    assert len(stub.calls) == 3

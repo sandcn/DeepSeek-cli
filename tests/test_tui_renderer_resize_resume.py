@@ -219,7 +219,10 @@ def _make_session(width: int, height: int, monkeypatch, idle: bool = True):
         mixin_mod._hooks, "_notify_window_size", lambda ctx=None: None,
     )
     monkeypatch.setattr(
-        components_mod, "render_frame", lambda root, w: new_frame,
+        # render_frame 新增可选关键字 viewport_height（浮窗可视区钳制用）——
+        # 桩函数按 (**kwargs) 接收，保持「返回固定新帧」的测试语义。
+        components_mod, "render_frame",
+        lambda root, w, **kwargs: new_frame,
     )
     monkeypatch.setattr(
         components_mod, "_find_committed_chat", lambda root: None,
