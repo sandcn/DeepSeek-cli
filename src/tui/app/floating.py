@@ -36,10 +36,15 @@
 from __future__ import annotations
 
 import logging
+import math
+import time
 from typing import Any, Callable
 
-from src.tui._width import truncate_width
-from src.tui.ink import BOX, FRAGMENT, TEXT, h, use_input
+from src.tui._format import format_duration
+from src.tui._width import truncate_width, wcswidth_simple
+from src.tui.core.style import Style
+from src.tui.ink import BOX, FRAGMENT, TEXT, StyledRun, h, use_input
+from src.tui.ink.helpers import truncate_runs, truncate_runs_ellipsis
 from src.tui.ink.hooks import HookStateError
 
 _logger = logging.getLogger(__name__)
@@ -47,11 +52,23 @@ _logger = logging.getLogger(__name__)
 #: 默认浮窗宽度（列，含边框）。内容自适应（spec.width=None）时不设置。
 DEFAULT_FLOAT_WIDTH = 30
 
-#: 循环浮窗固定宽度（列）——容纳「总次数 · 第 N/M 轮」「当前运行次数」。
-LOOP_FLOAT_WIDTH = 30
+#: 循环浮窗固定宽度（列）——容纳「⟳ /loop … 第 N/M 轮」标题行、
+#: 进度条、「⏱ 本轮 mm:ss … 第 A/B 次」计时行与用户提词。
+LOOP_FLOAT_WIDTH = 34
 
 #: 浮窗默认背景色（不透明覆盖；None = 透明，底层内容会从空格处透出）。
 DEFAULT_FLOAT_BACKGROUND = "black"
+
+#: ``/loop`` 浮窗配色（与状态栏强调色同族：亮青标题 / 绿色进度 / 浅蓝计时）。
+_S_LOOP_ACCENT = Style(fg=45, bold=True)
+_S_LOOP_TEXT = Style(fg=252)
+_S_LOOP_MUTED = Style(fg=242)
+_S_LOOP_BAR_FILL = Style(fg=42)
+_S_LOOP_BAR_EMPTY = Style(fg=238)
+_S_LOOP_TIME = Style(fg=110, bold=True)
+_S_LOOP_PROMPT = Style(fg=250, italic=True)
+#: 循环浮窗边框色（亮青，与标题强调色一致；``borderStyle="round"`` 圆角）。
+_S_LOOP_BORDER = 45
 
 #: 默认底行锚点（2026-10-21 修复）：底部框（状态栏 + 输入区 / 模态底部视图）
 #: **上方一行**——窗口向上展开，底行绝不落在底部框内。修复前默认 ``input_top``
@@ -82,6 +99,10 @@ class FloatingWindowSpec:
             = 窗口底边位于锚点行上方一行）。
         border: 是否绘制单线边框。
         border_color: 边框颜色（颜色名或 256 色号；None = 默认深青）。
+        border_style: 边框变体（``single``/``double``/``round``/``bold``/
+            ``classic``/``dashed`` 或自定义字符 dict；None = ``single``）——
+            透传给 BOX 的 ``borderStyle``（2026-10-21 美化 ``/loop`` 浮窗时
+            新增，圆角边框）。
         background: 背景色（默认黑色，保证覆盖不透明）。**None = 透明**：
             只有窗口实际绘制了字符的列覆盖底层内容，空白列透出下方原内容
             （2026-10-21 修复：此前帧末合成层会清掉整个窗口矩形，透明实际
@@ -121,8 +142,8 @@ class FloatingWindowSpec:
 
     __slots__ = (
         "id", "render", "priority", "width", "x", "bottom", "top",
-        "offset_x", "offset_y", "border", "border_color", "background",
-        "padding_x", "padding_y", "title",
+        "offset_x", "offset_y", "border", "border_color", "border_style",
+        "background", "padding_x", "padding_y", "title",
         "max_height", "scroll_top", "allow_cover_bottom", "over_fullscreen",
         "close_on_escape", "on_close", "idle_static", "geometry",
     )
@@ -141,6 +162,7 @@ class FloatingWindowSpec:
         offset_y: int = 0,
         border: bool = True,
         border_color: Any = None,
+        border_style: Any = None,
         background: Any = DEFAULT_FLOAT_BACKGROUND,
         padding_x: int = 1,
         padding_y: int = 0,
@@ -165,6 +187,7 @@ class FloatingWindowSpec:
         self.offset_y = offset_y
         self.border = bool(border)
         self.border_color = border_color
+        self.border_style = border_style
         self.background = background
         self.padding_x = max(0, int(padding_x))
         self.padding_y = max(0, int(padding_y))
@@ -352,6 +375,9 @@ def FloatingWindow(props: dict) -> object:
     border_color = getattr(win, "border_color", None)
     if border_color is not None:
         box_props["borderColor"] = border_color
+    border_style = getattr(win, "border_style", None)
+    if border_style is not None:
+        box_props["borderStyle"] = border_style
     return h(BOX, box_props, children)
 
 
@@ -398,17 +424,59 @@ def floating_layer_elements(model, width: int) -> list:
     return elements
 
 
+def _safe_float(value, default: float = 0.0) -> float:
+    """float 归一化（异常值 / 非有限值回退默认）。"""
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return result if math.isfinite(result) else default
+
+
+def _runs_width(runs) -> int:
+    """StyledRun 序列的显示宽度（CJK/emoji 安全）。"""
+    return sum(wcswidth_simple(run.text) for run in runs)
+
+
+def _right_aligned(left_runs: list, right_runs: list, width: int) -> list:
+    """左段 + 空格填充 + 右段（单行两端对齐；空间不足时丢弃右段）。
+
+    用于循环浮窗的标题行 / 计时行——右侧信息（轮次、第几次运行）靠右，
+    视觉上像一个小面板。返回的 runs 未截断，由调用方统一按可用宽度裁剪。
+    """
+    left_w = _runs_width(left_runs)
+    right_w = _runs_width(right_runs)
+    gap = width - left_w - right_w
+    if gap < 1:
+        return list(left_runs)
+    return list(left_runs) + [StyledRun(" " * gap)] + list(right_runs)
+
+
+def _loop_elapsed_text(started_at, now: float) -> str:
+    """本轮已运行时长文本（``--`` = 尚未开始）。"""
+    started = _safe_float(started_at, 0.0)
+    if started <= 0.0:
+        return "--"
+    return format_duration(max(0.0, now - started))
+
+
 def LoopFloatingWindow(props: dict) -> object:
-    """``/loop`` 循环浮窗内容（总次数 / 提词 / 当前运行次数）。
+    """``/loop`` 循环浮窗内容（美化版：标题 + 进度条 + 动态计时 + 提词）。
 
     数据源：``model.loop_status``（``LoopStatusState``，由 /loop 每轮/每次
-    运行前更新）。三行内容：
+    运行前经 InkBridge 更新）。四行内容：
 
-      1. ``总次数: N · 第 R/N 轮``
-      2. 用户提词（超宽截断）
-      3. ``当前运行次数: R/2``（每轮第 1 或第 2 次运行）
+      1. ``⟳ /loop … 第 R/N 轮``（两端对齐标题行）
+      2. ``████████░░░░░░░  40%``（轮次进度：当前轮计入进行中）
+      3. ``⏱ 本轮 1:23 … 第 1/2 次``（本轮已运行时间**每帧动态刷新**）
+      4. ``❯ 用户提词``（超宽省略号截断，暗色斜体）
 
-    ``active`` 为 False 时返回空列表（窗口无内容，正常情况下窗口已关闭）。
+    动态刷新机制：本组件每帧从 ``model`` 重建（``loop_window_spec`` 不声明
+    ``idle_static`` → 空闲帧复用被关闭），第 3 行用
+    ``time.monotonic() - round_started_at`` 实时计算，因此浮窗打开期间计时
+    持续走秒（与状态栏 elapsed 同一渲染期读时钟的模式）。
+
+    ``active`` 为 False 时返回空 TEXT（窗口无内容，正常情况下窗口已关闭）。
     """
     model = props.get("model")
     width = max(1, _safe_int(props.get("width"), 1))
@@ -421,40 +489,77 @@ def LoopFloatingWindow(props: dict) -> object:
     round_no = max(0, _safe_int(getattr(st, "round", 0), 0))
     run_no = max(0, _safe_int(getattr(st, "run", 0), 0))
     per_round = max(1, _safe_int(getattr(st, "runs_per_round", 2), 2))
+    now = time.monotonic()
 
-    first = f"总次数: {total}"
-    if round_no:
-        shown_round = min(round_no, total) if total else round_no
-        first += f" · 第 {shown_round}/{total or '?'} 轮"
-    prompt = truncate_width(str(getattr(st, "prompt", "") or ""), width)
-    current = f"当前运行次数: {run_no or 1}/{per_round}"
+    # ── 1. 标题行：⟳ /loop（左）… 第 R/N 轮（右） ──
+    if round_no and total:
+        shown_round = min(round_no, total)
+        round_label = f"第 {shown_round}/{total} 轮"
+    elif round_no:
+        round_label = f"第 {round_no} 轮"
+    else:
+        round_label = "准备中"
+    header_runs = _right_aligned(
+        [StyledRun("⟳ /loop", _S_LOOP_ACCENT)],
+        [StyledRun(round_label, _S_LOOP_TEXT if round_no else _S_LOOP_MUTED)],
+        width,
+    )
+
+    # ── 2. 进度条：轮次进度（当前轮计入进行中，最后一轮达到 100%） ──
+    percent = (min(round_no, total) / total) if total and round_no else 0.0
+    # 进度条占满整行（右侧留 5 列给「 100%」）——窄终端下至少 4 格。
+    bar_width = max(4, min(40, width - 5))
+    filled = max(0, min(int(round(percent * bar_width)), bar_width))
+    bar_runs: list = []
+    if filled:
+        bar_runs.append(StyledRun("█" * filled, _S_LOOP_BAR_FILL))
+    if bar_width > filled:
+        bar_runs.append(StyledRun("░" * (bar_width - filled), _S_LOOP_BAR_EMPTY))
+    bar_runs.append(StyledRun(f" {int(round(percent * 100)):3d}%", _S_LOOP_ACCENT))
+
+    # ── 3. 计时行：⏱ 本轮 <已运行时长>（每帧刷新）… 第 A/B 次 ──
+    elapsed_text = _loop_elapsed_text(getattr(st, "round_started_at", 0.0), now)
+    run_label = f"第 {run_no}/{per_round} 次" if round_no else "等待开始"
+    time_runs = _right_aligned(
+        [
+            StyledRun("⏱ ", _S_LOOP_ACCENT),
+            StyledRun("本轮 ", _S_LOOP_MUTED),
+            StyledRun(elapsed_text, _S_LOOP_TIME),
+        ],
+        [StyledRun(run_label, _S_LOOP_MUTED)],
+        width,
+    )
+
+    # ── 4. 用户提词（单行，超宽省略号） ──
+    prompt_runs = [
+        StyledRun("❯ ", _S_LOOP_ACCENT),
+        StyledRun(str(getattr(st, "prompt", "") or ""), _S_LOOP_PROMPT),
+    ]
+
+    def _line(key: str, runs: list, *, ellipsis: bool = False):
+        """单行 TEXT（显式截断到可用宽度，防换行破坏浮窗高度）。"""
+        trimmed = (
+            truncate_runs_ellipsis(runs, width) if ellipsis
+            else truncate_runs(runs, width)
+        )
+        return h(TEXT, {"key": key, "height": 1, "styled": trimmed})
 
     return h(FRAGMENT, {"key": "loop-body"}, [
-        h(TEXT, {
-            "key": "loop-total",
-            "children": truncate_width(first, width),
-            "bold": True,
-        }),
-        h(TEXT, {
-            "key": "loop-prompt",
-            "children": prompt,
-            "dim": True,
-        }),
-        h(TEXT, {
-            "key": "loop-run",
-            "children": truncate_width(current, width),
-        }),
+        _line("loop-header", header_runs),
+        _line("loop-progress", bar_runs),
+        _line("loop-time", time_runs),
+        _line("loop-prompt", prompt_runs, ellipsis=True),
     ])
 
 
 def loop_window_spec() -> FloatingWindowSpec:
-    """``/loop`` 循环浮窗规格：底部框（状态栏 + 输入区）上方、向上展开、带边框。
+    """``/loop`` 循环浮窗规格：底部框（状态栏 + 输入区）上方、向上展开、圆角边框。
 
     ``bottom="bottom_area"`` 锚定整个底部框**上方一行**（``_resolve_row`` 对
     该锚点返回 ``bottom_area_top - 1``）——**窗口所有行都不覆盖底部框**
     （2026-10-21 用户需求：循环浮窗不能遮盖底部框）。水平右对齐终端右侧。
-    内容读 ``model.loop_status``（每帧可变）→ 不声明 ``idle_static``：有浮窗
-    时保守每帧重建，内容不会冻结在旧值。
+    内容读 ``model.loop_status``（每帧可变，含动态计时）→ 不声明
+    ``idle_static``：有浮窗时保守每帧重建，内容不会冻结在旧值。
     """
     return FloatingWindowSpec(
         id="loop",
@@ -464,6 +569,8 @@ def loop_window_spec() -> FloatingWindowSpec:
         x="right",
         bottom="bottom_area",
         border=True,
+        border_color=_S_LOOP_BORDER,
+        border_style="round",
         background=DEFAULT_FLOAT_BACKGROUND,
     )
 

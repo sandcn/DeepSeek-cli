@@ -664,7 +664,8 @@ class LoopStatusState:
 
     ``/loop`` 在每轮 / 每次运行前经 InkBridge 更新本状态，循环浮窗
     （``app/floating.py`` 的 ``LoopFloatingWindow``）读取并在输入区上方的
-    浮动窗口中显示：总次数、提词、当前运行次数（每轮第 1 或 2 次）。
+    浮动窗口中显示：总次数、提词、当前运行次数（每轮第 1 或 2 次），以及
+    **本轮已运行时间**（2026-10-21 用户需求：浮窗内动态刷新）。
 
     Attributes:
         active: 循环是否进行中（False 时浮窗内容为空/浮窗已关闭）。
@@ -674,6 +675,12 @@ class LoopStatusState:
         runs_per_round: 每轮运行次数（``/loop`` 固定为 2：用户提词 +
             「继续完成所有」）。
         prompt: 用户提词（浮窗中截断显示）。
+        round_started_at: 本轮开始的单调时钟时间戳（``time.monotonic()``；
+            0 = 尚未开始）。浮窗每帧用 ``now - round_started_at`` 计算「本轮
+            已运行时间」——浮窗内容每帧重建，因此计时**动态刷新**。
+        run_started_at: 当前这一次运行开始的单调时钟时间戳（0 = 尚未开始）。
+            保留给「本次运行时间」展示/调试；不能拿它算本轮耗时（第 2 次
+            运行开始时本轮已过去一段时间）。
     """
 
     active: bool = False
@@ -682,6 +689,8 @@ class LoopStatusState:
     run: int = 0
     runs_per_round: int = 2
     prompt: str = ""
+    round_started_at: float = 0.0
+    run_started_at: float = 0.0
 
 
 @dataclass

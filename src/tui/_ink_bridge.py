@@ -344,6 +344,9 @@ class InkBridge(_BottomBarCompatMixin):
 
     _LOOP_STATUS_FIELDS = (
         "active", "total", "round", "run", "runs_per_round", "prompt",
+        # 计时锚点（2026-10-21 用户需求）：浮窗按「当前时间 - 本轮开始时间」
+        # 动态显示本轮已运行时长，随 `/loop` 每轮/每次运行更新。
+        "round_started_at", "run_started_at",
     )
 
     def _loop_status(self):

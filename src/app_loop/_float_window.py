@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 _logger = logging.getLogger(__name__)
 
@@ -50,8 +51,21 @@ def open_loop_window(chat_ui, total, prompt, runs_per_round: int = 2) -> None:
 
 
 def set_loop_window_status(chat_ui, **fields) -> None:
-    """更新 ``/loop`` 浮窗进度（total/round/run/runs_per_round/prompt/active）。"""
-    _call(chat_ui, "set_loop_status", **fields)
+    """更新 ``/loop`` 浮窗进度（total/round/run/runs_per_round/prompt/active）。
+
+    ★ 计时锚点（2026-10-21 用户需求：单轮已运行时间动态刷新）：
+    传入 ``round`` 时自动补 ``round_started_at``、传入 ``run`` 时自动补
+    ``run_started_at``（调用方显式给出时不覆盖）——两处 /loop 实现
+    （插件版 + 旧版主循环）无需各自记时间戳，计时真源唯一在这里。
+    浮窗每帧按 ``time.monotonic() - round_started_at`` 计算并刷新显示。
+    """
+    payload = dict(fields)
+    now = time.monotonic()
+    if "round" in payload:
+        payload.setdefault("round_started_at", now)
+    if "run" in payload:
+        payload.setdefault("run_started_at", now)
+    _call(chat_ui, "set_loop_status", **payload)
 
 
 def close_loop_window(chat_ui) -> None:
