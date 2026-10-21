@@ -71,6 +71,7 @@ _ALIASES = {
     "_context_version": "context_version",
     "_stdin_accessor": "stdin_accessor",
     "_stdout_accessor": "stdout_accessor",
+    "_stdout_write_fn": "stdout_write_fn",
     "_stderr_accessor": "stderr_accessor",
     "_raw_mode_supported": "raw_mode_supported",
     "_raw_mode_callback": "raw_mode_callback",
@@ -104,6 +105,7 @@ if TYPE_CHECKING:  # pragma: no cover - 仅静态检查（运行期经 _HooksMod
     _context_version: Any
     _stdin_accessor: Any
     _stdout_accessor: Any
+    _stdout_write_fn: Any
     _stderr_accessor: Any
     _raw_mode_supported: Any
     _raw_mode_callback: Any

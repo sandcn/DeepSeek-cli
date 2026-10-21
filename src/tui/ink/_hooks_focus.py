@@ -3,8 +3,8 @@
 模块边界（2026-08-05 架构优化）：从 ``ink/hooks.py`` 拆分——焦点管理
 （可聚焦 id 收集 / 全局激活 / 编程切换）独立成模块，供 reconciler
 （``_reset_focus_ids``/``_focus_previous``/``_focus_next``）、组件库
-（useFocus/useFocusManager）、Tab/Shift+Tab 路由共享。依赖 ``_hooks_core``
-（``_current``/``_schedule``/``HookStateError``）。
+（``useFocus/useFocusManager``）、Tab/Shift+Tab 路由共享。依赖 ``_hooks_core``
+（``_current``/``_schedule``）。
 
 依赖方向：本模块 → _hooks_core / fiber；不反向依赖。
 """
@@ -15,7 +15,6 @@ from .fiber import Fiber, InputHook
 from ._hooks_core import (
     _current,
     _schedule,
-    HookStateError,
 )
 # ★ 会话级状态真源在 ``_hook_context.HookContext``（每渲染会话一个实例）；
 #   本模块经 ``_hooks_module._xxx`` 访问，门面按「当前上下文」路由。
@@ -141,15 +140,13 @@ def _focus_disable() -> None:
 def useFocus(options: "bool | dict | None" = None) -> dict:
     """React useFocus 等价物：注册当前 fiber 的 InputHook 焦点标志。
 
-    焦点仲裁：reconciler 构建 input router 时优先仅取 ``focused`` 且
-    ``active`` 的 hook；focused 集合为空时回退全部 active hook
-    （无焦点仲裁时行为不变，零回归）。与 ``use_input`` 配套使用
-    （**先 ``use_input`` 后 ``useFocus``**——P2-7 契约）。
-
-    P2-7：useFocus 经 ``reversed(fiber.hooks)`` 取最近的 InputHook；若用户
-    先 useFocus 后 use_input（反序），找不到 InputHook——显式 raise
-    HookStateError（编程错误），而非静默 no-op（静默会导致焦点标志丢失或
-    命中更早的 hook，行为不可预期）。
+    焦点仲裁（三态）：reconciler 构建 input router 时，若组件树存在焦点
+    管理（``useFocus`` 注册了可聚焦 id 且未 disableFocus），只把输入路由给
+    ``focused=True`` 的 InputHook；``None``（未声明 useFocus）与
+    ``False``（未聚焦）都不接收。不存在焦点管理时，所有 active 的
+    InputHook 保持旧行为。``use_input`` 与 ``useFocus`` 的调用顺序不再
+    受限；组件只调用 ``useFocus`` 也可以注册焦点 id（供
+    ``useFocusManager`` 切换）。
 
     方向4（完善 react ink）：参数兼容 react-ink 对象风格
     ``useFocus({isActive, autoFocus})``——``isActive`` 控制是否参与路由
@@ -173,10 +170,6 @@ def useFocus(options: "bool | dict | None" = None) -> dict:
 
     Returns:
         ``{"isFocused": bool}`` —— 当前 hook 是否参与焦点优先路由。
-
-    Raises:
-        HookStateError: 当前 fiber 无任何已注册 InputHook（必须先调用
-            ``use_input``）。
     """
     fiber = _current()
     if isinstance(options, dict):
@@ -223,16 +216,11 @@ def useFocus(options: "bool | dict | None" = None) -> dict:
     is_focused = bool(
         is_active and _hooks_module._focus_enabled and fid == _hooks_module._focus_active
     )
-    # ★ P3（review）：标记**全部** InputHook——修复前仅标记
-    #   ``reversed(fiber.hooks)`` 命中的最近一个 InputHook，其余 InputHook 的
-    #   ``focused`` 保持默认 True（焦点仲裁对该组件失效：多个 input hook 的
-    #   组件中非最近 hook 仍被当作聚焦）。先 ``use_input`` 后 ``useFocus``
-    #   契约不变（无 InputHook 抛 HookStateError）。
+    # ★ 修复（P1）：不再强制 use_input 必须先于 useFocus——无 InputHook 的
+    #   组件调用 useFocus 只注册焦点 id（供 useFocusManager 切换），不报错；
+    #   有 InputHook 时标记其 focused 三态。React Ink 生态的 useFocus 也不
+    #   要求先调用 use_input。
     input_hooks = [h for h in fiber.hooks if isinstance(h, InputHook)]
-    if not input_hooks:
-        raise HookStateError(
-            "useFocus 必须在 use_input 之后调用（当前 fiber 未注册 InputHook）"
-        )
     for hook in input_hooks:
         if not is_active:
             hook.is_active = False

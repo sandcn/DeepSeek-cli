@@ -61,6 +61,11 @@ _logger = logging.getLogger(__name__)
 #: ioctl 成本可忽略，渲染帧本就 60Hz）。
 _SIZE_POLL_INTERVAL = 0.2
 
+#: layout effect 触发的渲染前重跑上限（React 语义：layout effect 中的
+#: set_state 应在绘制前 flush；本框架通过重跑 reconcile 实现，最多 N 轮，
+#: 防止被动 effect 每帧 set_state 造成死循环）。
+_MAX_PRE_PAINT_PASSES = 4
+
 
 def _safe_int(value, default: int = 0) -> int:
     """安全整数转换（系统监控值防御）。
@@ -218,15 +223,21 @@ class _SessionFrameMixin:
             _logger.debug("终端尺寸轮询异常", exc_info=True)
 
     def _idle_static_now(self) -> bool:
-        """求值宿主「静态状态」预测（未注入/异常 → False＝本帧不静态）。
+        """求值宿主「静态状态」预测（未注入/异常 → 仍按静态处理）。
 
         与 ``_should_reuse_idle_frame`` 拆开：帧执行器每拍都需要本拍的预测
         结果来维护 ``_last_frame_idle_static``（见该属性说明），而复用判定
         还需要额外的前置条件。预测异常按「非静态」处理（宁可多渲染一帧）。
+
+        ★ P1 修复（无谓 60Hz 全量重建）：未注入预测函数时，默认按「静态」
+        处理——没有命令、没有脏标记、没有动画时，React 语义下组件不会自行
+        变化；时间驱动内容应使用 ``useAnimation``/``useSyncExternalStore``
+        或宿主注入预测函数。此前未注入即恒不复用，render() 独立会话和未接线
+        的宿主会每 16.7ms 全树重建一次。
         """
         predicate = getattr(self, "_idle_frame_predicate", None)
         if predicate is None:
-            return False
+            return True
         try:
             return bool(predicate())
         except Exception:
@@ -237,9 +248,8 @@ class _SessionFrameMixin:
         """本拍是否复用上一帧（空闲帧复用——60Hz 节拍不变，省空转重建开销）。
 
         全部条件满足才复用（任一不满足 → 正常重建，零行为变化）：
-          1. 宿主注入空闲预测函数（``set_idle_frame_predicate``）且返回 True
-             ——组件树内容在无输入/无命令时是否保持静态由宿主判定（框架无法
-             推断宿主的时间驱动动画）；
+          1. 宿主空闲预测（``set_idle_frame_predicate``）返回 True；未注入时
+             默认静态（React 语义：无 state/命令/动画不自行变化）；
           2. 已有上一帧（``_last_frame``）且该帧**也是在静态态下构建的**
              （``_last_frame_idle_static``）；
           3. 无待处理命令（``_cmd_queue`` 为空——命令应用会改模型且置脏）；
@@ -262,8 +272,6 @@ class _SessionFrameMixin:
                 None 时内部调用 ``_idle_static_now``（测试/独立调用兼容）。
         """
         if getattr(self, "_last_frame", None) is None:
-            return False
-        if getattr(self, "_idle_frame_predicate", None) is None:
             return False
         if static_now is None:
             static_now = self._idle_static_now()
@@ -430,11 +438,36 @@ class _SessionFrameMixin:
         #   入本拍结果——离开活跃态（视图关闭）时预测刚为 True 而标记仍是
         #   False → 本拍强制重建，重绘当前状态的界面。
         static_now = self._idle_static_now()
+        frame: Any = None
         if self._should_reuse_idle_frame(static_now) and self._last_frame is not None:
             frame = self._last_frame
         else:
-            element = self._build_tree(self._model, width)
-            self._reconciler.render(self._root_fiber, element, width, self._width_cache.get_height())
+            # ★ P1 修复（layout effect 更新时序）：effects 在 reconciler.render
+            #   内提交，其中的 set_state 只排队到下一帧；但绘制发生在
+            #   reconciler.render 之后（render_frame），因此 effect 更新不会
+            #   反映到本帧（useMeasure/useBoxMetrics 首帧 0x0、状态切换闪烁）。
+            #   React 语义要求 layout effect 的更新在绘制前 flush。这里在
+            #   「本帧还有待渲染变更」时有界重跑 reconcile（最多
+            #   _MAX_PRE_PAINT_PASSES 轮），再做最终绘制；cap 防止被动 effect
+            #   每轮 set_state 造成死循环。
+            frame = None
+            for _pass in range(_MAX_PRE_PAINT_PASSES):
+                element = self._build_tree(self._model, width)
+                self._reconciler.render(
+                    self._root_fiber, element, width,
+                    self._width_cache.get_height(),
+                )
+                if not self._dirty:
+                    break
+                self._dirty = False
+            else:
+                # 达到上限仍有更新：保留脏标记，下一拍继续应用，避免状态
+                # 更新被静默丢弃。
+                self._dirty = True
+                _logger.warning(
+                    "layout effect 更新超过 %d 轮，剩余更新延后到下一帧",
+                    _MAX_PRE_PAINT_PASSES,
+                )
             # ★ 浮窗定位已收敛到 ``render_frame`` 内部（2026-10-21 统一入口）：
             #   此前只在本分支调用 ``apply_floating_layout``——``renderToString``
             #   / ``render()`` 等其它帧构建路径渲染 App 树时浮窗不定位（粘在

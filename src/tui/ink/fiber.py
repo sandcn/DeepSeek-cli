@@ -110,7 +110,10 @@ class InputHook:
             时，本 hook 收到的可打印输入（kind=="char"）以 ``mask * len(input)``
             替代后再传给 handler（与 ink-text-input 的
             ``mask.repeat(value.length)`` 显示掩码公式一致）。None=不掩码。
-        focused: 焦点仲裁标志（useFocus 设置；True=参与焦点优先路由）。
+        focused: 焦点仲裁标志（useFocus 设置）——三态：
+            None=未声明（未调用 useFocus；仅当组件树没有任何焦点管理时
+            参与路由）、True=已聚焦、False=未聚焦。旧实现默认 True 导致
+            “未调用 useFocus 的组件”永远被视为聚焦，焦点组件反而拿不到输入。
         seq: 稳定递增序号（方向1 L3）——hook 实例唯一标识，router 签名以此
             替代 ``id(hook)``（id 复用风险：hook 被 GC 后新对象可能复用旧 id，
             导致 router 签名误判为未变而复用过期 router）。单调递增，无复用。
@@ -119,7 +122,7 @@ class InputHook:
     handler: Callable[[Any], bool] | None = None
     is_active: bool = True
     mask: str | None = None
-    focused: bool = True
+    focused: bool | None = None
     seq: int = field(default_factory=lambda: next(_HOOK_SEQ))
 
 

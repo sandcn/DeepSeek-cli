@@ -707,11 +707,22 @@ class Reconciler:
             #   是编程错误，不中断渲染保持既有健壮性）。
             if fiber.hook_index < len(fiber.hooks):
                 _logger.warning(
-                    "组件 %s 本帧 hook 数减少（%d < %d），违反 Rules of Hooks",
+                    "组件 %s 本帧 hook 数减少（%d < %d），违反 Rules of Hooks；"
+                    "丢弃残留 hook（含 effect 清理）",
                     getattr(fiber.type, "__name__", fiber.type),
                     fiber.hook_index,
                     len(fiber.hooks),
                 )
+                # ★ P1 修复：旧实现只告警，残留 EffectHook 仍会被
+                #   ``_commit_live`` 遍历执行（条件性 useEffect 在分支关闭后
+                #   继续运行）。这里截断多余 hook，并把需要清理的 effect /
+                #   store 订阅加入 pending_destroys（随后统一销毁）。
+                for stale in fiber.hooks[fiber.hook_index:]:
+                    if isinstance(stale, EffectHook) and stale.destroy is not None:
+                        self._pending_destroys.append((fiber, stale))
+                    elif isinstance(stale, SyncStoreHook) and stale.cleanup is not None:
+                        self._pending_destroys.append((fiber, stale))
+                del fiber.hooks[fiber.hook_index:]
             # ★ BUG-36（review 方向）：本帧组件已渲染（使用最新 context 值，
             #   含不消费 context 的 memo 组件）→ 清除 ``_context_dirty`` 标记。
             #   修复前标记仅由 ``use_context`` 消费时清除——位于 provider 子树内
@@ -997,13 +1008,29 @@ class Reconciler:
         fullscreen_hooks = [h for h in hooks_list if isinstance(h, FullscreenHook)]
         input_hooks = [h for h in hooks_list if isinstance(h, InputHook)]
         mouse_hooks = list(mouse_hooks or [])
-        if not input_hooks and not paste_hooks and not fullscreen_hooks and not mouse_hooks:
+        has_focus_ids = bool(getattr(_hooks, "_focus_ids", None)) and bool(
+            getattr(_hooks, "_focus_enabled", True)
+        )
+        if (
+            not input_hooks and not paste_hooks and not fullscreen_hooks
+            and not mouse_hooks and not has_focus_ids
+        ):
             self._input_router_cache = None
             return None
-        # ★ 焦点仲裁：focused 集合非空 → 仅保留 focused；为空 → 回退全部 active
-        focused_hooks = [h for h in input_hooks if getattr(h, "focused", True)]
-        if focused_hooks:
-            input_hooks = focused_hooks
+        # ★ 焦点仲裁（三态，P1 修复）：focused=True 参与；False 不参与；
+        #   None=未声明 useFocus。只有组件树**存在焦点管理**（useFocus 注册
+        #   了 id 且未 disableFocus）时，才按焦点过滤——否则所有 use_input
+        #   保持旧行为（未声明焦点不改变路由）。修复前默认 True 导致
+        #   “未调用 useFocus 的组件”永远被视为聚焦，聚焦组件反而拿不到输入；
+        #   且全部 focused=False 时回退全部 hook，未聚焦组件仍收到输入。
+        if has_focus_ids:
+            input_hooks = [
+                h for h in input_hooks if getattr(h, "focused", None) is True
+            ]
+        else:
+            input_hooks = [
+                h for h in input_hooks if getattr(h, "focused", None) is not False
+            ]
         # ★ P3-18 说明（review 方向）：签名含 ``id(hook.handler)``（对象身份
         #   依赖）——id 在 handler 被 GC 后可能复用 → 签名误判未变 → 复用过期
         #   router 闭包（handler 已失效）。兜底机制：缓存三元组
@@ -1031,7 +1058,6 @@ class Reconciler:
             #   须触发 router 重建（否则新鼠标 handler 不生效/旧引用残留）。
             (hook.seq, hook.is_active, id(hook.handler)) for hook in mouse_hooks
         )
-        has_focus_ids = bool(getattr(_hooks, "_focus_ids", None)) and bool(getattr(_hooks, "_focus_enabled", True))
         if self._input_router_cache is not None:
             cached_signature, cached_router, cached_hooks, cached_paste, cached_mouse = self._input_router_cache
             if cached_signature == signature and cached_router._ink_has_focus_ids == has_focus_ids:
@@ -1135,6 +1161,11 @@ class Reconciler:
             #   ——全屏激活时被吞掉（模态独占语义：全屏视图内 Ctrl+C 交
             #   useInput handler 处理，不触发中断），符合既有设计。
             if any(h.is_active for h in fullscreen_hooks):
+                return True
+            # ★ 焦点管理激活但没有任何 focused=True 的输入 hook：吞掉事件
+            #   （不落入旧输入缓冲）。此前回退到全部 hook，未聚焦组件仍收到
+            #   输入；现在焦点管理器存在时“无聚焦=无输入”，Tab 可切换焦点。
+            if has_focus_ids:
                 return True
             return False
 

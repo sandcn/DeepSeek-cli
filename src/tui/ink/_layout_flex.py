@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Callable
 
 from .fiber import Fiber
-from ._layout_transform import _translate_subtree_x
+from ._layout_transform import _translate_subtree_x, _translate_subtree_y
 
 
 def _compute_weight_shares(weights: list[int], total_extra: int) -> tuple[int, list[int]]:
@@ -247,4 +247,71 @@ def _reflow_row_justify(
             cx += cb.w + margin + gap_list[i + 1]
 
 
-__all__ = ["_distribute_extra", "_compute_weight_shares", "_reflow_row_justify"]
+def _reflow_column_justify(
+    children: list[Fiber],
+    justify: str,
+    start_y: int,
+    margin: int,
+    extra: int,
+) -> None:
+    """column justifyContent 重排子节点 y（space-between/around/evenly）。
+
+    与 ``_reflow_row_justify`` 对称：column 主轴为纵向。此前 column 只实现
+    ``center/flex-end``，``space-*`` 被静默忽略；本函数补齐，并保持
+    ``_translate_subtree_y`` 的后代随动语义。
+    """
+    def _place_child_y(child: Fiber, cy: int) -> None:
+        cb = child.layout_box
+        delta = cy - cb.y
+        if delta:
+            _translate_subtree_y(child, delta)
+        else:
+            cb.y = cy
+            child.layout_box = cb
+
+    n = len(children)
+    if n == 0:
+        return
+    if justify == "space-between":
+        gap_count = n - 1
+        per = extra // gap_count if gap_count else 0
+        rem = extra % gap_count if gap_count else 0
+        cy = start_y
+        for i, child in enumerate(children):
+            cb = child.layout_box
+            _place_child_y(child, cy)
+            cy += cb.h
+            if i < gap_count:
+                cy += margin + per + (1 if i < rem else 0)
+    elif justify == "space-evenly":
+        slots = n + 1
+        per = extra // slots
+        rem = extra % slots
+        gap_list = [per] * slots
+        for i in range(rem):
+            gap_list[i] += 1
+        cy = start_y + gap_list[0]
+        for i, child in enumerate(children):
+            cb = child.layout_box
+            _place_child_y(child, cy)
+            cy += cb.h + margin + gap_list[i + 1]
+    else:  # space-around
+        half_units = 2 * n
+        per = extra // half_units
+        rem = extra % half_units
+        gap_list = [per if i in (0, n) else per * 2 for i in range(n + 1)]
+        for i in range(rem):
+            gap_list[i % (n + 1)] += 1
+        cy = start_y + gap_list[0]
+        for i, child in enumerate(children):
+            cb = child.layout_box
+            _place_child_y(child, cy)
+            cy += cb.h + margin + gap_list[i + 1]
+
+
+__all__ = [
+    "_distribute_extra",
+    "_compute_weight_shares",
+    "_reflow_row_justify",
+    "_reflow_column_justify",
+]

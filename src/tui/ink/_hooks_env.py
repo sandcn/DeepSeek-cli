@@ -164,6 +164,15 @@ def useStdout() -> dict:
     value = cached.current
     if value is None:
         def _write(data: str = "") -> None:
+            # ★ P1 修复：优先经会话注入的安全写函数（TUI 帧存在时写 stderr，
+            #   避免裸写渲染流破坏光标/帧记账）；未注入时回退 raw stream。
+            safe_write = getattr(_hooks_module, "_stdout_write_fn", None)
+            if safe_write is not None:
+                try:
+                    safe_write(data)
+                except Exception:
+                    _logger.debug("useStdout().write 安全写失败", exc_info=True)
+                return None
             target = _hooks_module._stdout_accessor() if _hooks_module._stdout_accessor is not None else None
             write = getattr(target, "write", None)
             if write is None:

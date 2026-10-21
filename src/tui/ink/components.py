@@ -193,6 +193,19 @@ def _paint_impl(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) ->
                     text, box.w, _merge_inherit_bg(style, inherit_bg),
                     hard=(text_wrap == "hard"),
                 )
+        # ★ P0 修复：绘制必须服从布局盒——此前 Text 把 ``_wrapped_lines``
+        #   全量写入画布，固定高度/flexShrink/flexBasis 使 box.h/box.w 缩小后，
+        #   正文仍按旧换行结果绘制，覆盖父边框/后续兄弟。垂直裁剪到 box.h，
+        #   水平裁剪到 box.w（正常布局行宽已 <= box.w，只有尺寸被外部覆盖时
+        #   才触发重建）。
+        if len(lines) > box.h:
+            lines = lines[:box.h]
+        if box.w > 0 and any(line.width > box.w for line in lines):
+            from .helpers import truncate_line
+            lines = [
+                truncate_line(line, box.w) if line.width > box.w else line
+                for line in lines
+            ]
         # 行级复用：canvas 行直接写入 Line 对象（box.x==0 快路径），diff 阶段
         # 身份短路（同 Line 对象恒相等）跳过——跨帧零重建。不再维护
         # ``_paint_cache``（死缓存：只写不读，实际复用来自 _wrapped_lines
@@ -389,7 +402,7 @@ def _has_floating_layer(root: Fiber) -> bool:
     ``_measure`` 在 ROOT fiber 上置位；``render_frame`` 的调用方可能传入
     ROOT 或 host 根——向上查找保证两种入口一致。
     """
-    node = root
+    node: Fiber | None = root
     while node is not None:
         if getattr(node, "_has_float_present", False):
             return True

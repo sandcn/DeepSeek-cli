@@ -55,13 +55,24 @@ def _resolve_length(value, avail: int) -> int:
         return avail
 
 
-def _resolve_width(fiber: Fiber, avail: int) -> int:
+def _resolve_width(
+    fiber: Fiber, avail: int, percent_base: int | None = None,
+) -> int:
     """解析宽度：显式 width 优先（含百分比），否则内容/可用宽度（含 min/max 夹取）。
 
     完善 react ink：``minWidth``/``maxWidth`` 对解析结果钳制（与
     ``_resolve_height`` 的 minHeight/maxHeight 对称）。宽高属性解析
-    收敛——width 显式 + min/max 夹取。width 支持 ``"50%"`` 百分比（相对
-    avail）。
+    收敛——width 显式 + min/max 夹取。width 支持 ``"50%"`` 百分比。
+
+    ★ 百分比基准（P0 修复）：``percent_base`` 为父容器内容宽度；row 子节点
+    的可用宽度是「剩余宽度」而不是父内容宽度——百分比必须按父内容宽度解析，
+    否则 ``row`` 内 ``width="50%"`` 会变成「剩余宽度的 50%」。``None`` 时
+    回退 ``avail``（顶层/无父基准的场景，保持既有行为）。
+
+    Args:
+        fiber: host fiber。
+        avail: 当前可用宽度（用于钳制/内容填充）。
+        percent_base: 百分比解析基准（父容器内容宽度）；None=avail。
 
     ★ E1（显式 width 超 avail 钳制）：显式 ``width`` 解析结果超可用宽度时
     钳制到 avail——保证 ``box.w <= 文档宽``，维护行级 diff 宽度不变量
@@ -75,20 +86,25 @@ def _resolve_width(fiber: Fiber, avail: int) -> int:
     显式声明最小宽度），本修复仅覆盖「显式 width 本身超宽」这一最常见路径。
     """
     w = fiber.props.get("width")
+    base = avail if percent_base is None else max(0, int(percent_base))
     if w is None:
         resolved = avail
     else:
-        resolved = _resolve_length(w, avail)
+        resolved = _resolve_length(w, base)
         if resolved > avail:
             resolved = avail  # E1：显式 width 超可用宽度时钳制到 avail
-    return _clamp_width(fiber, resolved, avail)
+    return _clamp_width(fiber, resolved, avail, percent_base=base)
 
 
-def _clamp_width(fiber: Fiber, w: int, avail: int | None = None) -> int:
+def _clamp_width(
+    fiber: Fiber, w: int, avail: int | None = None,
+    percent_base: int | None = None,
+) -> int:
     """对宽度应用 minWidth/maxWidth 钳制（内容推导/填充宽度共用）。
 
-    min/max 百分比相对 ``avail``（可用宽度）；avail 缺省时百分比回退
-    w（防御）。
+    min/max 百分比相对 ``percent_base``（父内容宽度）；未提供时回退 ``avail``
+    （旧行为）。``percent_base`` 的引入修复了 row 子节点百分比按剩余宽度
+    解析的问题——见 ``_resolve_width``。
 
     ★ 契约（React Ink 语义，P3-5 review 方向）：**minWidth 可超宽**——显式
       ``minWidth`` 大于 ``avail`` 时 ``box.w`` 允许超过可用宽度/文档宽度
@@ -102,16 +118,19 @@ def _clamp_width(fiber: Fiber, w: int, avail: int | None = None) -> int:
     props = fiber.props
     if "minWidth" not in props and "maxWidth" not in props:
         return w if w > 0 else 0
+    base = percent_base if percent_base is not None else avail
+    if base is None:
+        base = w
     mn = props.get("minWidth")
     if mn is not None:
         try:
-            w = max(_resolve_length(mn, avail if avail is not None else w), w)
+            w = max(_resolve_length(mn, base), w)
         except (TypeError, ValueError, OverflowError):
             pass
     mx = props.get("maxWidth")
     if mx is not None:
         try:
-            w = min(_resolve_length(mx, avail if avail is not None else w), w)
+            w = min(_resolve_length(mx, base), w)
         except (TypeError, ValueError, OverflowError):
             pass
     return max(0, w)
@@ -230,6 +249,45 @@ def _resolve_padding(fiber: Fiber) -> tuple[int, int, int, int]:
     return (pad_l, pad_r, pad_t, pad_b)
 
 
+def _resolve_margin(fiber: Fiber) -> tuple[int, int, int, int]:
+    """解析 margin，返回 ``(left, right, top, bottom)``（外边距）。
+
+    React Ink 语义：
+    - ``margin`` 设置四边；``marginX``/``marginY`` 覆盖横向/纵向；
+    - ``marginLeft``/``marginRight``/``marginTop``/``marginBottom`` 单边覆盖。
+
+    ★ 修复（P0）：此前 ``_container_geometry`` 只把 ``margin`` 当作 ``gap``
+    的缺省回退，从未作为子节点外边距应用——``margin`` 在布局上是空操作。
+    本函数为唯一解析入口，供 ``_measure`` 的子节点放置使用。
+
+    畸形值（None/对象/畸形串）兜底 0；无任何 margin 属性时走快速路径。
+    """
+    props = fiber.props
+    if (
+        "margin" not in props
+        and "marginX" not in props and "marginY" not in props
+        and "marginLeft" not in props and "marginRight" not in props
+        and "marginTop" not in props and "marginBottom" not in props
+    ):
+        return (0, 0, 0, 0)
+
+    def _int(v):
+        try:
+            return max(0, int(v))
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
+    margin = _int(props.get("margin", 0))
+    margin_x = _int(props.get("marginX", margin))
+    margin_y = _int(props.get("marginY", margin))
+    return (
+        _int(props.get("marginLeft", margin_x)),
+        _int(props.get("marginRight", margin_x)),
+        _int(props.get("marginTop", margin_y)),
+        _int(props.get("marginBottom", margin_y)),
+    )
+
+
 def _abs_int(value) -> int | None:
     """解析绝对定位锚点值（top/left/right/bottom）为 int；畸形回退 None。"""
     if value is None:
@@ -285,6 +343,7 @@ __all__ = [
     "_flex_grow",
     "_flex_shrink",
     "_resolve_padding",
+    "_resolve_margin",
     "_abs_int",
     "_apply_aspect_ratio",
 ]

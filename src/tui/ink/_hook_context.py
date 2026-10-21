@@ -36,6 +36,7 @@ _SLOTS = (
     # ── 流访问器 ──
     "stdin_accessor",
     "stdout_accessor",
+    "stdout_write_fn",
     "stderr_accessor",
     # ── 终端能力（useStdin().setRawMode / isRawModeSupported） ──
     "raw_mode_supported",
@@ -82,6 +83,9 @@ class HookContext:
         self.context_version = 0
         self.stdin_accessor: Callable[[], Any] | None = None
         self.stdout_accessor: Callable[[], Any] | None = None
+        #: 安全 stdout 写函数（session 注入）：TUI 帧存在时写入 stderr，
+        #: 避免裸写渲染流破坏光标/帧记账；headless 时回退真实 stdout。
+        self.stdout_write_fn: Callable[[str], Any] | None = None
         self.stderr_accessor: Callable[[], Any] | None = None
         #: raw 模式能力查询函数（``() -> bool``；**不是**布尔值本身——session
         #:  经 set_raw_mode_accessor 注入，useStdin().isRawModeSupported 调用）
@@ -132,6 +136,7 @@ class HookContext:
         """安装「无终端」环境（renderToString 用）：流/焦点/光标返回安全默认。"""
         self.stdin_accessor = lambda: None
         self.stdout_accessor = lambda: None
+        self.stdout_write_fn = None
         self.stderr_accessor = lambda: None
         self.app_control = None
         self.render_flush_fn = None

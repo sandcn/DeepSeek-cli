@@ -33,6 +33,7 @@ from ._layout_sizing import (
     _flex_grow,
     _flex_shrink,
     _resolve_padding,
+    _resolve_margin,
     _abs_int,
     _apply_aspect_ratio,
 )
@@ -48,6 +49,7 @@ from ._layout_transform import (
 from ._layout_flex import (
     _distribute_extra,
     _reflow_row_justify,
+    _reflow_column_justify,
 )
 from ._layout_measure import (
     LayoutBox,
@@ -120,11 +122,13 @@ __all__ = [
     "_flex_grow",
     "_flex_shrink",
     "_resolve_padding",
+    "_resolve_margin",
     "_apply_aspect_ratio",
     "_apply_text_align",
     "_shrink_row_children",
     "_distribute_extra",
     "_reflow_row_justify",
+    "_reflow_column_justify",
     "_reflow_subtree",
     "_translate_subtree_y",
     "_translate_subtree_x",

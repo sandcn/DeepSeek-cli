@@ -422,6 +422,9 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             lambda: sys.__stderr__,
             ctx=self._hook_ctx,
         )
+        # ★ P1 修复（useStdout 裸写破坏帧）：TUI 帧存在时把外部写重定向到
+        #   stderr；headless/未渲染时仍写真实 stdout。
+        self._hook_ctx.stdout_write_fn = self._write_stdout_safe
         _hooks.set_window_size_accessor(
             lambda: (self._width_cache.get_width(), self._width_cache.get_height()),
             ctx=self._hook_ctx,
@@ -660,6 +663,35 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             #   再生副作用）。
             _logger.debug("紧急输出写入失败 stream=%s", stream, exc_info=True)
 
+    def _write_stdout_safe(self, data: str) -> None:
+        """useStdout().write 的安全写入口（P1 修复）。
+
+        TUI 帧存在时，裸写渲染流会在光标当前位置插入文本，破坏
+        ``InkRenderer`` 的 ``_cursor_row``/``_buf_h`` 记账。没有 viewport
+        insert 协议时无法安全地“插入到 TUI 上方”，因此这里把外部写重定向
+        到 stderr（内容不丢、TUI 不被破坏），并记 warning 使调用方可见；
+        未渲染/headless 时仍写真实 stdout（保持 useStdout 语义）。
+        """
+        if not data:
+            return
+        try:
+            if self._render_running:
+                _logger.warning(
+                    "useStdout().write 在 TUI 渲染期间调用，已重定向到 stderr；"
+                    "请改用 useStderr 或结构化输出",
+                )
+                target = getattr(self, "_stderr_stream", sys.__stderr__)
+            else:
+                target = self._ink_renderer.stream
+            write = getattr(target, "write", None)
+            if write is not None:
+                write(data)
+                flush = getattr(target, "flush", None)
+                if flush is not None:
+                    flush()
+        except (OSError, ValueError):
+            _logger.debug("useStdout().write 安全写失败", exc_info=True)
+
     # ── 公开访问器 ───────────────────────────────────
 
     @property
@@ -845,6 +877,16 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             # 同步渲染一帧（router 随 reconciler.render 发布）——无需等待。
             self.request_bottom_redraw()
             return True
+        # ★ P1 修复（渲染线程重入）：render 线程的 INPUT/RENDER 阶段内调用
+        #   本方法时，RLock 可重入，会嵌套执行 _render_frame（调和/布局/绘制
+        #   中途再次进入），破坏 fiber/渲染器状态。这里只请求下一帧，返回
+        #   False 表示“本次调用未能同步完成”（调用方应按异步语义处理）。
+        if threading.current_thread() is self._render_thread:
+            self._dirty = True
+            self._bottom_redraw_requested.set()
+            self._cmd_event.set()
+            _logger.warning("flush_input_router 在渲染线程内调用，改为请求下一帧")
+            return False
         # ★ 主动同步渲染（消除时序窗口）：拿渲染互斥后由**本线程**渲染一帧
         #   ——返回时 router 已按最新模型重建，无需「猜帧数」等待（修复前
         #   依赖渲染线程完成 2 帧，慢渲染下窗口长且只能靠超时兜底）。
@@ -1142,6 +1184,15 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._exit_note = note or None
 
     def stop(self) -> None:
+        # ★ P1 修复（自 join 死锁）：渲染线程内直接调用 stop() 会在
+        #   _join_render_thread 中 join 自身（RuntimeError）。渲染线程内的
+        #   退出路径应使用 request_exit()；这里仅置停止标志并唤醒循环，由
+        #   渲染线程自然退出后由外部/生命周期完成清理。
+        if threading.current_thread() is self._render_thread:
+            _logger.warning("stop() 在渲染线程内调用，改为请求退出（避免自 join）")
+            self._render_running = False
+            self._cmd_event.set()
+            return
         self._render_running = False
         # ★ 单帧耗时无上界（2026-08-19）：自适应 join——渲染线程正在执行
         #   超长单帧（>2s 的 markdown 重放等）时不再按固定 2s 误判「卡住」
@@ -1547,7 +1598,16 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                             self._model.width = self._width_cache.get_width()
                         except Exception:
                             _logger.debug("应用命令前刷新 model.width 异常", exc_info=True)
-                    self._apply_commands(commands)
+                    # ★ P1 修复（命令应用与同步渲染竞态）：APPLY 与
+                    #   _render_frame 共用 _render_lock（RLock）——外部线程
+                    #   的 flush_input_router/request_bottom_redraw 同步渲染
+                    #   不会在模型半更新时取帧。
+                    _apply_lock = getattr(self, "_render_lock", None)
+                    if _apply_lock is None:
+                        self._apply_commands(commands)
+                    else:
+                        with _apply_lock:
+                            self._apply_commands(commands)
                     # ★ BUG（2026-10-07 空闲帧复用引入）：命令即模型变更，必须
                     #   置脏——``_should_render`` 据此落位 ``_idle_ok=False``，
                     #   禁止本拍复用上一帧。修复前命令在 DRAIN_COMMANDS 阶段已

@@ -127,14 +127,20 @@ class _ConsoleProxy:
     fileno 等）到目标流，保持对 print 底层（TextIOWrapper 探测）兼容。
     """
 
-    def __init__(self, target):
+    def __init__(self, target, write_fn=None):
         self._target = target
+        #: 可选安全写函数（TUI 帧存在时重定向到 stderr，避免破坏渲染器
+        #: 光标/帧记账）。None 时保持 raw 写。
+        self._write_fn = write_fn
 
     def write(self, s) -> int:
         if s:
             try:
-                self._target.write(s)
-                self._target.flush()
+                if self._write_fn is not None:
+                    self._write_fn(s)
+                else:
+                    self._target.write(s)
+                    self._target.flush()
             except (OSError, ValueError):
                 _logger.debug("patchConsole 代理写入失败（已忽略）", exc_info=True)
         return len(s) if isinstance(s, str) else 0
@@ -159,9 +165,10 @@ class _ConsolePatcher:
     无操作）。异常安全：patch 中途失败自动恢复原流。
     """
 
-    def __init__(self, out_stream, err_stream):
+    def __init__(self, out_stream, err_stream, out_write_fn=None):
         self._out_stream = out_stream
         self._err_stream = err_stream
+        self._out_write_fn = out_write_fn
         self._saved = None
 
     def patch(self) -> None:
@@ -171,7 +178,8 @@ class _ConsolePatcher:
         saved_err = sys.stderr
         try:
             sys.stdout = _ConsoleProxy(
-                self._out_stream if self._out_stream is not None else saved_out
+                self._out_stream if self._out_stream is not None else saved_out,
+                write_fn=self._out_write_fn,
             )
             sys.stderr = _ConsoleProxy(
                 self._err_stream if self._err_stream is not None else saved_err
@@ -433,7 +441,9 @@ def render(
                 stdin.set_interrupt_routable(True)
             except Exception:
                 _logger.debug("render exitOnCtrlC=False 放行 interrupt 异常", exc_info=True)
-    patcher = _ConsolePatcher(out_stream, stderr)
+    patcher = _ConsolePatcher(
+        out_stream, stderr, out_write_fn=session._write_stdout_safe,
+    )
     if patchConsole:
         try:
             patcher.patch()

@@ -55,20 +55,14 @@ def _reflow_subtree(fiber: Fiber, new_y: int, new_x: int | None = None) -> None:
                 border = max(0, int(border))
             except (TypeError, ValueError, OverflowError):
                 border = 0
-        margin = node.props.get("margin") or 0
-        if margin:
-            try:
-                margin = max(0, int(margin))
-            except (TypeError, ValueError, OverflowError):
-                margin = 0
         gap = node.props.get("gap")
         if gap is not None:
             try:
                 spacing = max(0, int(gap))
             except (TypeError, ValueError, OverflowError):
-                spacing = margin
+                spacing = 0
         else:
-            spacing = margin
+            spacing = 0
         # ★ P1-1 修复（review 方向）：与 ``_measure`` 一致解析 columnGap/rowGap
         #   显式覆盖——flexGrow/flexShrink 后孙节点重排的兄弟间距须与测量阶段
         #   一致（``_measure`` 用 ``col_gap``/``row_gap``；columnGap/rowGap 显式

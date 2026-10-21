@@ -657,22 +657,21 @@ def OpenBlockLines(props) -> object:
         lambda: _build_open_children(
             block, live_start, width, block_idx, is_live_content, sp,
         ),
-        # ★ P3（review）：deps 补块身份 ``id(block)``——原 deps 仅
-        #   ``id(block.lines)``：当前 block.lines 只原地 extend（不替换）
-        #   时安全，但这是「lines 永不重新赋值」的调用方隐式约定；补块
-        #   身份后即使 lines 被整体替换（新列表复用旧 id 且行数相同）
-        #   也能识别块变化重建 children（消除 id 复用错误命中窗口）。
-        # ★ 问题1：deps 补 ``id(block.preview_lines)``——预览行不进入
+        # ★ P3（review）：deps 使用块/行列表**对象本身**（``_object_is`` 按
+        #   引用比较）而非 ``id(...)``——``id`` 在对象被 GC 后可被新对象复用，
+        #   会造成旧 children 缓存误命中。块对象与 lines/preview_lines 列表
+        #   由调用方持有，引用稳定/替换语义明确。
+        # ★ 问题1：deps 补 ``block.preview_lines``——预览行不进入
         #   block.lines，行数 n 不变时（如段落持续追加但 preview 行数相同）
         #   预览内容变化须使 memo 失效重建（每次替换 preview_lines 为新列表
-        #   对象，id 变化即失效）。
+        #   对象，引用变化即失效）。
         # ★ 行级 Element 复用：deps 补 ``is_live_content``——块关闭瞬间
         #   （closed True/False 翻转）末行的 spinner 语义变化，若 n/lines
         #   未变则 memo 会错误命中（最后一行残留 spinner）。该值仅在关闭
         #   状态翻转时变化，不影响流式帧的缓存行为。
-        (id(block), id(block.lines), n, live_start, width, block_idx, sp,
+        (block, block.lines, n, live_start, width, block_idx, sp,
          is_live_content,
-         id(getattr(block, "preview_lines", None))),
+         getattr(block, "preview_lines", None)),
     )
     return h(FRAGMENT, None, children)
 
