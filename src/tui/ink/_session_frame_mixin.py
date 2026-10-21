@@ -649,7 +649,7 @@ class _SessionFrameMixin:
     # ── 光标 ─────────────────────────────────────────
 
     def _position_cursor(self) -> None:
-        """渲染后定位输入光标（从文档底部相对移动）。
+        """渲染后定位输入光标（从文档底部相对移动），有输入区才显示光标。
 
         方向B（2026-08-05）：布局/坐标计算委托 ``_cursor.position_cursor``
         （纯函数模块）；本方法只负责 fiber 获取与异常兜底。
@@ -660,6 +660,17 @@ class _SessionFrameMixin:
         （避免光标停留在残留位置闪烁）；正常模式（找到 input fiber）→ 显示
         光标并定位。显隐经 ``InkRenderer.set_cursor_visible`` 状态跟踪（仅
         变化时写 DECTCEM 序列，不变帧零输出——每帧调用开销可忽略）。
+
+        ★ 2026-10-22（用户需求：TUI 渲染时先隐藏光标，渲染完有输入界面才
+        移到对应界面再显示、没有输入界面不显示）：渲染器在**写帧前**已统一
+        隐藏光标（``InkRenderer._hide_cursor_for_write``）。本方法负责收口：
+          1. 找到输入区 fiber → **先** ``place_cursor`` 定位到输入光标位置，
+             **定位成功后**才 ``set_cursor_visible(True)``——修复前先显示再
+             定位，光标会短暂出现在上一帧位置；
+          2. 找不到输入区（模态全屏视图）→ 保持隐藏（不再显示）；
+          3. 找到 fiber 但定位未发生（``_cursor.position_cursor`` 返回 False：
+             无布局盒）或定位抛异常 → **保持隐藏**，等下一帧定位成功再显示
+             （不把光标停在旧位置）。
         """
         if self._model is None:
             return
@@ -674,16 +685,21 @@ class _SessionFrameMixin:
             except Exception:
                 _logger.debug("hide_cursor 异常", exc_info=True)
             return
+        placed = False
         try:
-            self._ink_renderer.set_cursor_visible(True)
-        except Exception:
-            _logger.debug("show_cursor 异常", exc_info=True)
-        try:
-            _cursor.position_cursor(
+            placed = _cursor.position_cursor(
                 self._ink_renderer, self._width_cache.get_width(), fiber,
             )
         except Exception:
             _logger.debug("place_cursor 异常", exc_info=True)
+        if not placed:
+            # 光标位置未知（无布局盒/定位异常）→ 保持隐藏（渲染器写帧前已隐藏；
+            # 无写入帧时状态跟踪保证不重复写），下一帧定位成功后再显示。
+            return
+        try:
+            self._ink_renderer.set_cursor_visible(True)
+        except Exception:
+            _logger.debug("show_cursor 异常", exc_info=True)
 
     def _find_input_fiber(self, root_fiber):
         """在 host 树中查找输入区 fiber（委托 ``_cursor.find_input_fiber``）。

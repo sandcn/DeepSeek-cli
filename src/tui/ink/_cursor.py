@@ -85,7 +85,7 @@ def find_input_fiber(root_fiber):
     return None
 
 
-def position_cursor(renderer, width: int, fiber) -> None:
+def position_cursor(renderer, width: int, fiber) -> bool:
     """计算输入光标位置并放置（从 session._position_cursor 提取的纯计算）。
 
     渲染后定位输入光标（从文档底部相对移动）。依赖 fiber 的布局盒
@@ -95,10 +95,18 @@ def position_cursor(renderer, width: int, fiber) -> None:
     异常语义（与原 session._position_cursor 一致）：
       - popup_height 计算失败 → 回退 0（记 debug），不中断光标定位；
       - place_cursor 失败由调用方（session._position_cursor）兜底记 debug。
+
+    ★ 2026-10-22（用户需求：有输入界面才显示光标）：返回值表达「光标是否
+    已真正放置」——调用方据此决定是否显示光标（``place_cursor`` 未发生 =
+    光标位置未知，应保持隐藏，避免停在旧位置）。
+
+    Returns:
+        True — 已调用 ``renderer.place_cursor`` 完成定位；
+        False — 未定位（fiber 无布局盒：布局未完成/节点已失效）。
     """
     box = fiber.layout_box
     if box is None:
-        return
+        return False
     text = str(fiber.props.get("text", ""))
     # ★ P1（review 2026-08-22）：cursor_pos 显式为 None/非数字时 int() 抛
     #   TypeError，导致本函数整段失败、光标每帧无法定位（静默退化）。与
@@ -151,6 +159,7 @@ def position_cursor(renderer, width: int, fiber) -> None:
     #   光标列钳制到终端宽度（修复前 col 越界溢出导致光标定位异常）。
     col = min(box.x + visual_width(prompt) + vis_col + 1, width)
     renderer.place_cursor(row, col)
+    return True
 
 
 __all__ = ["find_input_fiber", "position_cursor"]

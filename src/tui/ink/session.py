@@ -1220,6 +1220,15 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   队列操作线程安全（mutex 保护），不写 stream 无撕裂风险。
         if self._render_thread is None or not self._render_thread.is_alive():
             self._ink_renderer.suspend()
+            # ★ 2026-10-22（用户需求：渲染期间隐藏光标）：退出时恢复光标可见
+            #   ——渲染期间光标在写帧前统一隐藏、写完后由输入区决定是否显示；
+            #   最后一帧若是无输入区的全屏视图（或帧写入后被异常打断），光标
+            #   会保持隐藏并泄漏到 shell，用户终端里看不到光标。渲染线程已
+            #   join（本分支），此处写入安全（不与渲染线程并发写 stream）。
+            try:
+                self._ink_renderer.set_cursor_visible(True)
+            except Exception:
+                _logger.debug("stop 恢复光标可见异常", exc_info=True)
         self._drain_queue_safe()
         # ★ 2026-10-20（用户需求）：退出提示输出在**全部 TUI 内容下方一行**，
         #   且不清屏。须在渲染线程 join 之后（本句之前）输出——否则渲染线程
@@ -1351,6 +1360,16 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                 self._render_version,
             )
         self._ink_renderer.suspend()
+        # ★ 2026-10-22（用户需求：渲染期间隐藏光标）：交还终端前恢复光标可见
+        #   ——渲染期间光标在写帧前隐藏、写完后由输入区决定是否显示；挂起时
+        #   最后一帧可能无输入区（全屏视图）而保持隐藏，交互工具/子进程继承
+        #   隐藏光标后用户看不到光标。仅在渲染线程确认退出后写入（joined），
+        #   避免与仍在写 stream 的线程并发。
+        if joined:
+            try:
+                self._ink_renderer.set_cursor_visible(True)
+            except Exception:
+                _logger.debug("suspend 恢复光标可见异常", exc_info=True)
         # ★ 终端交还：交互工具/子进程独占终端前还原 raw 模式与终端模式
         #   （备用屏/括号粘贴/鼠标）——子进程继承干净终端；resume() 重新进入。
         raw_mode = getattr(self, "_raw_mode", None)

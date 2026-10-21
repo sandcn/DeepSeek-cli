@@ -447,9 +447,11 @@ def cursor_forward(n: int = 1) -> str:
 def cursor_hide() -> str:
     """隐藏终端光标（DECTCEM DECSET ?25l）。
 
-    模态全屏视图模式（2026-08-17 通用机制：``model.fullscreen`` 非空——App
-    整屏渲染全屏视图组件、无输入区）时隐藏光标——避免光标停留在残留位置
-    闪烁。
+    两处使用（均由 ``InkRenderer.set_cursor_visible`` 收口）：
+      - **写帧前**（``_hide_cursor_for_write``）：渲染过程会大量移动光标
+        （cursor_up/down/forward、逐区间重写、滚屏），可见光标会随写入跳动；
+      - **模态全屏视图**（``model.fullscreen`` 非空——App 整屏渲染全屏视图
+        组件、无输入区）帧写完后保持隐藏，避免光标停留在残留位置闪烁。
 
     Returns:
         ANSI DECTCEM 隐藏序列。
@@ -460,7 +462,9 @@ def cursor_hide() -> str:
 def cursor_show() -> str:
     """显示终端光标（DECTCEM DECRST ?25h）。
 
-    恢复正常模式（输入区可见）时恢复光标显示。
+    仅在**有输入界面**且已把光标定位到输入位置后由会话调用
+    （``InkSession._position_cursor`` → ``set_cursor_visible(True)``）；
+    无输入界面不显示。
 
     Returns:
         ANSI DECTCEM 显示序列。

@@ -7,7 +7,9 @@
   3. 应用：从当前光标定位到各差异区间逐区间重写；仅重写变化的行区间，
      静态/未变行（含 committed 前缀）**永不重写**。高度差（新增/删除行）
      单独处理：增长追加 delta 新行、缩短清除残留行。
-  4. 输入光标：渲染后按 ``place_cursor`` 放置。
+  4. 输入光标：写帧前隐藏（``_hide_cursor_for_write``）；帧写完后由会话
+     ``_position_cursor`` 先 ``place_cursor`` 定位到输入区、再 ``set_cursor_visible
+     (True)`` 显示——无输入区（全屏视图）保持隐藏（2026-10-22 用户需求）。
 
 PERF-4 / 增量细化：
   - 平移快路径：``new_h > prev_h`` 且尾部内容整体下移且相同（仅新增 delta 行
@@ -501,9 +503,18 @@ class InkRenderer(_RendererContentMixin):
             self._emit_content_lines(frame)
 
     def _render_frame_impl(self, frame: Frame) -> None:
-        """渲染实现（组件树 diff 写入终端；输出历史回调由 ``render`` 统一收口）。"""
+        """渲染实现（组件树 diff 写入终端；输出历史回调由 ``render`` 统一收口）。
+
+        ★ 2026-10-22（用户需求：渲染期间不显示光标）：**所有实际写终端的
+        分支**在写入前经 ``_hide_cursor_for_write`` 隐藏光标；帧内容完全一致
+        （``first_diff_line < 0``，本方法不写任何字节）时不碰显隐状态，避免
+        空闲帧每帧写 DECTCEM 造成光标抖动。帧写完后由会话
+        ``_position_cursor`` 决定是否显示（有输入区才定位并显示）。
+        """
         self._assert_renderer_invariants()
         if self._prev is None:
+            # 首帧 / resize 全量重写：写前隐藏（清屏 + 逐行写入期间光标不可见）
+            self._hide_cursor_for_write()
             self._write_full(frame)
             self._prev = frame
             self._stream.flush()
@@ -515,6 +526,10 @@ class InkRenderer(_RendererContentMixin):
         if i < 0:
             # 帧完全一致：仅刷新光标位置（调用方自行 place_cursor）
             return
+
+        # 本帧将写终端（平移/增长/漂移重写/差异区间重写/降级全量）：
+        # 写入期间大量 cursor_up/down/forward + 重写，先隐藏光标避免跳动闪烁。
+        self._hide_cursor_for_write()
 
         delta = new_h - prev_h
 
@@ -1326,15 +1341,36 @@ class InkRenderer(_RendererContentMixin):
 
     # ── 光标 ─────────────────────────────────────────
 
+    def _hide_cursor_for_write(self) -> None:
+        """写帧到终端前隐藏光标（DECTCEM）。
+
+        ★ 2026-10-22（用户需求：TUI 渲染时先隐藏光标，渲染完再按是否有输入
+        界面决定是否显示）：帧写入过程会大量移动光标（``cursor_up`` /
+        ``cursor_down`` / ``cursor_forward``、逐区间重写、滚屏），可见光标会
+        随写入在屏幕上跳动/闪烁。所有**实际写终端**的渲染路径在写前调用本
+        方法；帧写完后由会话 ``_position_cursor`` 收口：
+          - 有输入区 → 先 ``place_cursor`` 移到输入位置，再 ``set_cursor_visible
+            (True)``；
+          - 无输入区（模态全屏视图）→ 保持隐藏。
+
+        状态跟踪（``_cursor_visible``）保证已隐藏时零输出；帧内容完全一致
+        （diff 为空、本帧不写终端）时调用方不调用本方法，避免空闲帧每帧写
+        显隐序列造成光标抖动。
+        """
+        self.set_cursor_visible(False)
+
     def set_cursor_visible(self, visible: bool) -> None:
         """设置终端光标可见性（DECTCEM；状态跟踪，仅变化时输出序列）。
 
         ★ 2026-08-17（用户需求：轨迹 Trace 不显示光标；2026-08-17 通用化）：
         **模态全屏视图**（``model.fullscreen`` 非空——App 整屏渲染全屏视图
         组件、无输入区）下 ``_position_cursor`` 找不到 input fiber → 隐藏
-        光标（避免光标停留在残留位置闪烁）；正常模式（找到 input fiber）显示
-        光标并定位。渲染循环每帧调用本方法——内部 ``_cursor_visible`` 状态
-        跟踪保证**仅在显隐切换时**写转义序列（不变帧零输出，防每帧重复写）。
+        光标（避免光标停留在残留位置闪烁）；正常模式（找到 input fiber）定位
+        到输入光标后显示。渲染循环每帧调用本方法——内部 ``_cursor_visible``
+        状态跟踪保证**仅在显隐切换时**写转义序列（不变帧零输出，防每帧重复写）。
+
+        ★ 2026-10-22（用户需求）：帧写入前由 ``_hide_cursor_for_write`` 统一
+        隐藏；显示只在会话定位到输入光标之后发生（不再提前显示）。
 
         Args:
             visible: True=显示光标；False=隐藏光标。
@@ -1447,7 +1483,12 @@ class InkRenderer(_RendererContentMixin):
         写入 ``clear_screen()``（``\\033[2J\\033[H``）并软重置 prev/光标——
         下一帧走增量 diff（与空帧比较 = 所有行变化 → 逐行写入，不清屏）。
         scrollback 历史保留（终端自身行为）。
+
+        ★ 2026-10-22（用户需求）：清屏也是写屏——写 ED 前先隐藏光标（见
+        ``_hide_cursor_for_write``），清屏后光标不残留在 (1,1) 闪烁；下一帧
+        写完后由会话按「是否有输入区」定位并显示。
         """
+        self._hide_cursor_for_write()
         try:
             self._stream.write(clear_screen())
             self._stream.flush()
