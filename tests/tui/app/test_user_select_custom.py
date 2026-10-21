@@ -2,7 +2,9 @@
 
 覆盖：
   - ``UserSelectState`` 新增字段默认值 / 终态 custom 写入；
-  - 工具轮询的自动超时暂停（输入中暂停、退出后补回剩余时间）；
+  - 空闲超时（2026-10-22 用户需求：删除 ``timeout`` 参数，改成「不操作界面
+    三分钟后才算超时」）——每次按键/鼠标操作重置 3 分钟倒计时、共享计时、
+    已提交问题不刷新、固定 deadline 调用方不受影响；外部编辑器期间暂停；
   - 弹窗「✎ 其他（自定义输入…）」伪选项的完整交互（单选/多选/多问题）；
   - 输入模式 Esc/Tab 退出语义、空文本不提交、伪选项空格不可勾选；
   - ``MultiSelect`` 新增可选 props（onSelect/onChange/canToggle）零回归。
@@ -10,6 +12,7 @@
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 from src.core.user_select_state import UserSelectState
@@ -116,11 +119,13 @@ def test_state_custom_fields_default_and_final_write() -> None:
 
 
 def test_poll_deadline_pauses_while_typing() -> None:
+    # ★ 2026-10-22：``typing`` 仅表示「外部编辑器（Ctrl+G vim）运行中」——
+    #   编辑器独占终端、界面收不到按键，轮询暂停计时并在返回后补回。
     st = UserSelectState(visible=True, options=["A"], allow_custom=True, deadline=100.0)
     st.typing = True
     paused, expired = _poll_deadline(st, 0.0, 50.0)
     assert paused == 50.0 and expired is False
-    assert st.deadline == 100.0  # 输入中 deadline 不动
+    assert st.deadline == 100.0  # 编辑器运行中 deadline 不动
 
     paused, expired = _poll_deadline(st, paused, 60.0)
     assert paused == 50.0 and expired is False
@@ -139,6 +144,84 @@ def test_poll_deadline_zero_deadline_never_expires() -> None:
     st.typing = False
     paused, expired = _poll_deadline(st, 0.0, 10.0)
     assert paused == 0.0 and expired is False
+
+
+def test_idle_deadline_expires_only_after_three_minutes_idle() -> None:
+    """★ 2026-10-22：连续 3 分钟无操作才超时；期间一次操作即续期。"""
+    st = UserSelectState(
+        visible=True, options=["A"], idle_timeout=180.0, deadline=180.0,
+    )
+    assert _poll_deadline(st, 0.0, 179.9) == (0.0, False)
+    # 100s 时发生一次界面操作 → deadline 顺延到 280s。
+    assert st.touch_activity(100.0) is True
+    assert st.deadline == 280.0
+    assert _poll_deadline(st, 0.0, 279.9) == (0.0, False)
+    assert _poll_deadline(st, 0.0, 280.0) == (0.0, True)
+
+
+def test_touch_activity_ignores_zero_idle_and_done_state() -> None:
+    """固定 deadline 调用方（idle_timeout=0）与已终态问题不被刷新。"""
+    fixed = UserSelectState(visible=True, options=["A"], deadline=100.0)
+    assert fixed.touch_activity(10.0) is False
+    assert fixed.deadline == 100.0
+
+    finished = UserSelectState(
+        visible=True, options=["A"], idle_timeout=180.0, deadline=100.0,
+    )
+    finished.try_set_final("confirmed", ["A"])
+    assert finished.touch_activity(10.0) is False
+    assert finished.deadline == 100.0
+
+
+def test_tool_schema_has_no_timeout_param_and_ignores_legacy_timeout() -> None:
+    """★ 2026-10-22：工具 schema/构造器删除 ``timeout``（历史调用被忽略）。"""
+    from src.tools.user_select import UserSelectFunc
+
+    props = UserSelectFunc.to_tool_schema()["function"]["parameters"]["properties"]
+    assert "timeout" not in props
+    assert "default_options" in props
+    func = UserSelectFunc.from_args(
+        {"title": "Q", "options": ["A"], "timeout": 5},
+    )
+    assert not hasattr(func, "timeout")
+    assert func.title == "Q"
+
+
+def test_any_key_resets_idle_deadline_for_all_pending_questions() -> None:
+    """★ 2026-10-22（共享计时）：任一 tab 的操作刷新全部未提交问题的倒计时。"""
+    st1 = _state("Q1", options=["A", "B"], seq=1, idle_timeout=180.0,
+                 deadline=time.monotonic() - 10)
+    st2 = _state("Q2", options=["C", "D"], seq=2, idle_timeout=180.0,
+                 deadline=time.monotonic() - 10)
+    done = _state("Q3", options=["E"], seq=3, idle_timeout=180.0,
+                  deadline=time.monotonic() - 10)
+    done.try_set_final("confirmed", ["E"])
+    model, element, root, press = _mount_popup([st1, st2, done])
+    stale = done.deadline
+
+    assert press("arrow_down") is True
+    now = time.monotonic()
+    assert st1.deadline >= now + 180 - 5
+    assert st2.deadline >= now + 180 - 5  # 其它 tab 一并刷新
+    assert done.deadline == stale  # 已提交问题不再刷新
+
+
+def test_fixed_deadline_state_is_not_reset_by_input() -> None:
+    """命令系统选择（idle_timeout=0）保持固定 deadline（零回归）。"""
+    st = _state(deadline=time.monotonic() + 30)
+    model, element, root, press = _mount_popup([st])
+    before = st.deadline
+    assert press("arrow_down") is True
+    assert st.deadline == before
+
+
+def test_mouse_activity_also_resets_idle_deadline() -> None:
+    """★ 2026-10-22：鼠标操作（滚轮等）同样算「操作界面」。"""
+    st = _state(idle_timeout=180.0, deadline=time.monotonic() - 5)
+    model, element, root, press = _mount_popup([st])
+    before = st.deadline
+    press("mouse")
+    assert st.deadline > before
 
 
 # ══════════════════════════════════════════════════════════
@@ -174,7 +257,8 @@ def test_single_select_custom_input_and_submit() -> None:
     assert st.selected == 2
 
     assert press("enter") is True
-    assert st.typing is True
+    # ★ 2026-10-22：进入输入模式不再暂停计时（每次按键重置空闲倒计时）。
+    assert st.typing is False
     assert _find_fiber(root, "TextInput") is not None
 
     assert press("char", "自") is True
@@ -197,7 +281,7 @@ def test_escape_exits_custom_input_then_cancels() -> None:
     press("arrow_down")
     press("enter")
     press("char", "X")
-    assert st.typing is True
+    assert st.typing is False  # 正常打字不暂停空闲计时
 
     assert press("escape") is True
     assert st.typing is False
@@ -216,11 +300,11 @@ def test_empty_custom_input_is_not_submitted() -> None:
     press("arrow_down")
     press("arrow_down")
     press("enter")
-    assert st.typing is True
+    assert st.typing is False  # 输入模式（不暂停计时）
 
     assert press("enter") is True
     assert st.done is False
-    assert st.typing is True  # 保持输入模式
+    assert st.typing is False  # 空文本不提交，保持输入模式
     assert st.result == []
 
 
@@ -238,7 +322,7 @@ def test_multi_select_custom_appends_checked_values() -> None:
     assert st.checked == [0]
 
     assert press("enter") is True
-    assert st.typing is True
+    assert st.typing is False  # 输入模式（不暂停计时）
     press("char", "Z")
     assert press("enter") is True
 
@@ -254,7 +338,7 @@ def test_multi_question_custom_answer_advances() -> None:
 
     press("arrow_down")  # 自定义行（1 个普通选项）
     press("enter")
-    assert s1.typing is True
+    assert s1.typing is False  # 输入模式（不暂停计时）
 
     press("char", "X")
     assert press("enter") is True
@@ -279,7 +363,7 @@ def test_tab_switch_exits_custom_input() -> None:
     press("arrow_down")
     press("enter")
     press("char", "X")
-    assert s1.typing is True
+    assert s1.typing is False  # 正常打字不暂停空闲计时
 
     assert press("tab") is True
     assert s1.typing is False
@@ -300,7 +384,7 @@ def test_arrow_in_input_mode_does_not_switch_tab() -> None:
     press("arrow_down")
     press("enter")
     assert press("arrow_right") is True
-    assert s1.typing is True
+    assert s1.typing is False  # 输入模式（不暂停计时）
     assert s1.answered is False
     assert s2.answered is False
 
@@ -393,9 +477,12 @@ def test_ctrl_g_editor_fills_multiline_and_enter_submits(monkeypatch) -> None:
     import src.tui.app.user_select as us_mod
 
     calls: list = []
+    paused_during_editor: list = []
 
     def fake_editor(text):
         calls.append(text)
+        # ★ 2026-10-22：外部编辑器运行期间暂停空闲计时（typing=True）。
+        paused_during_editor.append(st.typing)
         return "第一行\n第二行"
 
     monkeypatch.setattr(us_mod, "_run_external_editor", fake_editor)
@@ -406,7 +493,8 @@ def test_ctrl_g_editor_fills_multiline_and_enter_submits(monkeypatch) -> None:
 
     assert press("ctrl_key", "\x07") is True
     assert calls == ["初始"]
-    assert st.typing is True
+    assert paused_during_editor == [True]
+    assert st.typing is False  # 编辑器返回后恢复空闲计时
     assert st.done is False
 
     # 输入行显示单行折叠（⏎），原始文本保留换行。
@@ -417,6 +505,7 @@ def test_ctrl_g_editor_fills_multiline_and_enter_submits(monkeypatch) -> None:
     # 再次 Ctrl+G：编辑器应收到原始多行文本（不是折叠显示文本）。
     press("ctrl_key", "\x07")
     assert calls[-1] == "第一行\n第二行"
+    assert paused_during_editor == [True, True]
 
     assert press("enter") is True
     assert st.result == ["第一行\n第二行"]
@@ -427,14 +516,21 @@ def test_ctrl_g_editor_fills_multiline_and_enter_submits(monkeypatch) -> None:
 def test_ctrl_g_editor_failure_keeps_text_and_shows_error(monkeypatch) -> None:
     import src.tui.app.user_select as us_mod
 
-    monkeypatch.setattr(us_mod, "_run_external_editor", lambda text: None)
+    paused: list = []
+
+    def fake_editor(text):
+        paused.append(st.typing)
+        return None
+
+    monkeypatch.setattr(us_mod, "_run_external_editor", fake_editor)
     st = _state()
     model, element, root, press = _mount_popup([st])
     _enter_custom_for(st, press)
     press("char", "X")
 
     assert press("ctrl_key", "\x07") is True
-    assert st.typing is True
+    assert paused == [True]  # 编辑器运行期间暂停空闲计时
+    assert st.typing is False  # 失败返回后复位暂停标志
     assert st.done is False
 
     texts = _collect_texts(root)
@@ -476,7 +572,7 @@ def test_ctrl_g_multiline_multi_question_only_current(monkeypatch) -> None:
 
     press("arrow_down")  # 自定义行（1 个普通选项）
     press("enter")
-    assert s1.typing is True
+    assert s1.typing is False  # 输入模式（不暂停计时）
 
     press("ctrl_key", "\x07")
     press("enter")
@@ -502,7 +598,7 @@ def test_ctrl_g_preserves_multi_select_checked(monkeypatch) -> None:
     press("arrow_down")
     press("arrow_down")
     press("enter")
-    assert st.typing is True
+    assert st.typing is False  # 输入模式（不暂停计时）
 
     press("ctrl_key", "\x07")
     assert press("enter") is True

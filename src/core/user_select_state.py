@@ -7,14 +7,30 @@
 并发语义（2026-08-19）：多个并发 user_select 工具调用各自构造一个本状态
 并 append 到模型并发队列；``try_set_final`` 为跨线程 first-write-wins
 终态写入，``mark_answered`` 支持提交前重答。
+
+★ 2026-10-22（用户需求：删除 user_select 的 ``timeout`` 参数，改为「不操作
+界面三分钟后才算超时」）：新增 ``idle_timeout`` 字段与 ``touch_activity()``
+——工具路径以 ``IDLE_TIMEOUT_SECONDS``（180s）作为空闲窗口，弹窗每收到一次
+界面操作就重置 ``deadline``；固定 deadline 的调用方 ``idle_timeout`` 为 0，
+行为不变。
 """
 
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass, field
 
-__all__ = ["UserSelectState"]
+__all__ = ["IDLE_TIMEOUT_SECONDS", "UserSelectState"]
+
+#: 空闲超时窗口（秒）：user_select 弹窗 **3 分钟没有任何操作**（按键/滚动）
+#: 才判定超时（回退 default_options）。
+#: ★ 2026-10-22（用户需求：删除 user_select 的 timeout 参数，改为「不操作
+#:   界面三分钟后才算超时」）：工具路径构造 state 时写入 ``idle_timeout``，
+#:   弹窗每收到一次输入就经 ``touch_activity`` 把 ``deadline`` 重置为
+#:   ``now + idle_timeout``；命令系统选择（CommandUiAdapter）等固定 deadline
+#:   调用方 ``idle_timeout`` 保持 0，计时语义不变。
+IDLE_TIMEOUT_SECONDS = 180.0
 
 
 @dataclass
@@ -32,14 +48,22 @@ class UserSelectState:
         selected: 当前高亮索引（组件维护）。
         checked: 多选勾选索引列表（组件维护）。
         deadline: 超时截止（time.monotonic()）；0 表示无限等待。
+        idle_timeout: 空闲计时窗口（秒）；> 0 时弹窗每收到一次界面操作就
+            经 ``touch_activity`` 把 ``deadline`` 顺延 ``now + idle_timeout``
+            （「不操作界面 N 分钟后才算超时」）。0 = 固定 deadline 语义
+            （命令系统选择等调用方，保持原有计时不变）。
         answered: 该问题是否已回答（提交前可重答）。
         done: 交互是否已整体提交/超时（终态锁定）。
         action: 结束方式（confirmed/cancel/timeout）。
         result: 选中的 options 子集（含自由输入时附加的自定义文本）。
         allow_custom: 是否允许用户输入选项外的自定义答案（工具路径为
             True；命令系统选择路径默认 False，保持 index 契约）。
-        typing: 用户当前是否正在编辑自定义答案（跨线程标志；组件写、
-            工具轮询读——为 True 时暂停自动超时）。
+        typing: 外部编辑器（Ctrl+G，默认 vim）当前是否正在运行（跨线程
+            标志；组件写、工具轮询读）——为 True 时暂停空闲超时，编辑器
+            返回后把运行时长补回 ``deadline``。★ 2026-10-22：超时改为
+            「界面 3 分钟没有操作才超时」后，弹窗内正常打字/浏览由每次
+            按键（``touch_activity``）重置倒计时；只有外部编辑器独占终端、
+            界面收不到按键时才需要本标志暂停计时。
         custom: 本次回答的自由输入文本（空串 = 未使用自定义输入）。
         _final_lock: 终态原子写锁。
     """
@@ -54,19 +78,48 @@ class UserSelectState:
     selected: int = 0
     checked: list = field(default_factory=list)
     deadline: float = 0.0
+    #: 空闲计时窗口（秒，0 = 不启用；见 ``touch_activity``）。
+    idle_timeout: float = 0.0
     answered: bool = False
     done: bool = False
     action: str = ""
     result: list = field(default_factory=list)
     # ★ 2026-10-21（用户需求：user_select 支持输入选项外内容并返回，
     #   输入时停止自动超时）：以下字段均有默认值——旧构造/旧测试/命令
-    #   路径零回归。
+    #   路径零回归。★ 2026-10-22：暂停标记 ``typing`` 只用于外部编辑器
+    #   （见字段说明），界面内按键经 ``touch_activity`` 重置倒计时。
     allow_custom: bool = False
     typing: bool = False
     custom: str = ""
     _final_lock: threading.Lock = field(
         default_factory=threading.Lock, repr=False, compare=False,
     )
+
+    def touch_activity(self, now: "float | None" = None) -> bool:
+        """按空闲计时刷新超时截止（界面每发生一次操作调用一次）。
+
+        ``idle_timeout`` > 0 且未进入终态（done）时，把 ``deadline`` 重置为
+        ``now + idle_timeout``——「不操作界面 N 分钟后才算超时」：用户持续
+        操作（按键 / 滚动 / 输入自定义答案）不会被打断。``idle_timeout``
+        为 0 的调用方（命令系统选择等固定 deadline 场景）不改动
+        ``deadline``，保持原有计时语义（零回归）。
+
+        Args:
+            now: 当前 ``time.monotonic()``（测试可注入；None 取实时值）。
+
+        Returns:
+            True 本次刷新生效；False 未启用空闲计时或已终态。
+        """
+        if self.done:
+            return False
+        try:
+            idle = float(self.idle_timeout or 0.0)
+        except (TypeError, ValueError):
+            return False
+        if idle <= 0:
+            return False
+        self.deadline = (time.monotonic() if now is None else float(now)) + idle
+        return True
 
     def mark_answered(self, action: str, result: list, custom: str = "") -> bool:
         """标记该问题已回答（不置 done，提交前可反复覆盖）。

@@ -107,7 +107,9 @@ BUILTIN_TOOL_METADATA: Dict[str, dict] = {
     },
     "user_select": {
         "parallel_safe": True, "requires_network": False, "requires_terminal": True,
-        "timeout_estimate": 120, "category": "interactive", "priority": 5,
+        # ★ 2026-10-22（用户需求）：超时改为「界面 3 分钟无操作」——预计最大
+        #   执行时间按空闲窗口 180s 计（原为固定 120s 超时）。
+        "timeout_estimate": 180, "category": "interactive", "priority": 5,
         "tool_category": "interactive", "description": "用户交互选择",
     },
     "web_fetch": {

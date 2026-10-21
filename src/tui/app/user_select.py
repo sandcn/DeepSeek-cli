@@ -29,12 +29,18 @@ user_select 工具调用各自 append 一个 ``UserSelectState`` 到
   - ★ 2026-08-19（用户需求：回车自动切换）：Enter 确认（或 Esc 取消）
     当前问题后，焦点**自动跳到下一个未选择（未回答）的问题**；全部回答
     后自动切到 Submit 页。
-  - ★ 2026-10-21（用户需求：支持用户输入不在选项中的内容并返回，输入时
-    停止自动超时）：选项列表末尾追加「✎ 其他（自定义输入…）」伪选项——
-    Enter 进入输入编辑模式（TextInput 接管字符/退格/方向键），Enter 提交
-    自由输入、Esc 返回选项；输入期间把 ``us.typing`` 置 True（工具轮询
-    据此暂停自动超时），退出/提交后恢复。自由输入结果并入 ``result``，
-    并经 ``custom`` 字段返回（见工具层 JSON）。
+  - ★ 2026-10-21（用户需求：支持用户输入不在选项中的内容并返回）：
+    选项列表末尾追加「✎ 其他（自定义输入…）」伪选项——Enter 进入输入编辑
+    模式（TextInput 接管字符/退格/方向键），Enter 提交自由输入、Esc 返回
+    选项。自由输入结果并入 ``result``，并经 ``custom`` 字段返回（见工具层
+    JSON）。
+  - ★ 2026-10-22（用户需求：删除 ``timeout`` 参数，改成「不操作界面三分钟
+    后才算超时」）：弹窗每收到一次按键/滚动，就把各未提交问题的倒计时重置
+    为 3 分钟（``_touch_idle_states`` → ``UserSelectState.touch_activity``；
+    共享计时：任一 tab 上的操作刷新全部问题）。因此持续操作永不超时，
+    界面空闲 3 分钟才由工具协程判定超时并回退 ``default_options``。外部
+    编辑器（Ctrl+G vim）独占终端期间 ``us.typing=True`` 暂停计时（返回后
+    补回），避免长文编辑被超时打断。
   - ★ 2026-10-21（用户需求：Ctrl+G 用 vim 输入）：输入模式内按 Ctrl+G
     调用外部编辑器（``EDITOR``，默认 vim）编辑当前答案；返回后回填输入行
     （Enter 确认）。多行内容在输入行以 ``⏎`` 折叠显示，提交/返回 JSON
@@ -122,7 +128,7 @@ from src.tui.app.input_area import _desc_column_width, _truncate_width
 from src.tui.app._theme import _S_DIM, _S_SEP
 from src.tui.ink import TEXT, h, Column, Row, StyledRun
 from src.tui.ink.helpers import truncate_runs_ellipsis
-from src.tui.ink.hooks import use_effect, use_ref, use_state, use_input
+from src.tui.ink.hooks import use_effect, use_ref, use_state, use_input, useMouseInput
 from src.tui.ink.widgets.interactive import SelectInput, MultiSelect, TextInput
 from src.tui._external_editor import run_external_editor as _run_external_editor
 
@@ -757,6 +763,37 @@ def _fallback_empty_options(states: list) -> None:
             s.try_set_final("confirmed", list(getattr(s, "default_options", None) or []))
 
 
+def _touch_idle_states(states: list, now: "float | None" = None) -> None:
+    """空闲计时：界面每发生一次操作，重置各问题的「3 分钟无操作」倒计时。
+
+    ★ 2026-10-22（用户需求：删除 user_select 的 ``timeout`` 参数，改成
+    「不操作界面三分钟后才算超时」）：工具路径构造的 state 带
+    ``idle_timeout``（``IDLE_TIMEOUT_SECONDS`` = 180s）——本函数对**每个**
+    未提交（未 done）的此类 state 调用 ``touch_activity``，把 deadline
+    顺延为 ``now + idle_timeout``。并发多问题时采用**共享计时**（用户确认
+    的方案）：任一 tab 上的一次操作都会重置全部未提交问题——界面整体
+    空闲 3 分钟才算超时。
+
+    ``idle_timeout`` 为 0 的固定 deadline 调用方（命令系统选择
+    ``CommandUiAdapter`` 的 60s 计时）不受影响——``touch_activity`` 返回
+    False，deadline 保持不变（零回归）。
+
+    Args:
+        states: 当前弹窗问题 state 列表（并发队列；None 元素跳过）。
+        now: 当前 ``time.monotonic()``（测试可注入；None 取实时值）。
+    """
+    for state in list(states or []):
+        if state is None:
+            continue
+        touch = getattr(state, "touch_activity", None)
+        if touch is None:
+            continue
+        try:
+            touch(now)
+        except Exception:
+            _logger.debug("user_select: 空闲计时刷新失败", exc_info=True)
+
+
 def _submit_all(states: list) -> None:
     """Submit 页 Enter：统一提交全部问题。
 
@@ -1338,8 +1375,9 @@ def UserSelectPopup(props) -> object:
     ``us.allow_custom`` 为 True 时列表末尾渲染「✎ 其他（自定义输入…）」
     伪选项；Enter 进入输入编辑模式（选项控件失焦、TextInput 接管），
     Enter 提交 / Esc 返回；输入模式内 Ctrl+G 调用外部编辑器（``EDITOR``，
-    默认 vim，多行以 ``⏎`` 折叠显示、返回保留换行）。``us.typing`` 在
-    输入期间为 True（工具轮询暂停自动超时）。
+    默认 vim，多行以 ``⏎`` 折叠显示、返回保留换行）。
+    ★ 2026-10-22：``us.typing`` 仅在外部编辑器运行期间为 True（暂停空闲
+    计时）；弹窗内正常打字/导航由每次按键重置 3 分钟空闲倒计时。
 
     ★ 2026-10-21（继续优化）：Submit 页分页滚动 + 数字键 1-9 跳题；长列表
     显示上方/下方隐藏项数；tab 显示回答摘要；多选 `a` 全选/`c` 清空；
@@ -1458,7 +1496,8 @@ def UserSelectPopup(props) -> object:
         us_ref.current = us
         # ★ 2026-10-21（用户需求）：切换问题（手动 tab / 自动推进 / 并发
         #   新 tab 导致焦点变化）时退出自定义输入并清空缓冲——避免输入
-        #   内容串到下一题；同时复位旧 state 的 typing（恢复其自动超时）。
+        #   内容串到下一题；同时复位旧 state 的 typing（清除外部编辑器
+        #   暂停标志，空闲计时恢复正常）。
         if custom_editing_ref.current:
             custom_editing_ref.current = False
             set_custom_editing(False)
@@ -1494,11 +1533,27 @@ def UserSelectPopup(props) -> object:
     #   类型（模态输入接管语义，见 _hooks_input.use_modal docstring）。
     use_modal_scope(visible, fullscreen=False)
 
+    # ── 空闲计时（2026-10-22 用户需求：删除 ``timeout`` 参数，改成「不操作
+    #   界面三分钟后才算超时」）──
+    # 弹窗每收到一次按键/鼠标操作，就把各未提交问题的倒计时重置为 3 分钟
+    # （共享计时：任一 tab 上的操作都刷新全部，见 ``_touch_idle_states``）。
+    # handler 恒返回 False（不消费事件），只刷新计时——父组件 use_input 先于
+    # 子控件被 router 调用（前序收集），本次按键随后仍由后续 handler / 控件
+    # 正常处理（导航/确认/取消/自定义输入）。
+    def _on_any_input(_event) -> bool:
+        _touch_idle_states(states)
+        return False
+
+    use_input(_on_any_input, visible)
+    useMouseInput(_on_any_input, {"isActive": visible})
+
     # ══════════════ 自定义输入（2026-10-21 用户需求）══════════════
     # 列表末尾伪装项「✎ 其他（自定义输入…）」Enter 进入编辑模式：
     #   - 弹窗选项控件失焦（focus=False），TextInput 接管字符/退格/方向键；
     #   - 父 handler 只消费 Esc（退出输入）与 Tab（切换问题并退出输入）；
-    #   - us.typing=True 期间工具轮询暂停自动超时（退出/提交后恢复）。
+    #   - ★ 2026-10-22：输入期间每次按键都重置 3 分钟空闲倒计时（不再整段
+    #     暂停超时）；只有外部编辑器（vim）运行期间 ``us.typing=True``
+    #     暂停计时，返回后补回。
     def _checked_values() -> list:
         """当前多选勾选值（按 options 顺序；自定义伪选项不参与）。"""
         if us is None:
@@ -1565,7 +1620,11 @@ def UserSelectPopup(props) -> object:
         return not (allow_custom and idx >= total)
 
     def _exit_custom(clear: bool = True) -> None:
-        """退出自定义输入编辑模式（恢复选项控件焦点 + 自动超时）。"""
+        """退出自定义输入编辑模式（恢复选项控件焦点；清空未提交缓冲）。
+
+        ``us.typing`` 一并复位——外部编辑器异常退出等路径不会残留暂停标志
+        （空闲计时恢复正常）。
+        """
         custom_editing_ref.current = False
         set_custom_editing(False)
         if clear:
@@ -1576,7 +1635,13 @@ def UserSelectPopup(props) -> object:
             us.typing = False
 
     def _enter_custom() -> None:
-        """进入自定义输入编辑模式（空缓冲；高亮伪选项行）。"""
+        """进入自定义输入编辑模式（空缓冲；高亮伪选项行）。
+
+        ★ 2026-10-22（用户需求：删除 timeout 参数，改成「不操作界面三分钟
+        后才算超时」）：进入输入模式**不再**置 ``us.typing``——正常打字属于
+        界面操作，每次按键经 ``_touch_idle_states`` 重置 3 分钟倒计时；
+        ``typing`` 仅用于外部编辑器（Ctrl+G vim）独占终端期间暂停计时。
+        """
         if us is None or not allow_custom:
             return
         custom_editing_ref.current = True
@@ -1585,8 +1650,6 @@ def UserSelectPopup(props) -> object:
         custom_text_ref.current = ""
         set_custom_editor_error("")
         set_custom_input_rev(custom_input_rev + 1)
-        # 跨线程标志：工具轮询检测到 True 后暂停自动超时。
-        us.typing = True
         # 视觉：高亮列表末尾的「✎ 其他」行（普通项索引 0..total-1）。
         us.selected = total
         set_selected(total)
@@ -1631,13 +1694,22 @@ def UserSelectPopup(props) -> object:
         """Ctrl+G：用外部编辑器（``EDITOR``，默认 vim）编辑自定义答案。
 
         编辑器返回文本后回填到输入行（仍保持输入模式，Enter 确认）；
-        取消/失败（None）保持原文本并显示错误提示。编辑期间
-        ``us.typing`` 保持 True（自动超时继续暂停）。
+        取消/失败（None）保持原文本并显示错误提示。
+
+        ★ 2026-10-22（用户需求：删除 timeout 参数，改成「不操作界面三分钟
+        后才算超时」）：外部编辑器独占终端，弹窗在此期间收不到任何按键——
+        把 ``us.typing`` 置 True 让工具轮询暂停空闲计时，返回后（finally）
+        复位并把编辑耗时补回倒计时，避免长时间编辑被 3 分钟空闲超时打断。
         """
         if us is None or not custom_editing_ref.current:
             return
         before = custom_text_ref.current or ""
-        edited = _run_external_editor(before)
+        us.typing = True
+        try:
+            edited = _run_external_editor(before)
+        finally:
+            if us is not None:
+                us.typing = False
         if edited is None:
             set_custom_editor_error("编辑器不可用，已保留原文本")
             return
@@ -1646,7 +1718,6 @@ def UserSelectPopup(props) -> object:
         set_custom_text(raw)
         set_custom_editor_error("")
         set_custom_input_rev(custom_input_rev + 1)
-        us.typing = True
 
     def _submit_custom(text: str) -> None:
         """Enter 提交自由输入答案（空文本不提交，保持输入模式）。

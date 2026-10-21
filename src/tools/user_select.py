@@ -40,10 +40,22 @@ AskUserQuestion）：``parallel_safe=True``——多个 user_select 工具调用
 
 ★ 2026-10-21（用户需求：支持用户输入不在选项中的内容并返回，用户输入时
 停止自动超时）：工具构造的 ``UserSelectState`` 带 ``allow_custom=True``
-——弹窗列表末尾渲染「✎ 其他（自定义输入…）」入口，用户可输入任意文本；
-输入期间组件把 ``state.typing`` 置 True，本模块的超时轮询据此暂停计时
-（退出输入/提交后把暂停时长补回 deadline）。结果 ``selected`` 含自定义
-文本，并在 JSON 中额外返回 ``"custom": "..."`` 标记自由输入。
+——弹窗列表末尾渲染「✎ 其他（自定义输入…）」入口，用户可输入任意文本。
+结果 ``selected`` 含自定义文本，并在 JSON 中额外返回
+``"custom": "..."`` 标记自由输入。
+
+★ 2026-10-22（用户需求：删除 ``timeout`` 参数，改成「不操作界面三分钟后
+才算超时」）：工具 schema 与 ``__init__`` 均不再接受 ``timeout``；超时改为
+**空闲计时**——构造 state 时写入 ``idle_timeout=IDLE_TIMEOUT_SECONDS``
+（180s）与初始 ``deadline=now+180``，弹窗每收到一次按键/滚动就把
+``deadline`` 重置为 ``now+180``（见 ``core.user_select_state.touch_activity``
+与 ``tui/app/user_select.py`` 的 ``_touch_idle_states``）。因此：
+
+  - 用户持续操作（导航/勾选/切 tab/输入自定义答案）**永不超时**；
+  - 界面停顿 3 分钟无任何操作 → 工具轮询判定超时，原子回退
+    ``default_options``（``action="timeout"``）；
+  - 外部编辑器（Ctrl+G vim）独占终端期间组件置 ``state.typing=True``，
+    轮询暂停计时并在返回后补回，避免长文编辑被空闲超时打断。
 """
 
 from __future__ import annotations
@@ -59,6 +71,7 @@ from src._compat_termios import HAS_TERMIOS
 from .base import Func
 from ..core.constants import GREEN, YELLOW, RED, DIM, RESET
 from ..core.display_target import get_display_target
+from ..core.user_select_state import IDLE_TIMEOUT_SECONDS
 
 
 _logger = logging.getLogger(__name__)
@@ -107,15 +120,18 @@ def _interactive_stdin() -> bool:
 
 
 def _poll_deadline(state, paused_at: float, now: float) -> "tuple[float, bool]":
-    """超时轮询一拍：用户输入自定义答案期间暂停计时。
+    """超时轮询一拍：外部编辑器运行期间暂停空闲计时。
 
-    ★ 2026-10-21（用户需求：user_select 支持输入选项外内容并返回，
-    用户输入时停止自动超时）：组件进入自定义输入模式时把
-    ``state.typing`` 置 True、退出/提交时置 False（跨线程普通字段，
-    GIL 原子）。本函数在 ``typing`` 为 True 期间不判定超时，并把进入
-    输入的时刻记入 ``paused_at``；用户退出输入模式后，把暂停时长
-    补回 ``state.deadline``（剩余时间继续，不会因输入耗时被立刻判超时，
-    也不会永久挂起——未提交输入退出后仍保留超时兜底）。
+    ★ 2026-10-22（用户需求：删除 timeout 参数，改成「不操作界面三分钟后
+    才算超时」）：``deadline`` 由空闲计时维护——弹窗每次按键/滚动经
+    ``UserSelectState.touch_activity`` 重置为 ``now + idle_timeout``（180s），
+    因此本函数只负责判定「是否已连续 3 分钟没有操作」。组件在调用外部
+    编辑器（Ctrl+G，默认 vim）期间把 ``state.typing`` 置 True（跨线程普通
+    字段，GIL 原子）——编辑器独占终端、界面收不到按键，本函数在
+    ``typing`` 为 True 期间不判定超时，并把进入编辑器的时刻记入
+    ``paused_at``；返回后把暂停时长补回 ``state.deadline``（剩余时间继续，
+    不会因编辑耗时被立刻判超时，也不会永久挂起——未提交退出后仍由空闲
+    计时兜底）。
 
     Args:
         state: UserSelectState（读 ``typing`` / ``deadline``）。
@@ -145,6 +161,16 @@ def _poll_deadline(state, paused_at: float, now: float) -> "tuple[float, bool]":
     return paused_at, bool(deadline > 0 and now >= deadline)
 
 
+def _idle_timeout_text() -> str:
+    """空闲超时的展示文案（``IDLE_TIMEOUT_SECONDS`` 180s → ``3 分钟``）。
+
+    非整分钟时回退为秒数（保持展示与常量一致，避免硬编码「3 分钟」）。
+    """
+    if IDLE_TIMEOUT_SECONDS >= 60 and IDLE_TIMEOUT_SECONDS % 60 == 0:
+        return f"{int(IDLE_TIMEOUT_SECONDS // 60)} 分钟"
+    return f"{IDLE_TIMEOUT_SECONDS:g} 秒"
+
+
 class UserSelectFunc(Func):
     name = "user_select"
 
@@ -169,10 +195,12 @@ class UserSelectFunc(Func):
                     "所有问题会在一个弹窗界面里以 tab 形式一起显示给用户"
                     "（Tab/←/→ 切换焦点、逐题 Enter 确认、最后统一提交）——"
                     "用户一次答完所有问题，避免逐个串行提问打断用户。"
-                    "支持单选/多选（multi_select），超时/非交互自动回退 default_options。"
+                    "支持单选/多选（multi_select）；"
+                    "3 分钟没有任何操作（按键/滚动）才自动超时并回退 default_options，"
+                    "用户持续操作期间不会超时；非交互自动回退 default_options。"
                     "★ 支持用户输入选项外的自定义答案：选项列表末尾自动追加"
                     "『✎ 其他（自定义输入…）』入口，用户可输入任意文本；"
-                    "输入期间自动超时暂停（不会被 timeout 打断）。"
+                    "输入期间同样按空闲计时（每次按键重置 3 分钟倒计时）。"
                     "返回 JSON：{\"selected\":[...], \"action\":...}，"
                     "action 为 confirmed/cancel/timeout/non_interactive/empty/error；"
                     "用户使用自由输入时 selected 中含该文本，并额外返回 "
@@ -206,11 +234,6 @@ class UserSelectFunc(Func):
                             "items": {"type": "string"},
                             "description": "超时/取消/非交互时回退的默认选项列表，值必须在 options 中",
                             "default": []
-                        },
-                        "timeout": {
-                            "type": "number",
-                            "description": "超时秒数（默认120），超时自动回退 default_options，action=\"timeout\"",
-                            "default": 120
                         }
                     },
                     "required": ["title", "options"]
@@ -218,13 +241,19 @@ class UserSelectFunc(Func):
             }
         }
 
-    def __init__(self, title, options, multi_select=False, default_options=None, timeout=120, option_descriptions=None):
+    def __init__(self, title, options, multi_select=False, default_options=None, option_descriptions=None):
+        """构造 user_select 工具实例。
+
+        ★ 2026-10-22（用户需求）：**已删除** ``timeout`` 参数——超时不再由
+        调用方指定，统一为「界面 3 分钟无操作」（``IDLE_TIMEOUT_SECONDS``）。
+        模型侧历史调用若仍携带 ``timeout``，``Func.from_args`` 会作为多余
+        参数忽略（debug 日志），不影响构造与执行。
+        """
         super().__init__()  # 调用父类初始化，设置agent为None
         self.title = title
         self.options = options
         self.multi_select = multi_select
         self.default_options = default_options or []
-        self.timeout = timeout
         # 与 options 等长的说明列表；长度不足补齐空串，超出截断
         descs = list(option_descriptions or [])
         if len(descs) < len(self.options):
@@ -337,7 +366,12 @@ class UserSelectFunc(Func):
                 #   的自定义答案；命令系统选择（CommandUiAdapter）不传该字段
                 #   → 默认 False，index 契约保持不变。
                 allow_custom=True,
-                deadline=0.0 if self.timeout <= 0 else time.monotonic() + self.timeout,
+                # ★ 2026-10-22（用户需求）：超时改为「界面 3 分钟无操作」——
+                #   初始 deadline = now + 180s；此后弹窗每收到一次按键/滚动
+                #   由组件经 ``touch_activity`` 重置 deadline（``idle_timeout``
+                #   为 0 的固定 deadline 调用方不受影响）。
+                idle_timeout=IDLE_TIMEOUT_SECONDS,
+                deadline=time.monotonic() + IDLE_TIMEOUT_SECONDS,
             )
             try:
                 if not hasattr(model, "user_selects"):
@@ -361,8 +395,10 @@ class UserSelectFunc(Func):
             # ★ 2026-08-19：轮询**本 state**（并发队列中的元素），不再读
             #   ``model.user_select``——并发场景下 model.user_select 可能被
             #   其他协程覆盖。
-            # ★ 2026-10-21（用户需求）：用户编辑自定义答案期间（state.typing）
-            #   暂停超时；退出输入后把暂停时长补回 deadline（剩余时间继续）。
+            # ★ 2026-10-22（用户需求）：超时 = 界面连续 3 分钟没有操作。
+            #   deadline 由组件在每次操作时经 ``state.touch_activity()`` 重置；
+            #   外部编辑器（Ctrl+G vim）独占终端期间 ``state.typing`` 为 True
+            #   ——轮询暂停计时，编辑器返回后把暂停时长补回 deadline。
             paused_at = 0.0
             while not state.done:
                 paused_at, expired = _poll_deadline(
@@ -482,12 +518,11 @@ class UserSelectFunc(Func):
         Func._publish_tool_text(
             f"  {DIM}模式: {'多选' if self.multi_select else '单选'} · 可输入自定义答案{RESET}"
         )
-        if self.timeout > 0:
-            Func._publish_tool_text(
-                f"  {DIM}超时: {self.timeout}秒（输入自定义答案时暂停）{RESET}"
-            )
-        else:
-            Func._publish_tool_text(f"  {DIM}超时: 无限等待{RESET}")
+        # ★ 2026-10-22（用户需求）：timeout 参数已删除——超时固定为
+        #   「界面 3 分钟没有操作」（每次按键/滚动重置倒计时）。
+        Func._publish_tool_text(
+            f"  {DIM}超时: {_idle_timeout_text()}无操作（按键/滚动重置计时）{RESET}"
+        )
 
         # 执行选择
         result_json = await self.execute()

@@ -181,7 +181,8 @@ def test_number_key_in_custom_input_is_text() -> None:
     # 导航到「✎ 其他」并进入输入模式。
     assert press("arrow_down") is True
     assert press("enter") is True
-    assert st.typing is True
+    # ★ 2026-10-22：输入模式不再暂停计时（typing 仅外部编辑器期间为 True）。
+    assert st.typing is False
     assert press("char", "1") is True
     assert press("char", "2") is True
     assert st.done is False
@@ -388,7 +389,8 @@ def test_batch_keys_select_all_and_clear() -> None:
     press("arrow_down")
     press("arrow_down")
     press("enter")
-    assert st.typing is True
+    # ★ 2026-10-22：输入模式不再暂停计时（typing 仅外部编辑器期间为 True）。
+    assert st.typing is False
     assert press("char", "a") is True
     assert st.checked == []
 
@@ -417,7 +419,8 @@ def test_input_ctrl_u_clears_buffer() -> None:
     # 空文本 Enter 不提交，保持输入模式。
     assert press("enter") is True
     assert st.done is False
-    assert st.typing is True
+    # ★ 2026-10-22：输入模式不再暂停计时（typing 仅外部编辑器期间为 True）。
+    assert st.typing is False
     for ch in "ok":
         press("char", ch)
     assert press("enter") is True
