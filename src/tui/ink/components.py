@@ -111,15 +111,14 @@ def _paint(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) -> None
         clip: 裁剪区域 (x, y, w, h)；None 表示不裁剪。
         inherit_bg: 继承的背景样式（None=无；Box backgroundColor 传递）。
     """
-    # ★ 浮窗隐藏（2026-10-21）：锚点缺失（输入区 / 底部框未渲染，如整屏
-    #   视图）时由 ``apply_floating_layout`` 标记隐藏——整树绘制阶段直接
-    #   跳过，避免窗口贴到文档底部与弹窗重叠。
-    # ★ ``is not None``（不是真值判定）：空串 id 也是合法浮窗标记（见
-    #   ``_floating._collect_float_fibers`` 同一口径）。
-    if (
-        fiber.props.get("dataFloatWindow") is not None
-        and getattr(fiber, "_float_hidden", False)
-    ):
+    # ★ 浮窗只经合成层绘制（2026-10-21 修复）：整树绘制阶段**一律跳过**浮窗
+    #   host——浮窗内容由 ``_overlay_floating`` 按窗口矩形单独绘制并合成。
+    #   修复前此处只跳过隐藏窗口：窗口内容会被画进基础画布，导致
+    #   （1）输出历史（``line_callback``）把窗口边框当成消息文本写入
+    #   scrollback；（2）committed 前缀复用路径下窗口内容被前缀覆盖而残缺；
+    #   （3）嵌套浮窗逃出父窗口。``is not None``（不是真值判定）：空串 id
+    #   也是合法浮窗标记（见 ``_floating._collect_float_fibers`` 同一口径）。
+    if fiber.props.get("dataFloatWindow") is not None:
         return
     try:
         _paint_impl(fiber, canvas, clip, inherit_bg)
@@ -505,11 +504,16 @@ def _overlay_floating(root: Fiber, frame: Frame, width: int) -> Frame:
     帧拼装完成后，把浮窗子树重新绘制并逐行合并——窗口完整、关闭后前缀行
     原样恢复（下一帧无浮窗 / 无前缀复用 → 直接返回原 frame）。
 
-    性能：画布只按**窗口矩形**分配（``[None] * win_h``）——绘制前把浮窗子树
-    临时平移到原点、绘制完立即平移回来，因此绘制/合并都是 O(浮窗面积)，
-    与帧行数无关（修复前每窗每帧分配 ``[None] * 帧行数``，长文档下是 O(文档)
-    的额外分配）。与 committed 前缀区间相交时取消 ``stable_prefix`` 标记
-    （被覆盖行已非前缀原行，不能再跳过 diff 比较）。
+    性能：画布只按**窗口可见矩形**分配（``[None] * visible_h``）——绘制前把
+    浮窗子树临时平移到原点、绘制完立即平移回来，因此绘制/合并都是 O(浮窗
+    可见面积)，与帧行数无关（修复前每窗每帧分配 ``[None] * 帧行数``，长文档
+    下是 O(文档) 的额外分配）。与 committed 前缀区间相交时**只让被覆盖的
+    行退出稳定前缀**（保留前缀起点到首个被覆盖行之间的复用区间，
+    ``stable_prefix_len`` 收缩），避免整段前缀每帧重新逐行比较。
+
+    ★ 输出历史（2026-10-21 修复）：返回的 Frame 携带 ``base_lines``（合并前
+    的底层行）——``renderer._emit_content_lines`` 用它取内容行，浮窗覆盖
+    committed 区时 scrollback 不再被窗口边框污染。
     """
     if not _has_floating_layer(root):
         return frame
@@ -518,7 +522,8 @@ def _overlay_floating(root: Fiber, frame: Frame, width: int) -> Frame:
     windows = _collect_float_fibers(root)
     if not windows:
         return frame
-    lines = list(frame.lines)
+    base_lines = frame.lines
+    lines = list(base_lines)
     touched: list[int] = []
     # ★ 逐窗口按**矩形列范围**合并（2026-10-21 用户反馈修复：同一行只显示
     #   浮窗内容、左侧/右侧原内容丢失）。只把窗口自己的单元格合并到对应列，
@@ -530,7 +535,12 @@ def _overlay_floating(root: Fiber, frame: Frame, width: int) -> Frame:
         win_x = int(box.x)
         win_y = int(box.y)
         win_w = int(box.w)
-        win_h = int(box.h)
+        # ★ 可见高度/源行（2026-10-21 尺寸约束）：布局阶段按 max_height /
+        #   底部框 / 可视区裁剪，这里只绘制可见带——超出部分不画、不合并。
+        win_h = int(getattr(fiber, "_float_visible_h", box.h) or 0)
+        src_row = int(getattr(fiber, "_float_src_row", 0) or 0)
+        if win_h <= 0:
+            continue
         if win_x >= width or win_x + win_w <= 0:
             continue  # 完全在屏幕右侧外
         # ★ O(窗口面积)：临时平移到原点画到 h 行小画布，再平移回去（异常也
@@ -539,13 +549,16 @@ def _overlay_floating(root: Fiber, frame: Frame, width: int) -> Frame:
         try:
             if win_x:
                 _translate_subtree_x(fiber, -win_x)
-            if win_y:
-                _translate_subtree_y(fiber, -win_y)
+            if win_y + src_row:
+                _translate_subtree_y(fiber, -(win_y + src_row))
             try:
-                _paint(fiber, canvas)
+                # ★ 直接调 ``_paint_impl``（不是 ``_paint``）：``_paint`` 会跳过
+                #   浮窗 host（主树绘制用），而这里是**要**绘制窗口自身。
+                #   窗口内容里的嵌套浮窗仍经 ``_paint`` 递归 → 被忽略。
+                _paint_impl(fiber, canvas)
             finally:
-                if win_y:
-                    _translate_subtree_y(fiber, win_y)
+                if win_y + src_row:
+                    _translate_subtree_y(fiber, win_y + src_row)
                 if win_x:
                     _translate_subtree_x(fiber, win_x)
         except Exception:
@@ -576,15 +589,22 @@ def _overlay_floating(root: Fiber, frame: Frame, width: int) -> Frame:
     plen = frame._stable_prefix_len
     if prefix is not None:
         start, end = offset, offset + plen
-        if any(start <= row < end for row in touched):
-            prefix = None
-            offset = 0
-            plen = 0
+        covered = [row for row in touched if start <= row < end]
+        if covered:
+            # 只保留「前缀起点 → 首个被覆盖行」这一段仍然有效的复用区间；
+            # 被覆盖行及其之后退出身份短路（逐行比较，正确性优先）。
+            first = min(covered)
+            plen = first - start
+            if plen <= 0:
+                prefix = None
+                offset = 0
+                plen = 0
     return Frame(
         lines,
         stable_prefix=prefix,
         stable_prefix_offset=offset,
         stable_prefix_len=plen,
+        base_lines=base_lines,
     )
 
 
@@ -598,7 +618,8 @@ def render_frame(root: Fiber, width: int, viewport_height: int = 0) -> Frame:
         root: 根 fiber（ROOT 或 APP host）。
         width: 文档宽度（终端列宽）。
         viewport_height: 终端可见高度（行）；> 0 时浮窗被钳进可视区
-            （渲染器只重写可见行）。0 = 整帧输出（headless），不钳制。
+            （顶部锚点移入可视区、底部锚点裁剪顶部），渲染器只重写可见行。
+            0 = 整帧输出（headless），不钳制。
 
     Returns:
         完整文档的 Frame。
@@ -727,12 +748,15 @@ def render_frame(root: Fiber, width: int, viewport_height: int = 0) -> Frame:
                 ),
                 width,
             )
-    # ★ 无 committed 前缀复用：画布已完整绘制（含浮窗，浮窗是根的最后子节点
-    #   → 绘制顺序在正常界面之后，覆盖关系天然正确），无需再走合成层——
-    #   省掉每帧一次的浮窗二次绘制与浮窗 fiber 收集（2026-10-21 性能）。
-    #   合成层只在**前缀复用路径**必需（那里画布中浮窗覆盖的 committed 行
-    #   被缓存前缀整体覆盖）。
-    return Frame(_to_line(row, width) for row in canvas)
+    # ★ 无 committed 前缀复用：画布不含浮窗（``_paint`` 一律跳过浮窗 host），
+    #   仍需经合成层绘制窗口——2026-10-21 统一：浮窗**只**在合成层绘制，
+    #   与树中位置无关（不依赖「浮窗是根的最后子节点」这一隐式契约），
+    #   同时保证 ``Frame.base_lines`` 是干净的内容行（输出历史用）。
+    return _overlay_floating(
+        root,
+        Frame([_to_line(row, width) for row in canvas]),
+        width,
+    )
 
 
 __all__ = ["render_frame"]

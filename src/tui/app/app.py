@@ -80,12 +80,19 @@ def App(props) -> object:
         view = FULLSCREEN_VIEWS.get(fullscreen_id)
         if view is not None:
             # ★ 通用浮动窗口（2026-10-21）：浮窗层追加在整屏视图之后——
-            #   绝对定位、不占高度，后绘制覆盖在上；无浮窗时保持「视图组件
-            #   直接作为根元素」的既有结构（零行为变化）。
+            #   绝对定位、不占高度；无浮窗时保持「视图组件直接作为根元素」
+            #   的既有结构（零行为变化）。
+            #   ★ 模态标记（2026-10-21 完善）：根元素带 ``dataFullscreenView``
+            #   ——浮窗定位阶段据此**默认隐藏**全部浮窗（模态独占画面）；
+            #   ``over_fullscreen=True`` 的窗口显式豁免。
             float_children = floating_layer_elements(model, width)
             if not float_children:
                 return h(view, {"model": model, "width": width})
-            return h(APP, {"width": width, "flexDirection": "column"}, [
+            return h(APP, {
+                "width": width,
+                "flexDirection": "column",
+                "dataFullscreenView": True,
+            }, [
                 h(view, {"model": model, "width": width}),
                 *float_children,
             ])

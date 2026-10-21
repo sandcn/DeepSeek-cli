@@ -169,8 +169,15 @@ def _make_idle_frame_predicate(model, session):
             #   判定其内容是否静态）。若有浮窗时仍复用上一帧，浮窗内容依赖的
             #   model 字段一旦**不经 request_bottom_redraw** 变化就会冻结在
             #   旧值，而静态态下没有脏事件来纠正（与「Esc 关全屏视图不刷新」
-            #   同一类问题）。开窗是短时行为，保守重建的代价可接受。
-            if getattr(model, "floating_windows", None):
+            #   同一类问题）。
+            #   ★ 完善（2026-10-21）：窗口显式声明 ``idle_static=True``
+            #   （内容只依赖窗口自身 props、不读 model）时允许复用——避免
+            #   常驻浮窗把空闲帧复用永久关掉（60Hz 全量重建）。默认仍保守
+            #   重建（未知内容冻结风险优先）。
+            windows = getattr(model, "floating_windows", None)
+            if windows and not all(
+                getattr(w, "idle_static", False) for w in windows
+            ):
                 return False
             completion = getattr(model, "completion", None)
             if completion is not None and getattr(completion, "visible", False):

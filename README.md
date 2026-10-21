@@ -711,6 +711,74 @@ ChatUIConsumer
 
 ---
 
+## 通用浮动窗口（Floating Windows）
+
+任意组件都能在 TUI 上叠加一个浮动窗口（`/loop` 进度窗即用此机制实现）。浮窗是**绝对定位覆盖层**：不占文档高度，关闭后下一帧整帧重建，被覆盖内容原样还原。
+
+**层级**：`src/tui/app/floating.py`（规格 / 渲染包装 / 优先级排序）→ `src/tui/ink/_floating.py`（布局后锚点解析与平移）→ `src/tui/ink/components.py`（帧末合成 `_overlay_floating`）。
+
+### 打开 / 更新 / 关闭（命令层）
+
+```python
+from src.tui.app.floating import FloatingWindowSpec, window_hit_test
+
+chat_ui.open_floating_window(FloatingWindowSpec(
+    id="my-window",                 # 唯一 id；同 id 重复 open = 替换
+    render=MyContent,               # 函数组件：props = model/window/width/height/geometry
+    width=30,                       # 总宽（含边框）；None = 内容自适应
+    x="right",                      # int / "left" / "center" / "right"
+    bottom="bottom_area",           # 默认：底部框上方一行（向上展开）
+    priority=100,                   # 数值大 = 上层
+))
+chat_ui.update_floating_window("my-window", scroll_top=3)   # 不可变替换
+chat_ui.close_floating_window("my-window")                  # False = 窗口不存在
+chat_ui.clear_floating_windows()                            # 关闭全部
+```
+
+### 规格字段
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `id` | 必填 | 唯一标识（`strip` 后非空；空白/重复 id 被拒绝/丢弃） |
+| `render` | `None` | 内容组件（`props={"model","window","width","height","geometry"}`）；hooks 可用 |
+| `priority` | `0` | 叠放顺序（升序绘制，高优先级在上） |
+| `width` | `30` | 总宽（含边框），钳制到终端宽度；`None` = 自适应 |
+| `x` | `"right"` | 左边界列：int / `"left"` / `"center"` / `"right"` |
+| `bottom` | `"bottom_area"` | 底行锚点：int / `"bottom_area"` / `"input_top"` / `"input_bottom"` / `"doc_bottom"` / `"doc_top"` |
+| `top` | `None` | 顶行锚点（与 `bottom` 同时给出时优先） |
+| `offset_x` / `offset_y` | `0` | 额外列/行偏移 |
+| `border` / `border_color` / `background` | `True` / 默认深青 / `black` | 边框与背景；`background=None` = 透明（只覆盖实际字符列） |
+| `padding_x` / `padding_y` / `title` | `1` / `0` / `""` | 内边距与可选标题行 |
+| `max_height` | `None` | 可见高度上限；超出部分**裁剪**（绝不把窗口下推去盖底部框） |
+| `scroll_top` | `0` | 内容滚动偏移（配合 `max_height` 查看后续内容） |
+| `allow_cover_bottom` | `False` | 允许覆盖底部框（状态栏/输入区）；默认被裁到其上方 |
+| `over_fullscreen` | `False` | 允许显示在模态全屏视图之上；默认全屏视图下隐藏 |
+| `close_on_escape` | `False` | Esc 关闭窗口（`on_close` 由 bridge 自动注入） |
+| `on_close` / `idle_static` | `None` / `False` | 关闭回调 / 内容只依赖自身 props 时允许空闲帧复用 |
+
+### 锚点语义
+
+- `bottom_area` = **底部框上方一行**（`bottom_area_top - 1`，语义边界）——底行锚定在其上时窗口不覆盖底部框（状态栏 + 输入区 / 模态底部视图）。
+- `input_top` = 输入区顶部分隔线（CPU/MEM 行）**本身**——窗口底行落在该行会覆盖它；需要保留分隔线时用 `bottom_area`。
+- 底行锚点 + `offset_y=-1` = 再上移一行；顶行锚点同理。
+- 绝对坐标可落在文档任意位置；超出视口上方的内容被裁剪（保留锚定侧），不会把窗口整体下移到可覆盖底部框的位置。
+
+### 交互
+
+- `props["geometry"]`（每帧原地更新）：`x/y/width/height/content_height/screen_x/screen_y/visible/hidden_reason`。`screen_*` 是终端可见坐标。
+- `window_hit_test(window, col, row)` → 命中时返回窗口内局部坐标（配合 `use_mouse_input`）。
+- 键位/焦点由内容组件自行声明：`use_input` + `useFocus`，需要独占键盘时调 `use_modal(True)`。
+- `close_on_escape=True` 时 Esc 关闭窗口（其余按键原样放行）。
+
+### 已知限制
+
+- 浮窗覆盖到跨列宽字符（CJK/emoji）时，终端无法只覆盖其某一列——相邻列会被清空。
+- 嵌套浮窗（窗口内容里再声明 `dataFloatWindow`）不支持，内层会被忽略。
+- `allow_cover_bottom=True` 且覆盖输入区时，终端光标仍按输入区定位，会落在窗口内容上——非必要不要打开。
+- 浮窗只在合成层绘制：不进入输出历史（scrollback 记录的是底层消息内容）。
+
+---
+
 ## 目录结构
 
 ```

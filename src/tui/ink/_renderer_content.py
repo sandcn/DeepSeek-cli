@@ -104,7 +104,12 @@ class _RendererContentMixin:
             return
         try:
             for idx in range(start, end):
-                self._line_callback(frame.render_line(idx) + "\n")
+                # ★ 底层内容行（2026-10-21 修复）：浮窗是覆盖层，可能盖住
+                #   committed 区最新提交行——修复前用合成帧取行会把窗口边框/
+                #   内容当成消息文本写入输出历史（scrollback 被污染）。
+                #   ``render_content_line`` 优先取 ``Frame.base_lines``
+                #   （无浮窗覆盖的底层行；无 base_lines 时等价 render_line）。
+                self._line_callback(frame.render_content_line(idx) + "\n")
         except Exception:
             # 裸吞异常补日志（exc_info 保留栈）。
             _logger.debug("_emit_content_lines 行回调异常", exc_info=True)

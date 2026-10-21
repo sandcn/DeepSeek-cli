@@ -315,13 +315,23 @@ class Frame:
     临时新建 list）。
 
     Attributes:
-        lines: 帧行列表。
+        lines: 帧行列表（最终合成帧，含浮窗层）。
         _stable_prefix: 稳定前缀列表对象（committed 前缀复用）；None 表示无。
         _stable_prefix_offset: 稳定前缀在 lines 中的起始行号（0-based）。
         _stable_prefix_len: 稳定前缀覆盖的行数。
+        base_lines: **不含浮窗层**的底层行（仅有浮窗覆盖时非 None）——输出
+            历史（``line_callback``）必须用它取内容行：浮窗可能覆盖 committed
+            区，用合成帧取行会把窗口边框当成消息文本写入 scrollback
+            （2026-10-21 修复）。None 表示「lines 本身就是底层行」。
     """
 
-    __slots__ = ("lines", "_stable_prefix", "_stable_prefix_offset", "_stable_prefix_len")
+    __slots__ = (
+        "lines",
+        "_stable_prefix",
+        "_stable_prefix_offset",
+        "_stable_prefix_len",
+        "base_lines",
+    )
 
     def __init__(
         self,
@@ -329,6 +339,7 @@ class Frame:
         stable_prefix: list | None = None,
         stable_prefix_offset: int = 0,
         stable_prefix_len: int = 0,
+        base_lines: list | None = None,
     ) -> None:
         # ★ 性能（PERF-7）：传入 list 时直接复用引用（免 O(n) 拷贝）——
         #   ``render_frame`` 的 ``Frame(prefix + tail)`` 等调用方传入的均为
@@ -348,6 +359,10 @@ class Frame:
         self._stable_prefix = stable_prefix
         self._stable_prefix_offset = stable_prefix_offset
         self._stable_prefix_len = stable_prefix_len
+        # ★ 底层行（2026-10-21）：仅在有浮窗覆盖时由 ``_overlay_floating``
+        #   填入（与 lines 同长、同索引；浮窗覆盖处为原内容）。非 list 一律
+        #   视为「无」，避免调用方误传生成器导致内容行回调二次消费。
+        self.base_lines = base_lines if isinstance(base_lines, list) else None
 
     @property
     def height(self) -> int:
@@ -356,6 +371,17 @@ class Frame:
 
     def render_line(self, index: int) -> str:
         """渲染第 index 行为 ANSI 字符串。"""
+        return self.lines[index].render()
+
+    def render_content_line(self, index: int) -> str:
+        """渲染第 index 行的**底层内容**（不含浮窗层）。
+
+        输出历史（``line_callback``）专用：浮窗是覆盖层，不是内容——用它取
+        行可保证 scrollback 记录的是真实消息文本而非窗口边框/内容。无浮窗
+        覆盖时等价于 ``render_line``。
+        """
+        if self.base_lines is not None and 0 <= index < len(self.base_lines):
+            return self.base_lines[index].render()
         return self.lines[index].render()
 
     def to_ansi(self) -> str:

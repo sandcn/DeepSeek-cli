@@ -210,6 +210,16 @@ class InkBridge(_BottomBarCompatMixin):
 
     # ── 通用浮动窗口（2026-10-21 用户需求） ─────────
 
+    @staticmethod
+    def _window_id(window) -> str:
+        """窗口 id 归一化（``str`` + ``strip``；缺失/空白返回空串）。
+
+        校验口径统一（2026-10-21）：渲染层按 strip 后的 id 去重/丢弃空白 id，
+        bridge 必须同口径——否则 ``"   "`` 这类 id 会登记进模型却永远不显示。
+        """
+        wid = getattr(window, "id", None)
+        return str(wid).strip() if wid is not None else ""
+
     def open_floating_window(self, window) -> bool:
         """打开（或替换同 id）浮动窗口并请求重绘。
 
@@ -217,17 +227,46 @@ class InkBridge(_BottomBarCompatMixin):
             window: ``app.floating.FloatingWindowSpec``。
 
         Returns:
-            True=已登记；False=无效规格（None/缺 id）——不改变模型。
+            True=已登记；False=无效规格（None / 空白 id / 非法 render）——
+            不改变模型。
+
+        ``close_on_escape=True`` 且未提供 ``on_close`` 时自动注入关闭回调
+        （``lambda: self.close_floating_window(id)``）——调用方无需持有 bridge。
         """
         if window is None:
             return False
-        wid = getattr(window, "id", None)
+        wid = self._window_id(window)
         if not wid:
+            _logger.warning("浮窗 id 为空/空白，已忽略：%r", getattr(window, "id", None))
             return False
+        render = getattr(window, "render", None)
+        if render is not None and not callable(render):
+            _logger.warning(
+                "浮窗 render 不是可调用对象，已忽略：id=%r type=%s",
+                wid, type(render).__name__,
+            )
+            return False
+        # Esc 关闭：bridge 注入默认关闭实现（未显式提供时）
+        if (
+            getattr(window, "close_on_escape", False)
+            and getattr(window, "on_close", None) is None
+        ):
+            copy_with = getattr(window, "copy_with", None)
+            if callable(copy_with):
+                window = copy_with(
+                    on_close=lambda: self.close_floating_window(wid),
+                )
+            else:
+                try:
+                    window.on_close = lambda: self.close_floating_window(wid)
+                except Exception:
+                    _logger.debug(
+                        "浮窗 on_close 注入失败 id=%r", wid, exc_info=True,
+                    )
         windows = list(getattr(self._model, "floating_windows", None) or [])
         replaced = False
         for i, existing in enumerate(windows):
-            if getattr(existing, "id", None) == wid:
+            if self._window_id(existing) == wid:
                 windows[i] = window
                 replaced = True
                 break
@@ -241,14 +280,32 @@ class InkBridge(_BottomBarCompatMixin):
         """更新已打开窗口的规格字段（不可变替换）并请求重绘。
 
         Returns:
-            True=找到并更新；False=窗口不存在（无操作）。
+            True=找到并更新；False=窗口不存在 / 请求改 id / 含未知字段
+            （无操作；未知字段此前会「返回 True 但什么都没改」）。
+
+        禁止改 ``id``：``copy_with`` 接受 id 会让窗口在模型里换名——按旧 id
+        调用的 update/close 全部失效，且可能与既有 id 冲突。
         """
+        wid = str(window_id).strip() if window_id is not None else ""
+        if not wid:
+            return False
+        if "id" in changes:
+            _logger.warning("浮窗 update 不允许修改 id（请关闭后重开）：id=%r", wid)
+            return False
         windows = list(getattr(self._model, "floating_windows", None) or [])
         for i, existing in enumerate(windows):
-            if getattr(existing, "id", None) != window_id:
+            if self._window_id(existing) != wid:
                 continue
             copy_with = getattr(existing, "copy_with", None)
             if callable(copy_with):
+                known = getattr(type(existing), "__slots__", ())
+                unknown = [key for key in changes if known and key not in known]
+                if unknown:
+                    _logger.warning(
+                        "浮窗 update 含未知字段，已拒绝：id=%r fields=%r",
+                        wid, unknown,
+                    )
+                    return False
                 windows[i] = copy_with(**changes)
             else:  # 非 FloatingWindowSpec 的鸭子类型：逐字段赋值
                 for key, value in changes.items():
@@ -256,7 +313,7 @@ class InkBridge(_BottomBarCompatMixin):
                         setattr(existing, key, value)
                     except Exception:
                         _logger.debug(
-                            "浮窗字段更新失败 id=%r key=%r", window_id, key,
+                            "浮窗字段更新失败 id=%r key=%r", wid, key,
                             exc_info=True,
                         )
             self._model.floating_windows = windows
@@ -266,8 +323,11 @@ class InkBridge(_BottomBarCompatMixin):
 
     def close_floating_window(self, window_id: str) -> bool:
         """关闭指定浮动窗口（下一帧原内容自动还原）。"""
+        wid = str(window_id).strip() if window_id is not None else ""
+        if not wid:
+            return False
         windows = list(getattr(self._model, "floating_windows", None) or [])
-        kept = [w for w in windows if getattr(w, "id", None) != window_id]
+        kept = [w for w in windows if self._window_id(w) != wid]
         if len(kept) == len(windows):
             return False
         self._model.floating_windows = kept

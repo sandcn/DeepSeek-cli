@@ -405,3 +405,45 @@ def test_reset_loop_status_clears_progress(bridge):
     assert st.active is False and st.total == 0 and st.round == 0
     assert st.run == 0 and st.prompt == ""
     assert s.redraws == 2
+
+
+# ── 浮窗 API 校验（2026-10-21 完善） ────────────────────
+
+def test_open_floating_window_rejects_blank_id(bridge):
+    """空白 id 与渲染层同口径拒绝（否则登记了却永远不显示）。"""
+    b, m, s = bridge
+    assert b.open_floating_window(_spec("   ")) is False
+    assert b.open_floating_window(_spec("")) is False
+    assert getattr(m, "floating_windows", []) == []
+    assert s.redraws == 0
+
+
+def test_open_floating_window_rejects_non_callable_render(bridge):
+    """``render`` 不是可调用对象时拒绝（否则生成永不显示的空窗口）。"""
+    b, m, s = bridge
+    assert b.open_floating_window(_spec("bad", render="not-callable")) is False
+    assert getattr(m, "floating_windows", []) == []
+    assert s.redraws == 0
+
+
+def test_update_floating_window_rejects_id_and_unknown_fields(bridge):
+    """update 拒绝改 id / 未知字段（此前返回 True 但什么都没改）。"""
+    b, m, s = bridge
+    b.open_floating_window(_spec("w1"))
+    before = s.redraws
+    assert b.update_floating_window("w1", id="renamed") is False
+    assert [w.id for w in m.floating_windows] == ["w1"]
+    assert b.update_floating_window("w1", x_="left") is False
+    assert m.floating_windows[0].x == "right"
+    assert s.redraws == before  # 被拒绝的更新不触发重绘
+
+
+def test_open_floating_window_injects_close_on_escape_callback(bridge):
+    """``close_on_escape=True`` 且未给 on_close 时由 bridge 注入关闭实现。"""
+    b, m, s = bridge
+    b.open_floating_window(_spec("esc", close_on_escape=True))
+    window = m.floating_windows[0]
+    assert callable(window.on_close)
+    window.on_close()
+    assert m.floating_windows == []
+    assert s.redraws == 2
