@@ -413,6 +413,35 @@ class ChatUIConsumer:
         if callable(fn):
             fn()
 
+    # ── /pet 宠物浮窗（/pet 命令使用） ───────────────
+
+    def open_pet_floating_window(self) -> bool:
+        """打开（或替换）蓝色大肥鱼宠物浮窗。
+
+        规格见 ``src.tui.app.pet.pet_window_spec``：无边框、透明背景、
+        内容自适应宽度（只显示实际绘制的行内容）。返回底层桥是否登记成功。
+        """
+        from src.tui.app.pet import pet_window_spec
+
+        return self.open_floating_window(pet_window_spec())
+
+    def close_pet_floating_window(self) -> bool:
+        """关闭宠物浮窗（窗口不存在时返回 False）。"""
+        from src.tui.app.pet import PET_WINDOW_ID
+
+        return self.close_floating_window(PET_WINDOW_ID)
+
+    def is_pet_floating_window_open(self) -> bool:
+        """宠物浮窗是否正在显示（供 ``/pet`` 做开关切换）。"""
+        from src.tui.app.pet import PET_WINDOW_ID
+
+        model = getattr(self, "_rs", None)
+        windows = getattr(model, "floating_windows", None) or []
+        return any(
+            str(getattr(window, "id", "")).strip() == PET_WINDOW_ID
+            for window in windows
+        )
+
     # ── /loop 循环浮窗（/loop 命令使用） ─────────────
 
     def open_loop_floating_window(

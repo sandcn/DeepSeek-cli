@@ -248,6 +248,8 @@ COMMAND_PLUGIN_ENTRIES = [
      "config": {"command": "src.core.commands.plugins.editmsg_plugin.EditmsgPlugin", "name": "editmsg"}},
     {"id": "cmd_loop", "plugin": "src.plugins.command_plugin",
      "config": {"command": "src.core.commands.plugins.loop_plugin.LoopPlugin", "name": "loop"}},
+    {"id": "cmd_pet", "plugin": "src.plugins.command_plugin",
+     "config": {"command": "src.core.commands.plugins.pet_plugin.PetPlugin", "name": "pet"}},
     {"id": "cmd_model", "plugin": "src.plugins.command_plugin",
      "config": {"command": "src.core.commands.plugins.model_plugin.ModelPlugin", "name": "model"}},
     {"id": "cmd_models", "plugin": "src.plugins.command_plugin",

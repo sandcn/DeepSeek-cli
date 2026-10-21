@@ -5,6 +5,7 @@
 - EditmsgPlugin（editmsg_plugin.py）
 - ModelPlugin（model_plugin.py）
 - LoopPlugin（loop_plugin.py）
+- PetPlugin（pet_plugin.py）
 
 InteractiveCommandRegistry 已合并到 CommandPluginRegistry（commands/base.py），
 registry.py 保留 get_interactive_registry() 作为向后兼容导出。
@@ -13,11 +14,12 @@ registry.py 保留 get_interactive_registry() 作为向后兼容导出。
 from .base import InteractiveCommandPlugin
 from .deitmsg_plugin import DeitmsgPlugin
 from .editmsg_plugin import EditmsgPlugin
+from .loop_plugin import LoopPlugin
 from .model_plugin import ModelPlugin
 from .models_plugin import ModelsPlugin
-from .loop_plugin import LoopPlugin
-from .skill_plugin import SkillPlugin
+from .pet_plugin import PetPlugin
 from .registry import get_interactive_registry
+from .skill_plugin import SkillPlugin
 
 __all__ = [
     "InteractiveCommandPlugin",
@@ -26,6 +28,7 @@ __all__ = [
     "ModelPlugin",
     "ModelsPlugin",
     "LoopPlugin",
+    "PetPlugin",
     "SkillPlugin",
     "get_interactive_registry",
 ]
