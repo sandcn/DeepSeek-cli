@@ -35,7 +35,12 @@ class UserSelectState:
         answered: 该问题是否已回答（提交前可重答）。
         done: 交互是否已整体提交/超时（终态锁定）。
         action: 结束方式（confirmed/cancel/timeout）。
-        result: 选中的 options 子集。
+        result: 选中的 options 子集（含自由输入时附加的自定义文本）。
+        allow_custom: 是否允许用户输入选项外的自定义答案（工具路径为
+            True；命令系统选择路径默认 False，保持 index 契约）。
+        typing: 用户当前是否正在编辑自定义答案（跨线程标志；组件写、
+            工具轮询读——为 True 时暂停自动超时）。
+        custom: 本次回答的自由输入文本（空串 = 未使用自定义输入）。
         _final_lock: 终态原子写锁。
     """
 
@@ -53,26 +58,49 @@ class UserSelectState:
     done: bool = False
     action: str = ""
     result: list = field(default_factory=list)
+    # ★ 2026-10-21（用户需求：user_select 支持输入选项外内容并返回，
+    #   输入时停止自动超时）：以下字段均有默认值——旧构造/旧测试/命令
+    #   路径零回归。
+    allow_custom: bool = False
+    typing: bool = False
+    custom: str = ""
     _final_lock: threading.Lock = field(
         default_factory=threading.Lock, repr=False, compare=False,
     )
 
-    def mark_answered(self, action: str, result: list) -> bool:
-        """标记该问题已回答（不置 done，提交前可反复覆盖）。"""
+    def mark_answered(self, action: str, result: list, custom: str = "") -> bool:
+        """标记该问题已回答（不置 done，提交前可反复覆盖）。
+
+        Args:
+            action: 回答方式（confirmed/cancel）。
+            result: 选中的值列表（自定义输入时含用户文本）。
+            custom: 本次回答的自由输入文本；默认空串（普通选择/取消——
+                同时清空此前可能残留的自定义标记）。
+        """
         with self._final_lock:
             if self.done:
                 return False
             self.action = action
             self.result = list(result)
+            self.custom = str(custom or "")
             self.answered = True
             return True
 
-    def try_set_final(self, action: str, result: list) -> bool:
-        """原子写入终态（first-write-wins）；done 已置位则返回 False。"""
+    def try_set_final(self, action: str, result: list, custom: str = "") -> bool:
+        """原子写入终态（first-write-wins）；done 已置位则返回 False。
+
+        Args:
+            action: 结束方式（confirmed/cancel/timeout）。
+            result: 选中值列表（自定义输入时含用户文本）。
+            custom: 本次回答的自由输入文本；默认空串。需要保留此前的
+                自定义标记时（Submit 页统一提交已回答问题），调用方显式
+                传入 ``getattr(state, "custom", "")``。
+        """
         with self._final_lock:
             if self.done:
                 return False
             self.action = action
             self.result = list(result)
+            self.custom = str(custom or "")
             self.done = True
             return True

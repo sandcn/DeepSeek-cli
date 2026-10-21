@@ -40,6 +40,15 @@ def MultiSelect(props: dict) -> Element:
         items: list[str] 或 list[{"label": str, "value": Any}]。
         onSubmit: ``(selected: list) -> None``——Enter 确认时回调（选中的
             values 列表，保持 items 顺序）。
+        onSelect: ``(item) -> None``——Enter 时回调**当前光标项**
+            （``{"label", "value"}``，与 SelectInput 对齐）；提供时 Enter
+            走 onSelect、不再触发 onSubmit（UserSelectPopup 的「✎ 其他
+            （自定义输入…）」伪选项需要拿到确定项判断进入输入模式）。
+        onChange: ``(selected: list) -> None``——勾选集合变化时回调
+            （空格切换后；ordered values，保持 items 顺序）。
+        canToggle: ``(index, item) -> bool``——可选；返回 False 时该行
+            不可勾选（空格被消费但不改变选中状态）。用于列表末尾的
+            「自定义输入」伪选项行（不是可提交的勾选项）。
         focus: 是否参与输入路由（默认 True）。
         initialIndex: 初始光标下标（默认 0）。
         initialValues: 初始选中的 value 列表（默认 []）。
@@ -58,7 +67,8 @@ def MultiSelect(props: dict) -> Element:
 
     行为：
       - up/down（及 vim j/k）移动光标；space（或空格 char）切换当前项选中；
-      - g/G 跳首/末项；enter 触发 ``onSubmit(selected_values)`` 并消费事件；
+      - g/G 跳首/末项；enter 触发 ``onSelect(item)``（提供时）或
+        ``onSubmit(selected_values)`` 并消费事件；
       - escape 触发 ``onCancel(selected_values)``（onCancel 提供时）。
 
     Returns:
@@ -66,6 +76,11 @@ def MultiSelect(props: dict) -> Element:
     """
     items = _normalize_items(props.get("items", []))
     onSubmit = props.get("onSubmit")
+    # ★ 2026-10-21（用户需求：user_select 支持自定义输入）：新增三个可选
+    #   props——未传入时行为与旧版完全一致（零回归）。
+    on_select = props.get("onSelect")
+    on_change = props.get("onChange")
+    can_toggle = props.get("canToggle")
     on_cancel = props.get("onCancel")
     on_highlight = props.get("onHighlight")
     render_item = props.get("renderItem")
@@ -203,6 +218,15 @@ def MultiSelect(props: dict) -> Element:
         if event.kind == "char" and event.char == " ":
             # ★ P3（review 2026-08-22）：删除 ``event.kind == "space"`` 死分支——
             #   InputParser 从不产生 kind=="space"（其他控件均删该分支）。
+            # ★ 2026-10-21（用户需求）：canToggle 返回 False 的行不可勾选
+            #   （「自定义输入」伪选项行）——空格被消费但不改变选中集合。
+            if can_toggle is not None:
+                try:
+                    if not can_toggle(cur_cursor, items[cur_cursor]):
+                        return True
+                except Exception:
+                    # 防御：自定义判定异常按可勾选处理（不因回调异常吞掉空格）。
+                    _logger.debug("MultiSelect canToggle 异常（按可勾选处理）", exc_info=True)
             value = items[cur_cursor]["value"]
             new_selected = set(cur_selected)
             hval = _hashable(value)
@@ -212,8 +236,21 @@ def MultiSelect(props: dict) -> Element:
                 new_selected.add(hval)
             selected_ref.current = new_selected
             set_selected(new_selected)
+            if on_change is not None:
+                # ordered 与 onSubmit 同口径：按 items 原始顺序、原始 value。
+                ordered = [
+                    item["value"] for item in items
+                    if _hashable(item["value"]) in new_selected
+                ]
+                _call(on_change, ordered)
             return True
         if event.kind == "enter":
+            # ★ 2026-10-21（用户需求）：onSelect 提供时优先——弹窗需要拿到
+            #   **当前光标项**判断是否为「自定义输入」伪选项；其余调用方
+            #   （未传 onSelect）行为不变（onSubmit）。
+            if on_select is not None:
+                _call(on_select, items[cur_cursor])
+                return True
             if onSubmit is None:
                 # ★ P3（review 2026-08-22）：onSubmit 未注册时放行（Return False，
                 #   与 _select_input 的 on_select None 放行对齐），勿阻断父级。

@@ -37,6 +37,13 @@ AskUserQuestion）：``parallel_safe=True``——多个 user_select 工具调用
 并发向用户提问」——引导模型在需要多个决策/确认/澄清的问题时，同一轮
 **同时**发起多个 user_select 调用（并行提问、一次问完），弹窗以 tab 形式
 全部显示、用户一次答完，避免逐个串行提问打断用户。
+
+★ 2026-10-21（用户需求：支持用户输入不在选项中的内容并返回，用户输入时
+停止自动超时）：工具构造的 ``UserSelectState`` 带 ``allow_custom=True``
+——弹窗列表末尾渲染「✎ 其他（自定义输入…）」入口，用户可输入任意文本；
+输入期间组件把 ``state.typing`` 置 True，本模块的超时轮询据此暂停计时
+（退出输入/提交后把暂停时长补回 deadline）。结果 ``selected`` 含自定义
+文本，并在 JSON 中额外返回 ``"custom": "..."`` 标记自由输入。
 """
 
 from __future__ import annotations
@@ -99,6 +106,45 @@ def _interactive_stdin() -> bool:
     return False
 
 
+def _poll_deadline(state, paused_at: float, now: float) -> "tuple[float, bool]":
+    """超时轮询一拍：用户输入自定义答案期间暂停计时。
+
+    ★ 2026-10-21（用户需求：user_select 支持输入选项外内容并返回，
+    用户输入时停止自动超时）：组件进入自定义输入模式时把
+    ``state.typing`` 置 True、退出/提交时置 False（跨线程普通字段，
+    GIL 原子）。本函数在 ``typing`` 为 True 期间不判定超时，并把进入
+    输入的时刻记入 ``paused_at``；用户退出输入模式后，把暂停时长
+    补回 ``state.deadline``（剩余时间继续，不会因输入耗时被立刻判超时，
+    也不会永久挂起——未提交输入退出后仍保留超时兜底）。
+
+    Args:
+        state: UserSelectState（读 ``typing`` / ``deadline``）。
+        paused_at: 本轮暂停开始时刻（0.0 = 当前未暂停）。
+        now: 当前 ``time.monotonic()``。
+
+    Returns:
+        ``(新的 paused_at, 是否已超时)``。
+    """
+    typing = bool(getattr(state, "typing", False))
+    if typing:
+        if not paused_at:
+            paused_at = now
+        return paused_at, False
+    if paused_at:
+        try:
+            deadline = float(getattr(state, "deadline", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            deadline = 0.0
+        if deadline > 0:
+            state.deadline = deadline + max(0.0, now - paused_at)
+        paused_at = 0.0
+    try:
+        deadline = float(getattr(state, "deadline", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        deadline = 0.0
+    return paused_at, bool(deadline > 0 and now >= deadline)
+
+
 class UserSelectFunc(Func):
     name = "user_select"
 
@@ -124,8 +170,13 @@ class UserSelectFunc(Func):
                     "（Tab/←/→ 切换焦点、逐题 Enter 确认、最后统一提交）——"
                     "用户一次答完所有问题，避免逐个串行提问打断用户。"
                     "支持单选/多选（multi_select），超时/非交互自动回退 default_options。"
+                    "★ 支持用户输入选项外的自定义答案：选项列表末尾自动追加"
+                    "『✎ 其他（自定义输入…）』入口，用户可输入任意文本；"
+                    "输入期间自动超时暂停（不会被 timeout 打断）。"
                     "返回 JSON：{\"selected\":[...], \"action\":...}，"
-                    "action 为 confirmed/cancel/timeout/non_interactive/empty/error。"
+                    "action 为 confirmed/cancel/timeout/non_interactive/empty/error；"
+                    "用户使用自由输入时 selected 中含该文本，并额外返回 "
+                    "\"custom\": \"用户输入文本\"。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -137,7 +188,7 @@ class UserSelectFunc(Func):
                         "options": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "选项字符串列表，用户从中选择；空列表时返回 {\"selected\":[], \"action\":\"empty\"}"
+                            "description": "选项字符串列表，用户从中选择；列表末尾自动追加『✎ 其他（自定义输入…）』入口，用户可输入不在选项中的答案；空列表时返回 {\"selected\":[], \"action\":\"empty\"}"
                         },
                         "option_descriptions": {
                             "type": "array",
@@ -282,6 +333,10 @@ class UserSelectFunc(Func):
                 default_options=default_opts,
                 selected=initial_idx,
                 checked=checked,
+                # ★ 2026-10-21（用户需求）：工具路径默认允许用户输入选项外
+                #   的自定义答案；命令系统选择（CommandUiAdapter）不传该字段
+                #   → 默认 False，index 契约保持不变。
+                allow_custom=True,
                 deadline=0.0 if self.timeout <= 0 else time.monotonic() + self.timeout,
             )
             try:
@@ -306,9 +361,14 @@ class UserSelectFunc(Func):
             # ★ 2026-08-19：轮询**本 state**（并发队列中的元素），不再读
             #   ``model.user_select``——并发场景下 model.user_select 可能被
             #   其他协程覆盖。
-            deadline = state.deadline
+            # ★ 2026-10-21（用户需求）：用户编辑自定义答案期间（state.typing）
+            #   暂停超时；退出输入后把暂停时长补回 deadline（剩余时间继续）。
+            paused_at = 0.0
             while not state.done:
-                if deadline > 0 and time.monotonic() >= deadline:
+                paused_at, expired = _poll_deadline(
+                    state, paused_at, time.monotonic(),
+                )
+                if expired:
                     # 超时：原子终态写入（first-write-wins）——若组件恰在
                     # 临界窗口已确认（done 已置位），try_set_final 返回 False
                     # 且不覆盖，保留组件结果（2026-08-17 修复：修复前无条件
@@ -320,10 +380,16 @@ class UserSelectFunc(Func):
             st = state
             action = st.action or "timeout"
             result = list(st.result) if st.result else default_opts
-            return json.dumps({
+            custom = str(getattr(st, "custom", "") or "")
+            payload = {
                 "selected": result,
                 "action": action,
-            }, ensure_ascii=False)
+            }
+            # ★ 2026-10-21（用户需求）：自由输入时额外返回 custom 字段标记——
+            #   不复用 selected 中的同名文本做推断（选项文本可能恰好相同）。
+            if custom:
+                payload["custom"] = custom
+            return json.dumps(payload, ensure_ascii=False)
         except Exception as e:
             error_msg = str(e)[:100]
             _logger.debug("user_select 异常", exc_info=True)
@@ -413,8 +479,15 @@ class UserSelectFunc(Func):
                     Func._publish_tool_text(f"  {DIM}{i + 1}. {option}{_opt_desc(i)}{RESET}")
             Func._publish_tool_text(f"  {DIM}... 还有 {len(self.options) - 5} 个选项{RESET}")
 
-        Func._publish_tool_text(f"  {DIM}模式: {'多选' if self.multi_select else '单选'}{RESET}")
-        Func._publish_tool_text(f"  {DIM}超时: {self.timeout}秒{RESET}")
+        Func._publish_tool_text(
+            f"  {DIM}模式: {'多选' if self.multi_select else '单选'} · 可输入自定义答案{RESET}"
+        )
+        if self.timeout > 0:
+            Func._publish_tool_text(
+                f"  {DIM}超时: {self.timeout}秒（输入自定义答案时暂停）{RESET}"
+            )
+        else:
+            Func._publish_tool_text(f"  {DIM}超时: 无限等待{RESET}")
 
         # 执行选择
         result_json = await self.execute()
@@ -423,13 +496,42 @@ class UserSelectFunc(Func):
         # 显示结果
         action = result.get("action", "")
         selected = result.get("selected", [])
+        custom = str(result.get("custom", "") or "")
 
         if action == "confirmed":
-            if selected:
+            # ★ 2026-10-21（用户需求）：自由输入优先展示（selected 中同名
+            #   文本不重复显示；多选时其余勾选项单独汇总）。多行内容在
+            #   单行输出中折叠为 ⏎（返回 JSON 仍保留原始换行）。
+            def _oneline(value) -> str:
+                return (
+                    str(value)
+                    .replace("\r\n", "\n")
+                    .replace("\r", "\n")
+                    .replace("\n", "\u23ce")
+                )
+
+            others = [x for x in selected if str(x) != custom] if custom else list(selected)
+            if custom:
+                Func._publish_tool_text(
+                    f"  {GREEN}+ 自定义输入: {_oneline(custom)}{RESET}"
+                )
+                if others:
+                    Func._publish_tool_text(
+                        f"  {GREEN}+ 同时选择 {len(others)} 项: "
+                        f"{', '.join(_oneline(x) for x in others[:3])}{RESET}"
+                    )
+                    if len(others) > 3:
+                        Func._publish_tool_text(f"  {DIM}  ... 还有 {len(others)-3} 项{RESET}")
+            elif selected:
                 if len(selected) == 1:
-                    Func._publish_tool_text(f"  {GREEN}+ 已选择: {selected[0]}{RESET}")
+                    Func._publish_tool_text(
+                        f"  {GREEN}+ 已选择: {_oneline(selected[0])}{RESET}"
+                    )
                 else:
-                    Func._publish_tool_text(f"  {GREEN}+ 已选择 {len(selected)} 项: {', '.join(selected[:3])}{RESET}")
+                    Func._publish_tool_text(
+                        f"  {GREEN}+ 已选择 {len(selected)} 项: "
+                        f"{', '.join(_oneline(x) for x in selected[:3])}{RESET}"
+                    )
                     if len(selected) > 3:
                         Func._publish_tool_text(f"  {DIM}  ... 还有 {len(selected)-3} 项{RESET}")
             else:
