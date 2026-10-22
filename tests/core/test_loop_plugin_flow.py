@@ -156,6 +156,11 @@ async def test_single_batch_runs_until_false(monkeypatch):
     assert "全部 1 批执行完毕" in text
     # 每轮继续即时显示；最后一轮（false）在「本批完成」之后显示。
     assert len([line for line in ui.lines if "LLM 输出" in line]) == 3
+    # ★ 2026-10-22 用户需求：聊天区不再显示 LLM 输入 / 输出原文，
+    #   只显示解析结果（continue 判定 / 提词）。
+    assert "LLM 输入" not in text
+    assert '{"continue"' not in text
+    assert "解析:" in text
     done_idx = next(
         i for i, line in enumerate(ui.lines) if "第 1/1 批完成" in line
     )
@@ -251,9 +256,10 @@ async def test_parse_failure_stops_entire_loop(monkeypatch):
 
     text = "\n".join(ui.lines)
     assert "提词生成失败" in text
-    assert "not json" in text
     assert "解析: 失败" in text
     assert "未返回有效 JSON" in text
+    # 模型原始输出（原文）不再上屏；只显示失败原因。
+    assert "not json" not in text
 
 
 @pytest.mark.asyncio
@@ -270,8 +276,12 @@ async def test_esc_stops_entire_loop(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_llm_input_displayed_in_full(monkeypatch):
-    """每轮 LLM 输入（system + user）全量上屏，不做截断。"""
+async def test_llm_input_and_output_raw_not_displayed(monkeypatch):
+    """LLM 输入（system + user）与输出原文都不再上屏（2026-10-22 用户需求）。
+
+    只保留解析结果与提词；发给模型的完整输入、模型返回的原始 JSON 均不出现在
+    聊天区。
+    """
     long_answer = "乙" * 2000
     ui, session, plugin, _state = _make_env(
         monkeypatch,
@@ -281,10 +291,39 @@ async def test_llm_input_displayed_in_full(monkeypatch):
     await plugin.async_execute(SimpleNamespace(session=session, arg="1 实现功能"))
 
     text = "\n".join(ui.lines)
-    assert "─ 第 1 次 LLM 输入 ─" in text
-    assert "[1/2] system" in text
-    assert "[2/2] user" in text
-    # 系统提词与用户消息原文全文上屏（不截断）。
-    assert build_system_prompt() in text
-    assert "实现功能" in text
-    assert long_answer in text
+    # 输入块整体消失：没有标题、没有系统提词、没有用户消息原文全文。
+    assert "LLM 输入" not in text
+    assert build_system_prompt() not in text
+    assert long_answer not in text
+    # 输出原文（JSON）消失，但解析结果仍在。
+    assert '{"continue": false' not in text
+    assert "第 1 次 LLM 输出" in text
+    assert "解析:" in text
+    assert "continue=false" in text
+
+
+@pytest.mark.asyncio
+async def test_batch_timer_not_reset_by_runs(monkeypatch):
+    """本批计时锚点只在批开始时写入，批内运行不重置（浮窗「本批」时长）。"""
+    ui, session, plugin, _state = _make_env(
+        monkeypatch,
+        [
+            '{"continue": true, "prompt": "继续"}',
+            '{"continue": false, "prompt": ""}',
+        ],
+        ["一", "二"],
+    )
+    await plugin.async_execute(SimpleNamespace(session=session, arg="1 实现功能"))
+
+    batch_status = next(s for s in ui.statuses if "round" in s)
+    assert "new_batch" not in batch_status  # 控制标记不写入 UI 状态
+    assert "batch_started_at" in batch_status
+    assert "round_started_at" in batch_status
+
+    run_status = next(
+        s for s in ui.statuses if s.get("run") == 1 and "round" not in s
+    )
+    assert "run_started_at" in run_status
+    # 批内运行不写本批锚点 → 浮窗的「本批」计时从批开始算起。
+    assert "batch_started_at" not in run_status
+    assert "round_started_at" not in run_status

@@ -52,9 +52,11 @@ _logger = logging.getLogger(__name__)
 #: 默认浮窗宽度（列，含边框）。内容自适应（spec.width=None）时不设置。
 DEFAULT_FLOAT_WIDTH = 30
 
-#: 循环浮窗固定宽度（列）——容纳「⟳ /loop … 第 B/T 批」标题行、
-#: 进度条、「⏱ 本次 mm:ss … 第 R 次运行」计时行与当前 / 下一轮提词。
-LOOP_FLOAT_WIDTH = 34
+#: 循环浮窗固定宽度（列）——容纳「⟳ /loop … 第 B/T 批」标题行、进度条、
+#: 「⏱ 本批 mm:ss · 本次 mm:ss … 第 R 次」计时行与当前 / 下一轮提词。
+#: 2026-10-22 由 34 加宽到 38：计时行合并了「本批 + 本次」两个时长，右侧仍要
+#: 保留批内运行次数——加宽后内容宽 34 列，才不至于把右段整段丢弃。
+LOOP_FLOAT_WIDTH = 38
 
 #: ``/usage`` 用量浮窗 id。
 USAGE_WINDOW_ID = "usage"
@@ -518,7 +520,7 @@ def _right_aligned(left_runs: list, right_runs: list, width: int) -> list:
 
 
 def _loop_elapsed_text(started_at, now: float) -> str:
-    """本次已运行时长文本（``--`` = 尚未开始）。"""
+    """已运行时长文本（``--`` = 尚未开始；本批 / 本次运行计时共用）。"""
     started = _safe_float(started_at, 0.0)
     if started <= 0.0:
         return "--"
@@ -533,10 +535,14 @@ def LoopFloatingWindow(props: dict) -> object:
 
       1. ``⟳ /loop … 第 B/T 批``（两端对齐）
       2. ``████████░░░░░░░  40%``（按批次进度显示）
-      3. ``⏱ 本次 1:23 … 第 R 次运行`` / ``✎ 生成提词中…``（本次已运行时间
-         **每帧动态刷新**）
+      3. ``⏱ 本批 1:23 · 本次 0:45 … 第 R 次`` / ``✎ 生成中``（**当前批**与
+         **本次运行**两个已运行时间同帧动态刷新；2026-10-22 用户需求）
       4. ``❯ 当前提词``（超宽省略号截断，暗色斜体）
       5. ``↳ 下一轮生成提词`` / ``✎ 生成提词中…`` / ``↳ 等待生成``
+
+    计时锚点回退：``batch_started_at`` / ``run_started_at`` 缺失（旧 ChatUI /
+    旧状态对象只写 ``round_started_at``）时回退到 ``round_started_at``——
+    计时不显示成「--」。
 
     动态刷新机制：本组件每帧从 ``model`` 重建（``loop_window_spec`` 不声明
     ``idle_static`` / ``refresh_interval`` → 有该浮窗时每帧重建），第 2/3 行
@@ -612,12 +618,22 @@ def LoopFloatingWindow(props: dict) -> object:
         _flush()
         bar_runs.append(StyledRun("  ∞", _S_LOOP_ACCENT))
 
-    # ── 3. 计时行：⏱ 本次 <已运行时长>（每帧刷新）… 生成状态 / 第 R 次 ──
-    elapsed_text = _loop_elapsed_text(getattr(st, "round_started_at", 0.0), now)
+    # ── 3. 计时行：⏱ 本批 <时长> · 本次 <时长>（每帧刷新）… 运行次数 / 生成状态 ──
+    # 锚点回退：batch_started_at / run_started_at 缺失时回退 round_started_at
+    # （旧状态对象只在 round_started_at 上写计时）。
+    fallback_started = _safe_float(getattr(st, "round_started_at", 0.0), 0.0)
+    batch_started = _safe_float(getattr(st, "batch_started_at", 0.0), 0.0)
+    if batch_started <= 0.0:
+        batch_started = fallback_started
+    run_started = _safe_float(getattr(st, "run_started_at", 0.0), 0.0)
+    if run_started <= 0.0:
+        run_started = fallback_started
+    batch_elapsed_text = _loop_elapsed_text(batch_started, now)
+    run_elapsed_text = _loop_elapsed_text(run_started, now)
     if generating:
-        run_label = "✎ 生成提词中…"
+        run_label = "✎ 生成中"
     elif run_no:
-        run_label = f"第 {run_no} 次运行"
+        run_label = f"第 {run_no} 次"
     elif round_no:
         run_label = f"第 {round_no} 批"
     else:
@@ -625,8 +641,10 @@ def LoopFloatingWindow(props: dict) -> object:
     time_runs = _right_aligned(
         [
             StyledRun("⏱ ", _S_LOOP_ACCENT),
-            StyledRun("本次 ", _S_LOOP_MUTED),
-            StyledRun(elapsed_text, _S_LOOP_TIME),
+            StyledRun("本批 ", _S_LOOP_MUTED),
+            StyledRun(batch_elapsed_text, _S_LOOP_TIME),
+            StyledRun(" · 本次 ", _S_LOOP_MUTED),
+            StyledRun(run_elapsed_text, _S_LOOP_TIME),
         ],
         [StyledRun(run_label, _S_LOOP_MUTED)],
         width,

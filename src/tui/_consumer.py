@@ -521,7 +521,7 @@ class ChatUIConsumer:
         """打开 ``/loop`` 循环浮窗并重置循环进度。
 
         浮窗锚定输入区最上方的分隔线右端、向上展开（带边框），显示
-        总批次数 / 当前批次 / 批内运行次数 / 当前提词 / 本次已运行时间
+        总批次数 / 当前批次 / 批内运行次数 / 当前提词 / 本批与本次运行时间
         （动态刷新）/ 下一轮生成提词与生成状态；进度经 ``set_loop_status``
         更新，循环结束（含中断）经 ``close_loop_floating_window`` 关闭——
         关闭后原内容由下一帧整帧重建自动还原。``total=0`` 仅作防御
@@ -548,8 +548,10 @@ class ChatUIConsumer:
                 round=0,
                 run=0,
                 runs_per_round=per_round,
-                # 计时锚点清零：本次尚未开始（浮窗显示「--」，第一次运行时
-                # 由 set_loop_status 写入本次开始时间戳）。
+                # 计时锚点清零：本次尚未开始（浮窗显示「--」，第一批开始时
+                # 由 set_loop_status 写入本批开始时间戳，每次运行写入本次
+                # 运行开始时间戳）。
+                batch_started_at=0.0,
                 round_started_at=0.0,
                 run_started_at=0.0,
             )
@@ -561,7 +563,7 @@ class ChatUIConsumer:
 
     def set_loop_status(self, **fields) -> None:
         """更新 ``/loop`` 进度（total/round/prompt/next_prompt/generating/
-        active/round_started_at/run_started_at）。"""
+        active/batch_started_at/round_started_at/run_started_at）。"""
         fn = getattr(self._bb, "set_loop_status", None)
         if callable(fn):
             fn(**fields)

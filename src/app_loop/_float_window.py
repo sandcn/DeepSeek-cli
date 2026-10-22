@@ -48,16 +48,25 @@ def set_loop_window_status(chat_ui, **fields) -> None:
     """更新 ``/loop`` 浮窗进度（total=批次数 / round=当前批次 /
     run=批内运行次数 / runs_per_round=保留 / prompt / active）。
 
-    ★ 计时锚点（2026-10-21 用户需求：单轮已运行时间动态刷新）：
-    传入 ``round`` 时自动补 ``round_started_at``、传入 ``run`` 时自动补
-    ``run_started_at``（调用方显式给出时不覆盖）——``/loop`` 插件无需自己
-    记时间戳，计时真源唯一在这里。
-    浮窗每帧按 ``time.monotonic() - round_started_at`` 计算并刷新显示。
+    ★ 计时锚点（2026-10-21 用户需求：单轮已运行时间动态刷新；
+    2026-10-22 增加「当前批运行时间」）：
+      - 传 ``new_batch=True``（批开始时由 ``/loop`` 编排传入）→ 自动补
+        ``round_started_at`` / ``batch_started_at``（本批开始时间戳）；
+      - 传 ``round``（兼容旧调用方）→ 同样补 ``round_started_at``；
+      - 传 ``run`` → 自动补 ``run_started_at``（本次运行开始时间戳）；
+      - 调用方显式给出锚点时不覆盖。
+    ``/loop`` 编排在批内每次运行**只传 run、不传 round**，因此本批计时不会
+    被后续运行重置。浮窗每帧按 ``now - batch_started_at`` / ``now -
+    run_started_at`` 计算并刷新显示。
     """
     payload = dict(fields)
     now = time.monotonic()
-    if "round" in payload:
+    # ``new_batch`` 只是本函数的控制标记，不写入 UI 状态。
+    new_batch = bool(payload.pop("new_batch", False))
+    if new_batch or "round" in payload:
         payload.setdefault("round_started_at", now)
+    if new_batch:
+        payload.setdefault("batch_started_at", now)
     if "run" in payload:
         payload.setdefault("run_started_at", now)
     _call(chat_ui, "set_loop_status", **payload)

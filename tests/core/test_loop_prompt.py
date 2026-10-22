@@ -254,7 +254,7 @@ async def test_generated_prompt_is_not_truncated():
 
 @pytest.mark.asyncio
 async def test_peek_result_does_not_clear_and_keeps_last_raw():
-    """peek 不改变结果状态；last_raw 保留模型原始输出（供 /loop 展示）。"""
+    """peek 不改变结果状态；last_raw 保留模型原始输出（2026-10-22 起仅调试用）。"""
     service, _calls = _make_service(
         ['{"continue": true, "prompt": "继续"}'],
     )
@@ -554,7 +554,7 @@ async def test_service_uses_llm_prompt_when_continue_true():
     assert decision.prompt == "继续实现登录页并补测试"
 
 
-# ── LLM 输入全量保留（供 /loop 上屏） ──────────────────
+# ── LLM 输入完整保留（2026-10-22 起不再上屏，供调试 / 兼容读取） ──
 
 
 @pytest.mark.asyncio

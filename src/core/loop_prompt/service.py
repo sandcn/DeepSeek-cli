@@ -71,9 +71,11 @@ class LoopPromptService:
         self._revision = 0
         self._result: LoopPromptDecision | None = None
         self._last_error = ""
-        #: 最近一次请求的模型原始输出（即使 JSON 解析失败也保留，供 /loop 展示）。
+        #: 最近一次请求的模型原始输出（即使 JSON 解析失败也保留；2026-10-22
+        #: 起 ``/loop`` 聊天区不再上屏原文，仅保留供调试 / 兼容读取）。
         self._last_raw = ""
-        #: 最近一次实际发送给模型的完整输入（system + user，供 /loop 全量展示）。
+        #: 最近一次实际发送给模型的完整输入（system + user；2026-10-22 起
+        #: ``/loop`` 不再上屏输入原文，仅保留供调试 / 兼容读取）。
         self._last_request: list[dict] = []
         #: 当前已完成运行序号（仅写入提示词，便于模型理解进度）。
         self._run_index = 0
@@ -141,8 +143,9 @@ class LoopPromptService:
     def last_request(self) -> list[dict]:
         """最近一次实际发送给模型的完整输入（system + user；无则空列表）。
 
-        返回浅拷贝，调用方可安全遍历 / 展示；内容按发送原样保留、不做截断，
-        供 ``/loop`` 全量上屏。
+        返回浅拷贝，调用方可安全遍历 / 读取；内容按发送原样保留、不做截断。
+        ``/loop`` 聊天区已不再上屏原文（2026-10-22 用户需求），本属性保留供
+        调试与兼容读取。
         """
         with self._lock:
             return [dict(item) for item in self._last_request]
@@ -261,8 +264,9 @@ class LoopPromptService:
             self._set_error(f"构建提词请求失败：{exc}")
             return
 
-        # 保存实际发送的完整输入（system + user），供 /loop 全量展示；
-        # revision 不匹配说明编排已重置，不覆盖新请求的输入。
+        # 保存实际发送的完整输入（system + user），供调试 / 兼容读取
+        # （/loop 聊天区已不再上屏原文）；revision 不匹配说明编排已重置，
+        # 不覆盖新请求的输入。
         with self._lock:
             if revision == self._revision:
                 self._last_request = request

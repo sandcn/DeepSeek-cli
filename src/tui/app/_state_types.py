@@ -671,7 +671,7 @@ class LoopStatusState:
     ``/loop`` 在每次运行前经 InkBridge 更新本状态，循环浮窗
     （``app/floating.py`` 的 ``LoopFloatingWindow``）读取并在输入区上方的
     浮动窗口中显示：批次进度、当前批次/批内运行次数、提词、下一轮生成提词 /
-    生成状态，以及**本次已运行时间**（浮窗内动态刷新）。
+    生成状态，以及**当前批与本次运行的已运行时间**（浮窗内动态刷新）。
 
     Attributes:
         active: 循环是否进行中（False 时浮窗内容为空/浮窗已关闭）。
@@ -682,10 +682,14 @@ class LoopStatusState:
         prompt: 当前运行的提词（浮窗中截断显示）。
         next_prompt: 已生成的下一轮提词（等待使用时展示；空 = 尚未生成）。
         generating: 是否正在生成下一轮提词（浮窗显示「✎ 生成提词中…」）。
-        round_started_at: 本批开始的单调时钟时间戳（``time.monotonic()``；
-            0 = 尚未开始）。浮窗每帧用 ``now - round_started_at`` 计算本次
-            已运行时间——浮窗内容每帧重建，因此计时**动态刷新**。
+        batch_started_at: **当前批**开始的单调时钟时间戳
+            （``time.monotonic()``；0 = 尚未开始）。批开始时写入，批内运行
+            不重置——浮窗据此显示「本批」已运行时间（2026-10-22 用户需求）。
+        round_started_at: 本批开始的单调时钟时间戳（兼容字段，与
+            ``batch_started_at`` 同源写入；浮窗优先读 ``batch_started_at``，
+            缺失时回退本字段）。
         run_started_at: 当前这一次运行开始的单调时钟时间戳（0 = 尚未开始）。
+            浮窗据此显示「本次」已运行时间。
     """
 
     active: bool = False
@@ -696,6 +700,7 @@ class LoopStatusState:
     prompt: str = ""
     next_prompt: str = ""
     generating: bool = False
+    batch_started_at: float = 0.0
     round_started_at: float = 0.0
     run_started_at: float = 0.0
 

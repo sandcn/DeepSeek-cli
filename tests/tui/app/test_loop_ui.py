@@ -91,16 +91,34 @@ def test_floating_window_finite_progress():
         run=4,
         prompt="修复登录页",
         next_prompt="补充回归测试",
-        round_started_at=time.monotonic() - 125,
+        batch_started_at=time.monotonic() - 200,
+        run_started_at=time.monotonic() - 125,
     )
     text = _render(model)
     assert "⟳ /loop" in text
     assert "第 2/3 批" in text
-    assert "第 4 次运行" in text
+    assert "第 4 次" in text
     assert "67%" in text
+    # 当前批运行时间 + 本次运行时间（2026-10-22 用户需求：合并到一行）。
+    assert "本批 3:20" in text
+    assert "本次 2:05" in text
     assert "2:05" in text
     assert "修复登录页" in text
     assert "补充回归测试" in text
+
+
+def test_floating_window_timer_falls_back_to_round_started_at():
+    """旧数据源只有 round_started_at 时，本批 / 本次计时仍显示（不出现「--」）。"""
+    model = _model(
+        total=0,
+        round=1,
+        run=1,
+        prompt="继续",
+        round_started_at=time.monotonic() - 65,
+    )
+    text = _render(model)
+    assert "本批 1:05" in text
+    assert "本次 1:05" in text
 
 
 def test_floating_window_infinite_progress():

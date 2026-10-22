@@ -347,9 +347,11 @@ class InkBridge(_BottomBarCompatMixin):
         # 下一轮生成提词 / 生成中（2026-10-21 LLM 续跑提词需求）：
         # 浮窗展示「✎ 生成提词中…」与已生成提词。
         "next_prompt", "generating",
-        # 计时锚点（2026-10-21 用户需求）：浮窗按「当前时间 - 本次开始时间」
-        # 动态显示本次已运行时长，随 `/loop` 每次运行更新。
-        "round_started_at", "run_started_at",
+        # 计时锚点（2026-10-21 / 2026-10-22 用户需求）：浮窗按「当前时间 -
+        # 本批开始时间」「当前时间 - 本次运行开始时间」动态显示两个计时。
+        # ★ batch_started_at 必须登记在本白名单，否则 set_loop_status 会静默
+        #   丢弃该字段 → 「本批」计时永远显示「--」。
+        "batch_started_at", "round_started_at", "run_started_at",
     )
 
     def _loop_status(self):

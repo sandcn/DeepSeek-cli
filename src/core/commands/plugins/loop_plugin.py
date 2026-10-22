@@ -12,8 +12,13 @@
 - 生成时机在 ``Agent.run()`` 内、等待后台 bash/subagent **之前**（见
   ``LoopPromptService``）；生成失败重试一次，仍失败则结束整个 loop。
 - 用户输入 / ESC 中断立即终止整个 ``/loop``（不继续剩余批次）。
-- TUI：模式行「✎ 提词」、循环浮窗显示批次数 / 当前批次 / 批内运行次数；
-  每批开始、批内每次运行、本批完成、全部完成均有聊天区提示。
+- TUI：模式行「✎ 提词」、循环浮窗显示批次数 / 当前批次 / 批内运行次数 /
+  本批与本次运行时长；每批开始、批内每次运行、本批完成、全部完成均有聊天区
+  提示。
+- **聊天区不显示 LLM 原文**（2026-10-22 用户需求）：续跑提词请求的完整输入
+  （system + user）与模型原始输出（原文 JSON）都不再上屏，只显示解析结果
+  （``continue`` 判定、失败原因）与最终提词——原文整段刷屏价值低，提词在
+  循环浮窗与「下次提词」提示中同样可见。
 """
 
 from __future__ import annotations
@@ -65,56 +70,25 @@ def _write_line(chat_ui, text: str) -> None:
         _logger.debug("/loop 输出失败", exc_info=True)
 
 
-def _write_loop_llm_input(chat_ui, *, round_index: int, request) -> None:
-    """显示本轮续跑提词 LLM 的**完整输入**（system + user，全量不截断）。
-
-    输入即实际发送给模型的 ``build_loop_prompt_messages`` 结果：第 1 条为系统
-    提词，第 2 条为用户消息 + 最后一次回答的 JSON。按 ``\\n`` 原样逐行交给
-    ``write_line``（TUI 会拆行渲染），不做任何长度限制或省略。
-    """
-    if chat_ui is None:
-        return
-    from ...constants import DIM, RESET
-
-    _write_line(chat_ui, f"  {DIM}  ─ 第 {round_index} 次 LLM 输入 ─{RESET}")
-    messages = list(request or ())
-    if not messages:
-        _write_line(chat_ui, f"  {DIM}（本轮未生成输入）{RESET}")
-        return
-    total = len(messages)
-    for index, message in enumerate(messages, start=1):
-        role = str(message.get("role", "") or "?")
-        content = str(message.get("content", "") or "")
-        _write_line(
-            chat_ui,
-            f"  {DIM}[{index}/{total}] {role} · {len(content)} 字符{RESET}",
-        )
-        for line in content.split("\n"):
-            _write_line(chat_ui, line)
-
-
 def _write_loop_llm_output(
     chat_ui,
     *,
     round_index: int,
     decision,
-    raw: str,
     error: str,
 ) -> None:
-    """显示本轮续跑提词 LLM 的原始输出与解析结果（2026-10-22 用户需求）。
+    """显示本轮续跑提词 LLM 的**解析结果**（2026-10-22 用户需求）。
 
-    先原文、后解析结果；解析失败时显示原始输出与失败原因。原始输出按
-    ``\\n`` 原样交给 ``write_line``（TUI 会拆行渲染），不做截断。
+    ★ 聊天区不显示 LLM 原文：发给模型的完整输入（system + user）与模型原始
+    输出（原文 JSON）都不再上屏，只显示 ``continue`` 判定、失败原因与最终
+    提词——原文整段刷屏价值低，提词在循环浮窗（``↳`` 行）与「下次提词」提示
+    中同样可见。
     """
     if chat_ui is None:
         return
     from ...constants import DIM, RESET, YELLOW
 
     _write_line(chat_ui, f"  {DIM}  ─ 第 {round_index} 次 LLM 输出 ─{RESET}")
-    text = str(raw or "")
-    if text:
-        _write_line(chat_ui, f"  {DIM}原文:{RESET}")
-        _write_line(chat_ui, text)
     if decision is None:
         _write_line(
             chat_ui,
@@ -268,6 +242,9 @@ class LoopPlugin(InteractiveCommandPlugin):
                     prompt=prompt,
                     next_prompt="",
                     generating=False,
+                    # ★ 新批锚点（2026-10-22 用户需求：浮窗显示当前批运行时间）
+                    #   ——批内每次运行不再传 round，本批计时不会被重置。
+                    new_batch=True,
                 )
 
                 last_round = None
@@ -295,7 +272,8 @@ class LoopPlugin(InteractiveCommandPlugin):
                     set_loop_window_status(
                         chat_ui,
                         total=count,
-                        round=batch,
+                        # ★ 不再传 round：本批开始时已设好批次与本批计时锚点，
+                        #   此处只更新批内运行序号（本次运行计时锚点）。
                         run=batch_run,
                         runs_per_round=1,
                         prompt=current_prompt,
@@ -317,23 +295,13 @@ class LoopPlugin(InteractiveCommandPlugin):
                             _logger.debug("disarm /loop 提词服务失败", exc_info=True)
 
                     round_decision = None
-                    round_raw = ""
                     round_error = ""
-                    round_request: list = []
                     if service is not None:
                         try:
                             round_decision = service.peek_result()
-                            round_raw = service.last_raw
                             round_error = service.last_error
-                            round_request = service.last_request
                         except Exception:
                             _logger.debug("读取 /loop 提词输出失败", exc_info=True)
-                    if round_request:
-                        _write_loop_llm_input(
-                            chat_ui,
-                            round_index=batch_run,
-                            request=round_request,
-                        )
 
                     if result.get("interrupted", False):
                         _write_line(
@@ -341,9 +309,7 @@ class LoopPlugin(InteractiveCommandPlugin):
                             f"  {YELLOW}+ ESC 中断，提前结束整个循环"
                             f"（已完成 {batch} 批 / {total_runs} 次运行）{RESET}",
                         )
-                        last_round = (
-                            batch_run, round_decision, round_raw, round_error,
-                        )
+                        last_round = (batch_run, round_decision, round_error)
                         stop_all = True
                         break
 
@@ -353,7 +319,7 @@ class LoopPlugin(InteractiveCommandPlugin):
                             f"  {YELLOW}+ 续跑提词服务不可用，结束整个循环"
                             f"（已完成 {batch} 批 / {total_runs} 次运行）{RESET}",
                         )
-                        last_round = (batch_run, None, "", "续跑提词服务不可用")
+                        last_round = (batch_run, None, "续跑提词服务不可用")
                         stop_all = True
                         break
 
@@ -366,21 +332,20 @@ class LoopPlugin(InteractiveCommandPlugin):
                             f"结束整个循环（已完成 {batch} 批 / "
                             f"{total_runs} 次运行）{RESET}",
                         )
-                        last_round = (batch_run, None, round_raw, error)
+                        last_round = (batch_run, None, error)
                         stop_all = True
                         break
                     if not decision.should_continue:
                         # 本批完成：输出在「本批完成」提示之后展示。
-                        last_round = (batch_run, decision, round_raw, error)
+                        last_round = (batch_run, decision, error)
                         batch_completed = True
                         break
 
-                    # 本批内继续：立即展示该轮 LLM 输出，再进入下一轮。
+                    # 本批内继续：立即展示该轮 LLM 解析结果，再进入下一轮。
                     _write_loop_llm_output(
                         chat_ui,
                         round_index=batch_run,
                         decision=decision,
-                        raw=round_raw or decision.raw,
                         error="",
                     )
                     last_displayed_round = batch_run
@@ -413,14 +378,13 @@ class LoopPlugin(InteractiveCommandPlugin):
                             f"  {GREEN}+ 全部 {count} 批执行完毕{RESET}",
                         )
 
-                # 本批结束：在提示之后展示最后一轮 LLM 输出（未即时显示过的）。
+                # 本批结束：在提示之后展示最后一轮 LLM 解析结果（未即时显示过的）。
                 if last_round is not None and last_round[0] > last_displayed_round:
-                    round_index, decision, raw, error = last_round
+                    round_index, decision, error = last_round
                     _write_loop_llm_output(
                         chat_ui,
                         round_index=round_index,
                         decision=decision,
-                        raw=raw,
                         error=error,
                     )
 
