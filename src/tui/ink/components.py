@@ -446,6 +446,15 @@ def _to_lines(
         if isinstance(row, Line):
             # Line 行不写入缓存（见 docstring）：直接复用当前对象——大文档
             # （数千行 Text）下避免每行一次缓存字典查找。
+            # ★ 2026-10-23（行宽不变量 E-OVERFLOW-GUARD 补全）：修复前 Line
+            #   行**直通不校验宽度**——自定义 host（StaticLines/LiveLines）
+            #   若因数据与布局瞬时不一致绘制了超宽行，帧行宽 > 终端宽度，
+            #   终端自动换行使整屏下移一行（上屏内容会短暂落到下屏分割线
+            #   行），下一帧重写才恢复（用户报障「流式输出偶发写到下屏最顶
+            #   分割线、闪一下就好」）。超宽才截断（正常行保持身份复用，
+            #   零额外开销）。
+            if width > 0 and row.width > width:
+                row = truncate_line(row, width)
             out.append(row)
             idx += 1
             continue
@@ -467,6 +476,41 @@ def _to_lines(
         out.append(line)
         idx += 1
     return out
+
+
+def _fill_prefix_rows(canvas: list, prefix: list, y0: int, width: int) -> None:
+    """把缓存前缀行填回画布（前缀长度与布局高度不一致时的回退路径）。
+
+    ``render_frame`` 的 committed 前缀拼接假设「缓存前缀行数 == 该 host 的
+    布局高度」——此时 ``_paint`` 走前缀快路径**不写画布**，帧 = 顶部画布行 +
+    前缀 + 尾部画布行。一旦两者不一致（布局高度与前缀长度瞬时不同步），直接
+    拼接会让尾部整体错位：上屏内容整体下/上移一行，下屏顶部（状态栏上方
+    分割线）会短暂显示上屏内容，下一帧才恢复（2026-10-23 用户报障：流式
+    输出偶发写到下屏最顶的分割线、闪一下就好）。
+
+    本函数在前缀不可用时把前缀行按 ``y0`` 起填回画布（超宽行按 E-OVERFLOW-
+    GUARD 截断），随后 ``render_frame`` 走**全量画布路径**——帧行数与布局严格
+    一致，内容零丢失。
+
+    Args:
+        canvas: 画布（行列表；可含 None / dict / Line）。
+        prefix: 缓存前缀行（``list[Line]``）。
+        y0: 前缀首行的文档行号（0-based）。
+        width: 文档宽度（<=0 时不做宽度守卫）。
+    """
+    start = max(0, int(y0 or 0))
+    limit = len(canvas)
+    for i, line in enumerate(prefix):
+        row = start + i
+        if row >= limit:
+            break
+        ln = line
+        if width > 0 and ln.width > width:
+            ln = truncate_line(ln, width)
+        if canvas[row] is None:
+            canvas[row] = ln
+        else:
+            canvas[row] = _merge_line(canvas[row], 0, ln)
 
 
 def _has_floating_layer(root: Fiber) -> bool:
@@ -915,8 +959,22 @@ def render_frame(root: Fiber, width: int, viewport_height: int = 0) -> Frame:
     committed = _find_committed_chat(root)
     if committed is not None:
         prefix_info = committed._committed_prefix
+        committed_box = committed.layout_box
+        # ★ 2026-10-23（前缀/布局一致性守卫）：缓存前缀长度必须等于该 host
+        #   的布局高度，否则前缀拼接会让尾部行整体错位一行（上屏内容短暂
+        #   落到下屏顶部分割线行，下一帧才恢复）。不一致时把前缀行填回画布、
+        #   放弃前缀复用，改走全量画布路径（行数与布局严格一致，内容零丢失）。
+        if (
+            prefix_info is not None
+            and committed_box is not None
+            and int(getattr(committed_box, "h", 0) or 0) != len(prefix_info[1])
+        ):
+            _fill_prefix_rows(
+                canvas, prefix_info[1], int(getattr(committed_box, "y", 0) or 0),
+                width,
+            )
+            prefix_info = None
         if prefix_info is not None:
-            committed_box = committed.layout_box
             prefix_src = prefix_info[1]
             prefix = prefix_src
             # ★ 行宽守卫（E-COMMITTED-OVERFLOW 防御）：前缀含超宽行

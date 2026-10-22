@@ -40,6 +40,15 @@ def _paint(fiber, canvas) -> None:
     if box is None:
         return
     lines = _resolve_lines(fiber)
+    # ★ 2026-10-23（绘制不越界，用户报障：流式输出偶发写到下屏最顶分割线）：
+    #   写行数受**布局盒高度**约束——批量 host 修复前无条件把 ``len(lines)``
+    #   行写入画布；数据与布局瞬时不一致（行数变化与布局测量不同步 / 缓存
+    #   键陈旧）时，多出的行会写穿到下屏第一行（状态栏上方分割线），下一帧
+    #   才恢复（视觉上「闪一下」）。裁剪到 ``box.h`` 后任何情况下都不会越过
+    #   自身布局盒；正常帧 n == box.h，零行为变化。
+    limit = max(0, int(getattr(box, "h", 0) or 0))
+    if len(lines) > limit:
+        lines = lines[:limit]
     y = box.y
     if box.x == 0:
         for line in lines:

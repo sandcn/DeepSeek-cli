@@ -150,6 +150,14 @@ def _paint(fiber, canvas) -> None:
     #   时 paint 拿到空列表渲染空行；缓存后共享同一次解析结果。
     lines = _resolve_lines(fiber)
     n = len(lines)
+    # ★ 2026-10-23（绘制不越界，用户报障：流式输出偶发写到下屏最顶分割线）：
+    #   **绘制行数受布局盒高度约束**——批量 host 的 paint 修复前无条件把
+    #   ``len(lines)`` 行写入画布；一旦数据与布局出现瞬时不一致（行数变化与
+    #   布局测量不同步 / 缓存键陈旧），多出的行会写穿到下屏第一行（状态栏
+    #   上方分割线），下一帧才恢复（视觉上「闪一下」）。写行上限 = ``box.h``
+    #   后，任何情况下都不会越过自身布局盒；同时保证前缀缓存长度 == 布局
+    #   高度（render_frame 前缀拼接的前提）。正常帧 n == box.h，零行为变化。
+    n_vis = min(n, max(0, int(getattr(box, "h", 0) or 0)))
     # ★ 2026-10-23（画布正确性）：``box.x == 0`` 的前缀复用要求 committed 行在
     #   画布上「没有其他内容」。父容器底色（``_paint_box_background``）会先把
     #   这些行填满空格样式，修复前前缀路径直接用缓存行替换画布 → 底色丢失
@@ -160,9 +168,9 @@ def _paint(fiber, canvas) -> None:
     #   无冲突时 ``canvas[start:end].count(None)`` 为 C 级 O(行数)（1500 行
     #   实测 ~2.7µs，见 tests/tui/ink/test_canvas_width_cache.py）。
     prefix_conflict = False
-    if box.x == 0 and n > 0:
+    if box.x == 0 and n_vis > 0:
         start = max(0, box.y)
-        end = min(len(canvas), box.y + n)
+        end = min(len(canvas), box.y + n_vis)
         prefix_conflict = end > start and (
             canvas[start:end].count(None) != (end - start)
         )
@@ -183,28 +191,28 @@ def _paint(fiber, canvas) -> None:
         #   可能复用同一 id，若行数/位置/宽度恰好相同则缓存**误命中**（渲染
         #   旧内容）。对象作键使缓存持强引用，其地址不可能被新对象复用（与
         #   ``components.render_frame`` 的 ``_truncated_prefix_cache`` 同契约）。
-        key = (lines, n, box.y, box.w)
+        key = (lines, n_vis, box.y, box.w)
         cached = fiber._committed_prefix
         if cached is not None:
             ck = cached[0]
-            if ck[0] is lines and ck[1] == n and ck[2] == box.y and ck[3] == box.w:
+            if ck[0] is lines and ck[1] == n_vis and ck[2] == box.y and ck[3] == box.w:
                 return  # 前缀未变：跳过画布重写（render_frame 复用缓存）
         if (
             cached is not None
             and cached[0][0] is lines
             and cached[0][2] == box.y
             and cached[0][3] == box.w
-            and n > cached[0][1]
+            and n_vis > cached[0][1]
         ):
             # lines 原地 extend（引用不变、长度增长）→ 仅追加新增行
             prefix = cached[1]
-            new_lines = [_coerce_line(line) for line in lines[cached[0][1]:]]
+            new_lines = [_coerce_line(line) for line in lines[cached[0][1]:n_vis]]
             prefix.extend(new_lines)
             all_ok = bool(cached[2]) and all(
                 ln.width <= box.w for ln in new_lines
             )
         else:
-            prefix = [_coerce_line(line) for line in lines]
+            prefix = [_coerce_line(line) for line in lines[:n_vis]]
             # ★ 行宽守卫（E-COMMITTED-OVERFLOW 防御）：reflow 未执行/失败
             #   （终端宽度变化后 committed_lines 按旧宽度 wrap）时前缀含超宽
             #   行——render_frame 前缀复用路径不经 E-OVERFLOW-GUARD（复用 Line
@@ -245,7 +253,7 @@ def _paint(fiber, canvas) -> None:
         entries = cache[2]
     new_entries: list = []
     limit = _document_width(fiber)
-    for i, line in enumerate(lines):
+    for i, line in enumerate(lines[:n_vis]):
         row = box.y + i
         if row < 0 or row >= len(canvas):
             new_entries.append(None)  # 保持条目与行索引对齐
