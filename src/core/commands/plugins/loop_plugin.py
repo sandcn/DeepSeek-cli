@@ -65,6 +65,34 @@ def _write_line(chat_ui, text: str) -> None:
         _logger.debug("/loop 输出失败", exc_info=True)
 
 
+def _write_loop_llm_input(chat_ui, *, round_index: int, request) -> None:
+    """显示本轮续跑提词 LLM 的**完整输入**（system + user，全量不截断）。
+
+    输入即实际发送给模型的 ``build_loop_prompt_messages`` 结果：第 1 条为系统
+    提词，第 2 条为用户消息 + 最后一次回答的 JSON。按 ``\\n`` 原样逐行交给
+    ``write_line``（TUI 会拆行渲染），不做任何长度限制或省略。
+    """
+    if chat_ui is None:
+        return
+    from ...constants import DIM, RESET
+
+    _write_line(chat_ui, f"  {DIM}  ─ 第 {round_index} 次 LLM 输入 ─{RESET}")
+    messages = list(request or ())
+    if not messages:
+        _write_line(chat_ui, f"  {DIM}（本轮未生成输入）{RESET}")
+        return
+    total = len(messages)
+    for index, message in enumerate(messages, start=1):
+        role = str(message.get("role", "") or "?")
+        content = str(message.get("content", "") or "")
+        _write_line(
+            chat_ui,
+            f"  {DIM}[{index}/{total}] {role} · {len(content)} 字符{RESET}",
+        )
+        for line in content.split("\n"):
+            _write_line(chat_ui, line)
+
+
 def _write_loop_llm_output(
     chat_ui,
     *,
@@ -291,13 +319,21 @@ class LoopPlugin(InteractiveCommandPlugin):
                     round_decision = None
                     round_raw = ""
                     round_error = ""
+                    round_request: list = []
                     if service is not None:
                         try:
                             round_decision = service.peek_result()
                             round_raw = service.last_raw
                             round_error = service.last_error
+                            round_request = service.last_request
                         except Exception:
                             _logger.debug("读取 /loop 提词输出失败", exc_info=True)
+                    if round_request:
+                        _write_loop_llm_input(
+                            chat_ui,
+                            round_index=batch_run,
+                            request=round_request,
+                        )
 
                     if result.get("interrupted", False):
                         _write_line(

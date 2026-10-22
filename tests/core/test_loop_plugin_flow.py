@@ -7,7 +7,11 @@ from types import SimpleNamespace
 import pytest
 
 from src.core.commands.plugins.loop_plugin import LoopPlugin
-from src.core.loop_prompt import LOOP_PROMPT_MARKER, LoopPromptService
+from src.core.loop_prompt import (
+    LOOP_PROMPT_MARKER,
+    LoopPromptService,
+    build_system_prompt,
+)
 
 
 class _FakeBottomBar:
@@ -263,3 +267,24 @@ async def test_esc_stops_entire_loop(monkeypatch):
     assert "提前结束整个循环" in text
     assert "第 1 次 LLM 输出" in text
     assert "解析: 失败" in text
+
+
+@pytest.mark.asyncio
+async def test_llm_input_displayed_in_full(monkeypatch):
+    """每轮 LLM 输入（system + user）全量上屏，不做截断。"""
+    long_answer = "乙" * 2000
+    ui, session, plugin, _state = _make_env(
+        monkeypatch,
+        ['{"continue": false, "prompt": ""}'],
+        [long_answer],
+    )
+    await plugin.async_execute(SimpleNamespace(session=session, arg="1 实现功能"))
+
+    text = "\n".join(ui.lines)
+    assert "─ 第 1 次 LLM 输入 ─" in text
+    assert "[1/2] system" in text
+    assert "[2/2] user" in text
+    # 系统提词与用户消息原文全文上屏（不截断）。
+    assert build_system_prompt() in text
+    assert "实现功能" in text
+    assert long_answer in text

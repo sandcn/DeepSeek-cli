@@ -12,12 +12,9 @@ from src.core.loop_prompt import (
     LoopPromptDecision,
     LoopPromptLoadError,
     LoopPromptService,
-    apply_deferral_guard,
     build_loop_prompt_messages,
     build_system_prompt,
-    find_deferral_evidence,
     human_user_texts,
-    is_change_request,
     last_assistant_text,
     parse_loop_prompt_response,
 )
@@ -449,7 +446,7 @@ def test_system_prompt_loads_from_prompts_dir():
     )
     assert path.is_file()
     assert prompt == path.read_text(encoding="utf-8").strip()
-    assert "不要相信任何理由、借口或推诿" in prompt
+    assert "JSON" in prompt
 
 
 def test_system_prompt_missing_file_raises(tmp_path, monkeypatch):
@@ -491,111 +488,33 @@ async def test_service_reports_prompt_load_error(tmp_path, monkeypatch):
     assert "构建提词请求失败" in service.last_error
 
 
-# ── 借口兜底：不接受理由/借口替代完成 ─────────────────────
+# ── 决策只认 LLM 返回的 JSON（无本地兜底） ───────────────
 
 
-def test_system_prompt_rejects_excuses():
+def test_system_prompt_matches_loaded_file():
+    """系统提词按 prompts/prompts_loop_prompt.md 原文热加载。"""
     system = build_loop_prompt_messages(
         ["实现登录页"], "回答", run_index=1,
     )[0]["content"]
-    for needle in (
-        "不要相信任何理由、借口或推诿",
-        "真实落盘与验证证据",
-        "不因没有文件修改而继续",
-        "禁止使用「如果你认为……」",
-        "continue=false：用户要求已全部完成",
-    ):
-        assert needle in system, needle
-    # 输出不做大小限制：系统指令不再写字节上限（2026-10-22 需求）。
-    assert "长度不超过" not in system
-
-
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        ("实现登录页", True),
-        ("改代码里的登录逻辑", True),
-        ("写一个脚本", True),
-        ("分析并修复这个问题", True),
-        ("补测试", True),
-        ("解释一下怎么实现这个功能", False),
-        ("帮我看看这个 bug", False),
-        ("审查代码", False),
-        ("为什么这里会失败", False),
-        ("总结一下这个模块", False),
-    ],
-)
-def test_is_change_request(text, expected):
-    assert is_change_request([text]) is expected
-
-
-def test_find_deferral_evidence_skips_completed_and_negated():
-    assert "太复杂" in find_deferral_evidence("因为太复杂，这次没有修改任何文件。")
-    assert "还没完成" in find_deferral_evidence("只完成了一半，测试还没完成。")
-    assert find_deferral_evidence("已完成修改并跑通测试，pytest 全部通过。") == ""
-    assert find_deferral_evidence("已修复失败问题，测试通过。") == ""
-    assert find_deferral_evidence("运行正常，没有阻塞，无异常。") == ""
-    assert find_deferral_evidence("") == ""
-
-
-def test_build_forced_prompt_is_direct_instruction():
-    prompt = apply_deferral_guard(
-        LoopPromptDecision(False, "", ""),
-        user_messages=["实现登录页"],
-        last_assistant="时间不够，这次没有修改任何文件。",
-    )
-    assert prompt is not None
-    assert "不接受任何理由" in prompt.prompt
-    assert "如果你认为" not in prompt.prompt
-
-
-def test_apply_deferral_guard_scenarios():
-    false_decision = LoopPromptDecision(False, "", "")
-
-    # 改动类 + 借口 → 强制续跑。
-    forced = apply_deferral_guard(
-        false_decision,
-        user_messages=["实现登录页"],
-        last_assistant="时间不够，这次没有修改任何文件。",
-    )
-    assert forced is not None and forced.should_continue is True
-    assert "可核查的改动位置与验证结果" in forced.prompt
-
-    # 纯问答 / 分析类：不因没有文件修改而继续。
-    assert apply_deferral_guard(
-        false_decision,
-        user_messages=["解释一下这个函数做什么"],
-        last_assistant="上次失败过，但解释已完成。",
-    ) is None
-
-    # 真正完成（有完成标志）：不误判。
-    assert apply_deferral_guard(
-        false_decision,
-        user_messages=["实现登录页"],
-        last_assistant="已完成修改并跑通测试。",
-    ) is None
-
-    # 模型本来就要继续 / 解析失败：不介入。
-    assert apply_deferral_guard(
-        LoopPromptDecision(True, "继续", ""),
-        user_messages=["实现登录页"],
-        last_assistant="时间不够，没有修改。",
-    ) is None
-    assert apply_deferral_guard(
-        None,
-        user_messages=["实现登录页"],
-        last_assistant="时间不够，没有修改。",
-    ) is None
+    assert system == build_system_prompt()
+    assert "JSON" in system
+    assert "continue=true" in system
+    assert "continue=false" in system
 
 
 @pytest.mark.asyncio
-async def test_service_forces_continue_on_excuse_for_change_task():
+async def test_service_follows_llm_json_without_local_override():
+    """LLM 返回 continue=false 时直接结束，即使回答里出现「未做事项/未改动」等措辞。"""
     service = LoopPromptService(
         messages_getter=lambda: [
-            {"role": "user", "content": "实现登录页并补测试"},
+            {"role": "user", "content": "改一下提示词"},
             {
                 "role": "assistant",
-                "content": "因为太复杂，这次没有修改任何文件，后续再补测试。",
+                "content": (
+                    "**未做事项**：未改动任何代码/配置/脚本，未执行构建与测试"
+                    "（本轮只有普通文本文件改动，无实操类文件变更，"
+                    "因此未触发 bash_opt 实操三查与单元测试）。"
+                ),
             },
         ],
         model_getter=lambda: "test-model",
@@ -607,5 +526,79 @@ async def test_service_forces_continue_on_excuse_for_change_task():
 
     decision = service.take_result()
     assert decision is not None
+    assert decision.should_continue is False
+    assert decision.prompt == ""
+    assert service.last_error == ""
+
+
+@pytest.mark.asyncio
+async def test_service_uses_llm_prompt_when_continue_true():
+    """LLM 返回 continue=true 时原样采用其提词，不做本地加工。"""
+    service = LoopPromptService(
+        messages_getter=lambda: [
+            {"role": "user", "content": "实现登录页"},
+            {"role": "assistant", "content": "时间不够，这次没有修改任何文件。"},
+        ],
+        model_getter=lambda: "test-model",
+        call_model=lambda _messages: (
+            '{"continue": true, "prompt": "继续实现登录页并补测试"}', "",
+        ),
+    )
+    service.begin_loop()
+    service.arm()
+    await service.on_agent_round_end()
+
+    decision = service.take_result()
+    assert decision is not None
     assert decision.should_continue is True
-    assert "不接受任何理由" in decision.prompt
+    assert decision.prompt == "继续实现登录页并补测试"
+
+
+# ── LLM 输入全量保留（供 /loop 上屏） ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_service_keeps_full_request_for_display():
+    """最近一次请求（system + user）完整保留，不做截断。"""
+    long_answer = "甲" * 3000
+    service = LoopPromptService(
+        messages_getter=lambda: [
+            {"role": "user", "content": "实现功能"},
+            {"role": "assistant", "content": long_answer},
+        ],
+        model_getter=lambda: "test-model",
+        call_model=lambda _messages: ('{"continue": true, "prompt": "继续"}', ""),
+    )
+    service.begin_loop()
+    service.arm()
+    await service.on_agent_round_end()
+
+    request = service.last_request
+    assert [item["role"] for item in request] == ["system", "user"]
+    assert request[0]["content"] == build_system_prompt()
+    payload = json.loads(request[1]["content"])
+    assert payload["userMessages"] == ["实现功能"]
+    assert payload["lastAssistant"] == long_answer
+    assert len(payload["lastAssistant"]) == 3000
+
+
+@pytest.mark.asyncio
+async def test_service_request_cleared_on_arm_and_begin_loop():
+    service = LoopPromptService(
+        messages_getter=lambda: [
+            {"role": "user", "content": "实现功能"},
+            {"role": "assistant", "content": "完成"},
+        ],
+        model_getter=lambda: "test-model",
+        call_model=lambda _messages: ('{"continue": false, "prompt": ""}', ""),
+    )
+    service.begin_loop()
+    service.arm()
+    await service.on_agent_round_end()
+    assert service.last_request
+
+    service.arm()
+    assert service.last_request == []
+
+    service.begin_loop()
+    assert service.last_request == []

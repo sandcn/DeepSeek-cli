@@ -23,7 +23,6 @@ from typing import Any, Callable, Sequence
 
 from .provider import (
     LoopPromptDecision,
-    apply_deferral_guard,
     build_loop_prompt_messages,
     human_user_texts,
     last_assistant_text,
@@ -74,6 +73,8 @@ class LoopPromptService:
         self._last_error = ""
         #: 最近一次请求的模型原始输出（即使 JSON 解析失败也保留，供 /loop 展示）。
         self._last_raw = ""
+        #: 最近一次实际发送给模型的完整输入（system + user，供 /loop 全量展示）。
+        self._last_request: list[dict] = []
         #: 当前已完成运行序号（仅写入提示词，便于模型理解进度）。
         self._run_index = 0
 
@@ -87,6 +88,7 @@ class LoopPromptService:
             self._result = None
             self._last_error = ""
             self._last_raw = ""
+            self._last_request = []
             self._generating = False
 
     def end_loop(self) -> None:
@@ -95,6 +97,7 @@ class LoopPromptService:
             self._armed = False
             self._result = None
             self._last_raw = ""
+            self._last_request = []
             self._generating = False
 
     def arm(self) -> None:
@@ -105,6 +108,7 @@ class LoopPromptService:
             self._result = None
             self._last_error = ""
             self._last_raw = ""
+            self._last_request = []
 
     def disarm(self) -> None:
         """禁止本次运行再生成（``run_round`` 返回后调用）。"""
@@ -132,6 +136,16 @@ class LoopPromptService:
         """最近一次请求的模型原始输出（解析失败时也有值；无则空串）。"""
         with self._lock:
             return self._last_raw
+
+    @property
+    def last_request(self) -> list[dict]:
+        """最近一次实际发送给模型的完整输入（system + user；无则空列表）。
+
+        返回浅拷贝，调用方可安全遍历 / 展示；内容按发送原样保留、不做截断，
+        供 ``/loop`` 全量上屏。
+        """
+        with self._lock:
+            return [dict(item) for item in self._last_request]
 
     @property
     def last_error(self) -> str:
@@ -247,6 +261,12 @@ class LoopPromptService:
             self._set_error(f"构建提词请求失败：{exc}")
             return
 
+        # 保存实际发送的完整输入（system + user），供 /loop 全量展示；
+        # revision 不匹配说明编排已重置，不覆盖新请求的输入。
+        with self._lock:
+            if revision == self._revision:
+                self._last_request = request
+
         timeout_ms = self._as_int(cfg, "timeout_ms", _DEFAULT_TIMEOUT_MS)
         timeout = max(1.0, timeout_ms / 1000.0) if timeout_ms > 0 else None
         retry_once = bool(cfg.get("retry_once", True))
@@ -301,21 +321,6 @@ class LoopPromptService:
         if decision is None:
             self._set_error(last_error or "提词生成失败")
             return
-
-        # 借口兜底（用户需求 2026-10-22）：模型判「无需继续」，但用户诉求属于
-        # 改动类任务且最后回答里存在未完成 / 受阻 / 推诿证据时，强制改判续跑——
-        # 不接受用理由、借口或推迟替代实际完成；纯问答任务不受此兜底影响。
-        forced = apply_deferral_guard(
-            decision,
-            user_messages=user_messages,
-            last_assistant=last_answer,
-        )
-        if forced is not None:
-            _logger.warning(
-                "/loop 判定为无需继续，但存在借口 / 未完成证据，强制续跑：%s",
-                str(forced.prompt)[:120],
-            )
-            decision = forced
 
         if decision.should_continue:
             prompt = decision.prompt.strip()
