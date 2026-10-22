@@ -67,3 +67,31 @@ def test_removed_contradictions_do_not_come_back() -> None:
     assert "零落盘时不得声明完成" not in content
     # 条款自述层级不得与唯一阶梯冲突（须写「裁决层级见……」）
     assert "裁决层级次于安全红线" not in content
+
+
+def test_prompt_contradictions_fixed_in_empty_mode() -> None:
+    """锁定空模式提词本轮修复的授权、元文件与配置测试口径。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    # 空选择不得被当成默认全选授权；拒绝语义统一为 cancel / 空选择。
+    assert "主动拒绝或取消" not in content
+    assert "`selected` 为空时按默认全选" not in content
+    assert "`selected` 为空视为未授权" in content
+    assert "法定拟制授权" in content
+
+    # 互斥选项不得同时全选。
+    assert "不因方案互斥而少勾" not in content
+
+    # 提词文件按配置跑受影响测试，不强制图形界面实操。
+    assert "`prompts/*.md` 提词文件按配置处理" in content
+    assert "不要求图形界面实操" in content
+
+    # 元文件注入事实必须与实现一致。
+    assert "7 个运行时元文件" not in content
+    assert "`_empty` 空环境" not in content
+    assert "不会自动进入主 Agent 上下文" in content
+
+    # 超时授权只保留安全红线约束，不得声称只剩凭据一项。
+    assert "唯一保留的约束是不外泄凭据值" not in content
+    assert "当场多选" not in content
+    assert "当场申请授权" not in content
