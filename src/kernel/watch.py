@@ -1,6 +1,6 @@
 """插件文件热重载监听 — 文件变更后自动重载对应插件（run-time HMR）。
 
-「一切皆插件」下插件可来自外部文件（``./plugins``、``.chat/runtime_plugins``、
+「一切皆插件」下插件可来自外部文件（``./plugins``、``~/.chat/runtime_plugins``、
 用户 profile 目录）；本模块提供零依赖的轮询监听：按文件 mtime 检测变更，
 重新导入模块并把其中的 Plugin 重启（复用 ``Fiber.restart``）或挂载（新插件）。
 

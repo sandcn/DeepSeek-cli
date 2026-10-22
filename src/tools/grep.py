@@ -143,7 +143,7 @@ class GrepFunc(Func):
                                 "\n- 指定子目录：如 'src/' 仅搜索 src 目录"
                                 "\n- 指定文件：如 'src/main.py' 仅搜索单个文件"
                                 "\n- 指定多级子目录：如 'src/tools/'"
-                                "\n- 记忆搜索：如 '.chat/memory/'"
+                                "\n- 记忆搜索：如 '~/.chat/memory/'"
                             ),
                         },
                         "include": {
@@ -188,7 +188,8 @@ class GrepFunc(Func):
     ):
         super().__init__()
         self.query = query
-        self.path = path or "."
+        # 展开 ~（记忆目录位于 ~/.chat/memory/）
+        self.path = os.path.expanduser(path) if path else "."
         self.include = include
 
         # 引擎检测结果缓存（惰性初始化，首次 execute 时填充）

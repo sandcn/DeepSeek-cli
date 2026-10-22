@@ -4,7 +4,7 @@
 ``cordis_stop`` / ``cordis_undefine``：模型可以检查当前运行时的服务与插件，
 现场写一个插件文件挂载到自己的内核上，再按需停止/删除。
 
-安全边界：动态插件只写进项目 ``.chat/runtime_plugins/`` 目录并挂载到当前
+安全边界：动态插件只写进用户主目录 ``~/.chat/runtime_plugins/`` 目录并挂载到当前
 进程内存（不写 ``~/.chat_config``、不改 profile、不跨重启）。动态插件运行在
 **同一进程**，可篡改治理层（工具策略、全局禁用集合、服务注册表），因此本
 工具族等价于进程内任意代码执行——沙盒只约束诚实代码，不是安全边界，应像
@@ -278,7 +278,7 @@ class CordisInspectFunc(Func):
 
 
 class CordisDefineFunc(Func):
-    """把插件源码写入 ``.chat/runtime_plugins/<name>.py``（不自动挂载）。"""
+    """把插件源码写入 ``~/.chat/runtime_plugins/<name>.py``（不自动挂载）。"""
 
     name = "cordis_define"
 
@@ -289,7 +289,7 @@ class CordisDefineFunc(Func):
             "function": {
                 "name": "cordis_define",
                 "description": (
-                    "在 .chat/runtime_plugins/<name>.py 写入一段插件源码（定义 apply(ctx) "
+                    "在 ~/.chat/runtime_plugins/<name>.py 写入一段插件源码（定义 apply(ctx) "
                     "或 @plugin）。写入后需用 cordis_run 挂载。用于 Agent 在运行时为自己"
                     "创造新能力。"
                 ),
@@ -334,7 +334,7 @@ class CordisDefineFunc(Func):
 
 
 class CordisRunFunc(Func):
-    """把 ``.chat/runtime_plugins/<name>.py`` 挂载到当前内核（热挂载）。"""
+    """把 ``~/.chat/runtime_plugins/<name>.py`` 挂载到当前内核（热挂载）。"""
 
     name = "cordis_run"
 
@@ -345,7 +345,7 @@ class CordisRunFunc(Func):
             "function": {
                 "name": "cordis_run",
                 "description": (
-                    "从 .chat/runtime_plugins/<name>.py 加载并挂载插件到当前内核"
+                    "从 ~/.chat/runtime_plugins/<name>.py 加载并挂载插件到当前内核"
                     "（注册是可逆副作用；用 cordis_stop 卸载）。同名文件重复挂载会"
                     "先卸载旧实例再挂载（幂等替换）。"
                 ),
@@ -447,7 +447,7 @@ class CordisStopFunc(Func):
 
 
 class CordisUndefineFunc(Func):
-    """卸载插件并删除其 ``.chat/runtime_plugins/`` 文件。"""
+    """卸载插件并删除其 ``~/.chat/runtime_plugins/`` 文件。"""
 
     name = "cordis_undefine"
 

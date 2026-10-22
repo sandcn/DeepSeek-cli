@@ -90,7 +90,8 @@ class LsFunc(Func):
         human: bool = True,
     ):
         super().__init__()
-        self.target_path = path or os.getcwd()
+        # 展开 ~（运行时数据目录位于 ~/.chat）
+        self.target_path = os.path.expanduser(path) if path else os.getcwd()
         self.long = long
         self.all = all
         self.human = human

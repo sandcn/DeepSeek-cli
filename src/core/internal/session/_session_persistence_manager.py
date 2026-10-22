@@ -126,7 +126,7 @@ class SessionPersistenceManager:
     # ── 会话保存 ────────────────────────────────────────
 
     def save(self) -> str | None:
-        """保存当前会话到 .chat/msg_list/（含会话日志快照）。
+        """保存当前会话到 ~/.chat/msg_list/（含会话日志快照）。
 
         Returns:
             session_id，无可保存内容时返回 None

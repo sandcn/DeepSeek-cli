@@ -641,7 +641,7 @@ class ChatSession:
     # ── 会话持久化（委托给 SessionPersistenceManager） ──
 
     def save(self) -> str | None:
-        """保存当前会话到 .chat/msg_list/（含会话日志快照）。"""
+        """保存当前会话到 ~/.chat/msg_list/（含会话日志快照）。"""
         return self._persistence_mgr.save()
 
     def snapshot_session_log(self) -> list[dict] | None:

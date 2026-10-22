@@ -11,7 +11,7 @@
 - interrupted: 是否被中断
 - provider: 提供商名称
 
-日志文件: .chat/log/YYYY-MM-DD.jsonl（项目根目录下）
+日志文件: ~/.chat/log/YYYY-MM-DD.jsonl（用户主目录下）
 每日轮转，自动创建目录。
 """
 

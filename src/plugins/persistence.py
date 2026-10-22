@@ -1,8 +1,8 @@
 """持久化 / 断点插件 — 提供 ``ctx.persistence`` 与 ``ctx.checkpoint``。
 
 「一切皆插件」：会话持久化与任务断点存储作为可替换的 provider 坐在内核
-之上。默认 provider 分别是 ``JsonFilePersistence``（``.chat/msg_list/*.json``）
-与 ``JsonFileCheckpoint``（``.chat/msg_list/_checkpoint.json``）；外部插件可
+之上。默认 provider 分别是 ``JsonFilePersistence``（``~/.chat/msg_list/*.json``）
+与 ``JsonFileCheckpoint``（``~/.chat/_checkpoint.json``）；外部插件可
 经 ``ctx.persistence.set_provider(...)`` / ``ctx.checkpoint.set_provider(...)``
 整体替换存储后端（数据库、对象存储、远端服务……）。
 

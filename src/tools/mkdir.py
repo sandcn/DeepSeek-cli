@@ -43,6 +43,8 @@ class MkdirFunc(FileSystemToolBase):
 
     def __init__(self, path: str, parents: bool = False):
         super().__init__()
+        # 展开 ~（plan agent 在 ~/.chat/plan/ 下创建目录）
+        path = os.path.expanduser(path)
         validate_path_security(path)
         self.path = path
         self.parents = parents
@@ -53,7 +55,7 @@ class MkdirFunc(FileSystemToolBase):
         """异步执行目录创建逻辑，所有阻塞操作使用 asyncio.to_thread 包装"""
 
         async def _do_mkdir():
-            # plan agent 路径白名单校验：仅允许创建 .chat/plan/ 下的目录
+            # plan agent 路径白名单校验：仅允许创建 ~/.chat/plan/ 下的目录
             # （与 file_base / base.can_use 共用 get_plan_allowed_dir +
             #  is_path_within_dir，realpath 解析符号链接防绕过）
             agent_type_val = getattr(self, 'agent_type', None)

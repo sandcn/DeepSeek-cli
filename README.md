@@ -471,7 +471,7 @@ python chat.py clawbot --re-login   # 强制重新扫码登录
 
 > **SubAgent 聊天记录持久化**：每个 SubAgent 的完整内部对话（system 提示词 / 任务指令 /
 > 助手回复 / 工具调用与结果）会在其运行结束时记录到父 Agent，并随会话自动保存到
-> `.chat/msg_list/<id>.json` 的 `subagents` 字段；`/load` 加载会话时同步恢复，
+> `~/.chat/msg_list/<id>.json` 的 `subagents` 字段；`/load` 加载会话时同步恢复，
 > `/export` 导出 markdown 时一并包含。
 
 ---
@@ -538,7 +538,7 @@ def can_use(cls, tool_name: str, agent_type: str = "execute", path: str | None =
 
 - **agent_type 注入** — SubAgent 在 `_handle_tool_calls()` 中自动注入 `func.agent_type = self.agent_type`
 - **排除规则** — 定义在 `src/core/subagent.py` 的 `_TOOL_EXCLUSION_MAP`（详见下方 SubAgent 类型表）
-- **路径白名单** — `FileToolBase._validate_path_and_size()` 对 plan Agent 实施路径限制，仅允许写入 `.chat/plan/` 目录，防止误写项目源码
+- **路径白名单** — `FileToolBase._validate_path_and_size()` 对 plan Agent 实施路径限制，仅允许写入 `~/.chat/plan/` 目录，防止误写项目源码
 
 ---
 
@@ -715,12 +715,12 @@ ChatUIConsumer
 
 | 类型 | 可用工具 | 用途 |
 |---|---|---|
-| **plan** | 只读分析 + write/edit/mkdir（仅限 `.chat/plan/` 目录） | 任务拆解、依赖分析、生成计划文件到 `.chat/plan/` |
+| **plan** | 只读分析 + write/edit/mkdir（仅限 `~/.chat/plan/` 目录） | 任务拆解、依赖分析、生成计划文件到 `~/.chat/plan/` |
 | **map** | 只读（read/grep/glob/ls 等只读工具） | 项目探底、模块地图、调用链追踪、引用关系分析 |
 | **review** | 只读 + web_search（无 bash/bash_opt 等任何 shell 执行工具） | Code Review、P0-P3 分级审查、跨文件一致性验证 |
 | **execute** | 全工具（不含 user_select/subagent/subagent_opt/web_search） | 读/写/改代码、执行测试、通用任务 |
 
-> **工具排除策略**（与 `src/core/subagent.py` 的 `_TOOL_EXCLUSION_MAP` 一致）：execute 排除 `subagent/subagent_opt/user_select/web_search`；map 排除 `bash/bash_opt/write/edit/rm/mv/cp/mkdir/web_search/subagent/subagent_opt/user_select`；review 排除 `bash/bash_opt/write/edit/rm/mv/cp/mkdir/subagent/subagent_opt/user_select`（纯只读审查：仅 read/grep/glob/ls/web_search，无任何 shell 执行能力）；plan 排除 `bash/bash_opt/rm/mv/cp/subagent/subagent_opt/user_select`，write/edit/mkdir 仅限 `.chat/plan/` 目录。`subagent_opt` 与后台 subagent 均仅主 Agent 独有：SubAgent 工具白名单全类型排除 + 工具运行时 `isinstance(agent, SubAgent)` 双保险。SubAgent 在 `_handle_tool_calls()` 中注入 `agent_type` 到 Func 实例，`Func.can_use()` 进行统一检查。`FileToolBase._validate_path_and_size()` 额外实施 plan Agent 路径白名单校验。
+> **工具排除策略**（与 `src/core/subagent.py` 的 `_TOOL_EXCLUSION_MAP` 一致）：execute 排除 `subagent/subagent_opt/user_select/web_search`；map 排除 `bash/bash_opt/write/edit/rm/mv/cp/mkdir/web_search/subagent/subagent_opt/user_select`；review 排除 `bash/bash_opt/write/edit/rm/mv/cp/mkdir/subagent/subagent_opt/user_select`（纯只读审查：仅 read/grep/glob/ls/web_search，无任何 shell 执行能力）；plan 排除 `bash/bash_opt/rm/mv/cp/subagent/subagent_opt/user_select`，write/edit/mkdir 仅限 `~/.chat/plan/` 目录。`subagent_opt` 与后台 subagent 均仅主 Agent 独有：SubAgent 工具白名单全类型排除 + 工具运行时 `isinstance(agent, SubAgent)` 双保险。SubAgent 在 `_handle_tool_calls()` 中注入 `agent_type` 到 Func 实例，`Func.can_use()` 进行统一检查。`FileToolBase._validate_path_and_size()` 额外实施 plan Agent 路径白名单校验。
 
 ### 并发调度策略
 
@@ -855,7 +855,7 @@ chat_ui.clear_floating_windows()                            # 关闭全部
 │   ├── integrations/      # 外部集成（MCP / ClawBot / Skills）
 │   ├── _paths.py          # 与文件层级无关的仓库根定位（新增用例统一使用）
 │   └── conftest.py        # 全局夹具（事件循环兜底 / 覆盖率模式跳过时间预算用例）
-├── .chat/                 # 运行时数据目录（首次运行自动创建）
+├── ~/.chat/               # 运行时数据目录（用户主目录，首次写入时自动创建；跨项目共用）
 │   ├── memory/            # 跨对话记忆系统（索引 + 详情）
 │   ├── plan/              # Plan Agent 计划文件
 │   └── msg_list/          # 会话消息存储（JSON 格式）

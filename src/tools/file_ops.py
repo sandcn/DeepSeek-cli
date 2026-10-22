@@ -104,32 +104,39 @@ def normalize_user_path(path):
 
 
 def get_plan_allowed_dir() -> str:
-    """返回 plan agent 允许写入的目录（``.chat/plan``，realpath 解析符号链接）。
+    """返回 plan agent 允许写入的目录（``~/.chat/plan``，realpath 解析符号链接）。
 
     plan 白名单三处使用点（file_base._validate_path_and_size、mkdir.execute、
     base.Func.can_use）统一经本函数 + :func:`is_path_within_dir` 校验，
     避免 realpath/abspath 混用导致的符号链接绕过（安全一致性）。
+
+    运行时数据目录由 :mod:`src.paths` 统一提供（``Path.home() / ".chat"``）。
+    函数内延迟导入，便于测试与运行时替换 ``paths.CHAT_DIR``。
     """
-    return os.path.realpath(os.path.join(os.getcwd(), '.chat', 'plan'))
+    from ..paths import CHAT_DIR
+
+    return os.path.realpath(os.path.expanduser(str(CHAT_DIR / "plan")))
 
 
 def is_path_within_dir(path: str, allowed_dir: str) -> bool:
     """判断 path（realpath 解析符号链接）是否位于 allowed_dir 目录下。
 
-    - realpath 解析符号链接：防止 ``.chat/plan/link``（指向目录外）绕过白名单
+    - 展开 ``~``：提示词与工具调用可能使用 ``~/.chat/plan/...`` 形式
+    - realpath 解析符号链接：防止 ``~/.chat/plan/link``（指向目录外）绕过白名单
     - commonpath 判断子路径关系：防 ``../`` 穿越
     - 不同驱动器（Windows）等无法比较时返回 False（拒绝）
 
     Args:
-        path: 待校验路径（可相对/绝对/含符号链接）。
+        path: 待校验路径（可相对/绝对/含 ``~``/含符号链接）。
         allowed_dir: 允许的目录（应为本函数族生成的 realpath 绝对路径）。
 
     Returns:
         True — path 在 allowed_dir 下；False — 不在或无法比较。
     """
-    real = os.path.realpath(path)
+    real = os.path.realpath(os.path.expanduser(str(path)))
+    allowed = os.path.realpath(os.path.expanduser(str(allowed_dir)))
     try:
-        return os.path.commonpath([allowed_dir, real]) == allowed_dir
+        return os.path.commonpath([allowed, real]) == allowed
     except ValueError:
         return False
 

@@ -76,7 +76,7 @@ class GlobFunc(Func):
                                 "\n- 省略时：使用进程当前工作目录"
                                 "\n- 指定子目录：如 'src/' 或 '/home/user/project/src'，只在该目录下递归搜索"
                                 "\n- 多层嵌套：如 'src/renderer/ansi/'"
-                                "\n- 记忆目录：如 '.chat/memory/'"
+                                "\n- 记忆目录：如 '~/.chat/memory/'"
                             ),
                         },
                         "type": {
@@ -129,7 +129,8 @@ class GlobFunc(Func):
     ):
         super().__init__()
         self.pattern = pattern
-        self.root_path = path or os.getcwd()
+        # 展开 ~（记忆目录位于 ~/.chat/memory/）
+        self.root_path = os.path.expanduser(path) if path else os.getcwd()
         # 避免遮蔽 Python builtin type()，内部使用 filter_type
         self.filter_type = type  # "file", "dir", or None
         self.depth = max(0, depth)

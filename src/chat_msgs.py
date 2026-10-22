@@ -1,7 +1,7 @@
 """
 对话消息自动保存与恢复。
 
-保存位置: .chat/msg_list/<session_id>.json（项目根目录下）
+保存位置: ~/.chat/msg_list/<session_id>.json（用户主目录下）
 命令行恢复: python chat.py --load <session_id>
 
 注意：save_session() 会自动过滤 system 角色消息，仅保存 user/assistant/tool 消息。
@@ -561,7 +561,7 @@ def _title_updated_at(value) -> float:
 def save_session(messages: list[dict], model: str, session_id: str | None = None,
                  subagents: list | None = None, session_log: list | None = None,
                  title_snapshot: dict | None = None) -> str:
-    """保存对话到 .chat/msg_list/<id>.json
+    """保存对话到 ~/.chat/msg_list/<id>.json
 
     自动过滤 system 角色消息，仅保留 user/assistant/tool 对话消息。
 
@@ -705,7 +705,7 @@ def save_session(messages: list[dict], model: str, session_id: str | None = None
 
 # ── 加载对话 ──────────────────────────────────────────────
 def load_session(session_id: str) -> dict[str, Any] | None:
-    """从 .chat/msg_list/<id>.json 加载对话
+    """从 ~/.chat/msg_list/<id>.json 加载对话
 
     Args:
         session_id: 会话 ID（可带或不带 .json 后缀）
@@ -892,7 +892,7 @@ def iter_sessions():
 
 
 def list_sessions() -> list[dict[str, Any]]:
-    """列出 .chat/msg_list/ 下所有保存的会话摘要
+    """列出 ~/.chat/msg_list/ 下所有保存的会话摘要
 
     返回按保存时间降序排列的列表，每项含
     id/title/model/saved_at/message_count/mtime_ns。

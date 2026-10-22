@@ -5,7 +5,7 @@ from __future__ import annotations
 from ..ports.persistence import PersistencePort, CheckpointPort
 
 class JsonFilePersistence(PersistencePort):
-    """基于 .chat/msg_list/*.json 文件的会话持久化实现。
+    """基于 ~/.chat/msg_list/*.json 文件的会话持久化实现。
 
     包装 src/chat_msgs 模块中的函数，通过延迟导入避免模块加载时触发文件 IO。
     """
@@ -84,7 +84,7 @@ class JsonFilePersistence(PersistencePort):
         return _gen()
 
 class JsonFileCheckpoint(CheckpointPort):
-    """基于 .chat/msg_list/_checkpoint.json 文件的断点实现。
+    """基于 ~/.chat/_checkpoint.json 文件的断点实现。
 
     包装 src/checkpoint 模块中的函数，通过延迟导入避免模块加载时触发文件 IO。
     """

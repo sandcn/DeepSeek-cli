@@ -18,7 +18,7 @@
 - ``agent_name``：提示词文件基名（``prompts_export_<agent_name>.md``）；
 - ``exclusions``：该类型排除的工具集合（元组）；
 - ``low_model``：是否优先使用低优先级模型；
-- ``path_whitelist``：写入路径白名单标识（``"plan"`` 表示仅允许 ``.chat/plan/``）；
+- ``path_whitelist``：写入路径白名单标识（``"plan"`` 表示仅允许 ``~/.chat/plan/``）；
 - ``mcp_agent_type``：提示词 MCP 章节使用的权限类型（空表示用自身名字）。
 
 排除集合仍以可变 ``dict[str, set]`` 形式（``TOOL_EXCLUSION_MAP``）对外呈现，
@@ -97,7 +97,7 @@ _BUILTIN_SPECS: Tuple[AgentTypeSpec, ...] = (
     ),
     AgentTypeSpec(
         name="plan",
-        description="计划型：任务拆解并写入 .chat/plan/ 目录",
+        description="计划型：任务拆解并写入 ~/.chat/plan/ 目录",
         prompt_builder="build_plan_agent_prompt",
         agent_name="plan",
         exclusions=(

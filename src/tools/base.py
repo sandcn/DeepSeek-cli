@@ -137,7 +137,7 @@ class Func(abc.ABC):
             agent_label = "plan agent"
             if not is_path_within_dir(path, allowed_dir):
                 return (False, f"{agent_label} 只能在 {allowed_dir} 目录下写入文件。"
-                        f"当前路径: {path}（解析后: {os.path.realpath(path)}），"
+                        f"当前路径: {path}（解析后: {os.path.realpath(os.path.expanduser(path))}），"
                         f"不在允许的目录: {allowed_dir}")
         return (True, None)
 

@@ -100,8 +100,8 @@ class FileSizeError(FileToolError):
     pass
 
 # 注：plan 白名单目录不再做模块级缓存——get_plan_allowed_dir() 基于
-# os.getcwd()，os.chdir（含测试 chdir）后缓存会陈旧；与 mkdir / base.can_use
-# 一致，每次 _validate_path_and_size 动态解析（realpath，开销可忽略）。
+# ~/.chat（延迟读取 paths.CHAT_DIR），运行时可替换，且与 mkdir / base.can_use
+# 共用同一解析入口；每次 _validate_path_and_size 动态解析（realpath，开销可忽略）。
 
 @tool_metadata(
     parallel_safe=False,
@@ -140,7 +140,8 @@ class FileToolBase(Func):
         # 内容大小校验（纯字符串计算，无 I/O）保留在构造时
         self._check_content_size(content_for_size_check)
         super().__init__()
-        self.path = path
+        # 展开 ~（运行时数据位于 ~/.chat，提示词与工具调用会传 ~/ 路径）
+        self.path = os.path.expanduser(path)
         self.encoding = default_encoding()
         self.errors = default_errors()
         self.stats = {"total_time": 0.0, "lines_processed": 0}

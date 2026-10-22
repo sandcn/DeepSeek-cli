@@ -432,7 +432,7 @@ def build_plan_agent_system_prompt(
     """构建 plan 类型子代理系统提示词。
 
     从 prompts_export_plan.md 加载静态规则，追加运行时动态信息。
-    Plan 类型专用于制定可执行计划并写入 .chat/plan/ 目录，
+    Plan 类型专用于制定可执行计划并写入 ~/.chat/plan/ 目录，
     只读分析工具 + write/edit。
     环境信息后注入技能章节（每个 agent 均可使用技能）。
     """

@@ -177,6 +177,8 @@ class ReadFunc(Func):
         super().__init__()
         if not path:
             raise ValueError("缺少有效路径: path")
+        # 展开 ~（元数据目录位于 ~/.chat，提示词会直接给出 ~/ 路径）
+        path = os.path.expanduser(path)
         validate_path_security(path)
         self.path = path
         self.encoding = "utf-8"

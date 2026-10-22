@@ -51,7 +51,7 @@ class SubagentFunc(Func):
                 "description": (
                     "派发子 Agent 执行任务（独立上下文+文件沙盒），同轮多次调用自动并行"
                     "（每次调用独立后台执行、互不阻塞）。"
-                    "type：execute（读写+bash，默认）/ map（只读分析）/ review（代码审查 P0-P3）/ plan（生成计划，仅写 .chat/plan/）。"
+                    "type：execute（读写+bash，默认）/ map（只读分析）/ review（代码审查 P0-P3）/ plan（生成计划，仅写 ~/.chat/plan/）。"
                     "同一文件的所有修改必须在单次调用内完成。"
                     "直接后台执行：立即返回 {\"task_id\": ...} JSON，"
                     "后台 subagent 继续运行，完成后结果自动插入对话（或由 subagent_opt "
@@ -71,7 +71,7 @@ class SubagentFunc(Func):
                         "type": {
                             "type": "string",
                             "enum": ["map", "review", "plan", "execute"],
-                            "description": "子Agent类型。execute（默认）：排除 subagent、user_select 和 web_search，保留所有读写工具+bash，无路径限制，用于执行计划文件步骤并返回修改文件列表。map：只读分析型，仅保留 read/grep/glob/ls 等读取工具，专用于项目代码分析和地图生成。review：代码审查型，纯只读工具集（含 read/grep/glob/ls/web_search，无 bash/bash_opt 等任何 shell 执行工具），专用于文件列表的 Code Review（P0-P3 分级输出）。plan：计划型，只读分析工具 + write/edit/mkdir（仅限写入 .chat/plan/ 目录），根据指令生成计划。",
+                            "description": "子Agent类型。execute（默认）：排除 subagent、user_select 和 web_search，保留所有读写工具+bash，无路径限制，用于执行计划文件步骤并返回修改文件列表。map：只读分析型，仅保留 read/grep/glob/ls 等读取工具，专用于项目代码分析和地图生成。review：代码审查型，纯只读工具集（含 read/grep/glob/ls/web_search，无 bash/bash_opt 等任何 shell 执行工具），专用于文件列表的 Code Review（P0-P3 分级输出）。plan：计划型，只读分析工具 + write/edit/mkdir（仅限写入 ~/.chat/plan/ 目录），根据指令生成计划。",
                         },
                     },
                     "required": ["description", "prompt"],

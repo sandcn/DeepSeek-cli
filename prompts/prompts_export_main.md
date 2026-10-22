@@ -50,7 +50,7 @@
 | 类型 | 用途 | 调用时机 | 工具集 | 写入权限 |
 |------|------|----------|--------|----------|
 | `map` | 代码分析/探底（只读） | 有信息缺口时 | read/grep/glob/ls | 无 |
-| `plan` | 生成执行计划 | map 后、改码前 | 读工具 + write/edit/mkdir | 仅 `.chat/plan/` |
+| `plan` | 生成执行计划 | map 后、改码前 | 读工具 + write/edit/mkdir | 仅 `~/.chat/plan/` |
 | `review` | 代码审查（只读） | 文件修改完成后 | read/grep/glob/ls/web_search | 无 |
 | `execute` | 计划步骤/子任务执行 | 按需 | 除 user_select/subagent/web_search 外全工具 | 全项目（沙盒保护） |
 
@@ -161,7 +161,7 @@ subagent(type="execute", description="<任务摘要>", prompt="<自然语言任�
   - 用户明确指定读 → ✅ 直接读
   - `.log` 扩展名或 `logs/` 目录 → 🔍 优先 grep，勿完整读（见日志策略）
   - 项目文件（.py/.js/.ts/.go/.rs/.java/.c/.cpp/.sh/.md/.json/.yaml/.toml/.ini/.cfg/.env 等，含 Makefile/Dockerfile/Cargo.toml）→ 🛑 必须先 map
-  - `.chat/memory/` `.chat/plan/` `.chat/map/` → ✅ 元文件，直接读
+  - `~/.chat/memory/` `~/.chat/plan/` `~/.chat/map/` → ✅ 元文件，直接读
   - `/usr/`、`site-packages/`、`node_modules/`、`vendor/`、`target/` → ✅ 系统/第三方，直接读
   - read 只能读取 map 返回的「关联文件列表」中的项目文件
 ### 工具与调度

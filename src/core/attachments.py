@@ -4,7 +4,7 @@
 ------------------
 ``read_image`` 旧实现把图片编码为 base64 data URI 直接塞进工具结果，图片
 随每条历史消息重复序列化上传；同时会话存档里的 data URI 也无法跨会话复用。
-本模块把图片字节落到 ``.chat/attachments/v1/objects/``，工具结果只携带
+本模块把图片字节落到 ``~/.chat/attachments/v1/objects/``，工具结果只携带
 ``{"type": "image", "attachment": {...}}`` 引用：
 
 - **内容寻址**：文件名 = sha256，同一字节只存一份（去重）；
@@ -15,8 +15,8 @@
 
 目录布局（对齐 DSH 的 ``v1/objects`` 语义）::
 
-    .chat/attachments/v1/objects/<sha[:2]>/<sha>.<ext>
-    .chat/attachments/v1/objects/<sha[:2]>/<sha>.json   # 元数据
+    ~/.chat/attachments/v1/objects/<sha[:2]>/<sha>.<ext>
+    ~/.chat/attachments/v1/objects/<sha[:2]>/<sha>.json   # 元数据
 
 Attachments are never deleted automatically（对齐 DSH；避免删除仍被历史
 会话引用的对象）。
@@ -67,7 +67,7 @@ class AttachmentError(Exception):
 
 
 def attachments_root() -> Path:
-    """附件根目录（每次调用读取，便于测试/运行时切换 ``.chat`` 位置）。"""
+    """附件根目录（每次调用读取，便于测试/运行时切换 ``CHAT_DIR`` 位置）。"""
     from .. import paths
 
     return Path(paths.CHAT_ATTACHMENTS_DIR)
