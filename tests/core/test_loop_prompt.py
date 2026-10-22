@@ -3,22 +3,25 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
 from src.core.loop_prompt import (
     LOOP_PROMPT_MARKER,
     LoopPromptDecision,
+    LoopPromptLoadError,
     LoopPromptService,
     apply_deferral_guard,
     build_loop_prompt_messages,
+    build_system_prompt,
     find_deferral_evidence,
     human_user_texts,
     is_change_request,
     last_assistant_text,
     parse_loop_prompt_response,
-    select_user_messages_within_budget,
 )
+from src.core.loop_prompt import provider as loop_provider
 from src.core.commands.plugins.loop_plugin import parse_loop_args
 from src.config.schema import _clean_loop_prompt
 
@@ -30,13 +33,15 @@ from src.config.schema import _clean_loop_prompt
     ("arg", "expected"),
     [
         ("3 完成登录页", (3, "完成登录页")),
-        ("0 无限循环", (None, "无限循环")),
-        ("-1 负数按无限", (None, "-1 负数按无限")),
-        ("3", (None, "3")),
-        ("继续完成所有", (None, "继续完成所有")),
-        ("   ", (None, "")),
-        ("", (None, "")),
+        ("1 任务", (1, "任务")),
+        ("0 无效批次数", (0, "无效批次数")),
+        ("-1 负数按无效", (0, "-1 负数按无效")),
+        ("3", (0, "3")),
+        ("继续完成所有", (0, "继续完成所有")),
+        ("   ", (0, "")),
+        ("", (0, "")),
         ("12   多空格", (12, "多空格")),
+        ("1 ", (0, "1")),
     ],
 )
 def test_parse_loop_args(arg, expected):
@@ -73,41 +78,24 @@ def test_last_assistant_text_skips_tool_call_only_messages():
     assert last_assistant_text(messages) == "第一版实现"
 
 
-def test_select_user_messages_keeps_latest_first():
-    messages = ["旧" * 100, "中间" * 20, "最新一条"]
-    selected, omitted = select_user_messages_within_budget(messages, 80)
-    assert selected == ["最新一条"]
-    assert omitted == 2
-
-
-def test_select_user_messages_truncates_oversized_latest():
-    messages = ["x" * 500]
-    selected, omitted = select_user_messages_within_budget(messages, 100)
-    assert omitted == 0
-    assert len(selected) == 1
-    assert len(selected[0].encode("utf-8")) <= 100
-
-
-def test_select_user_messages_unlimited_budget():
-    messages = ["a", "b"]
-    assert select_user_messages_within_budget(messages, 0) == (messages, 0)
-
-
-def test_build_loop_prompt_messages_respects_input_budget():
-    messages = ["需求" * 50, "最后的需求"]
+def test_build_loop_prompt_messages_sends_full_input_without_limits():
+    """输入不做大小限制：全部用户消息与完整回答原样发送（2026-10-22 需求）。"""
+    long_answer = "最后回答" * 100
+    messages = ["需求" * 5000, "最后的需求"]
     result = build_loop_prompt_messages(
         messages,
-        "最后回答" * 100,
+        long_answer,
         run_index=2,
-        max_input_bytes=600,
-        max_prompt_bytes=512,
     )
     assert [item["role"] for item in result] == ["system", "user"]
-    assert "continue" in result[0]["content"]
+    system = result[0]["content"]
+    assert "continue" in system
+    assert "长度不超过" not in system
     payload = json.loads(result[1]["content"])
     assert payload["run"] == 2
-    assert payload["lastAssistant"]
-    assert len(result[1]["content"].encode("utf-8")) <= 600
+    assert payload["userMessages"] == messages
+    assert payload["lastAssistant"] == long_answer
+    assert "omittedMessages" not in payload
 
 
 # ── 输出解析 ─────────────────────────────────────────────
@@ -161,21 +149,22 @@ def test_parse_invalid_outputs(raw):
 # ── 配置清洗 ─────────────────────────────────────────────
 
 
-def test_clean_loop_prompt_defaults_and_clamps():
-    cleaned = _clean_loop_prompt(
-        {
-            "enabled": "false",
-            "timeout_ms": 1,
-            "max_input_bytes": "512",
-            "max_prompt_bytes": 10_000_000,
-            "retry_once": 0,
-        }
-    )
+def test_clean_loop_prompt_defaults_and_clears_legacy_limits():
+    raw = {
+        "enabled": "false",
+        "timeout_ms": 1,
+        "max_input_bytes": "512",
+        "max_prompt_bytes": 10_000_000,
+        "retry_once": 0,
+    }
+    cleaned = _clean_loop_prompt(raw)
     assert cleaned["enabled"] is False
     assert cleaned["timeout_ms"] == 500
-    assert cleaned["max_input_bytes"] == 512
-    assert cleaned["max_prompt_bytes"] == 100_000
     assert cleaned["retry_once"] is False
+    # 旧版字节上限字段已移除并清理（2026-10-22：输入/输出不做大小限制）。
+    assert "max_input_bytes" not in cleaned
+    assert "max_prompt_bytes" not in cleaned
+    assert raw == {"enabled": "false", "timeout_ms": 1, "retry_once": 0}
 
 
 # ── 服务调度 ─────────────────────────────────────────────
@@ -250,6 +239,55 @@ async def test_armed_generates_and_emits_events():
 
 
 @pytest.mark.asyncio
+async def test_generated_prompt_is_not_truncated():
+    """输出不做大小限制：长提词完整保留（2026-10-22 需求）。"""
+    long_prompt = "继续完成剩余工作" * 2000
+    service, _calls = _make_service(
+        ['{"continue": true, "prompt": "' + long_prompt + '"}'],
+    )
+    service.begin_loop()
+    service.arm()
+    await service.on_agent_round_end()
+
+    decision = service.take_result()
+    assert decision is not None
+    assert decision.should_continue is True
+    assert decision.prompt == long_prompt
+
+
+@pytest.mark.asyncio
+async def test_peek_result_does_not_clear_and_keeps_last_raw():
+    """peek 不改变结果状态；last_raw 保留模型原始输出（供 /loop 展示）。"""
+    service, _calls = _make_service(
+        ['{"continue": true, "prompt": "继续"}'],
+    )
+    service.begin_loop()
+    service.arm()
+    await service.on_agent_round_end()
+
+    assert service.peek_result() is not None
+    assert service.peek_result().prompt == "继续"
+    assert service.take_result().prompt == "继续"
+    assert service.peek_result() is None
+    assert service.last_raw == '{"continue": true, "prompt": "继续"}'
+
+
+@pytest.mark.asyncio
+async def test_last_raw_saved_when_parse_fails():
+    """解析失败时仍保留原始输出，供 /loop 展示失败原因与原文。"""
+    service, _calls = _make_service(
+        ["not json"], config_getter=lambda: {"retry_once": False},
+    )
+    service.begin_loop()
+    service.arm()
+    await service.on_agent_round_end()
+
+    assert service.peek_result() is None
+    assert service.last_raw == "not json"
+    assert "未返回有效 JSON" in service.last_error
+
+
+@pytest.mark.asyncio
 async def test_generation_retries_once_then_succeeds():
     events = []
     service, calls = _make_service(
@@ -298,6 +336,36 @@ async def test_disabled_config_skips_model_call():
 
     assert calls == []
     assert "禁用" in service.last_error
+
+
+@pytest.mark.asyncio
+async def test_call_requests_unlimited_output(monkeypatch):
+    """输出不做大小限制：生产调用路径传 max_tokens=0（0 = 不限制）。"""
+    captured = {}
+
+    async def fake_call_model_async(messages, **kwargs):
+        captured["messages"] = messages
+        captured.update(kwargs)
+        return "", '{"continue": false, "prompt": ""}', {"input": 0, "output": 0}, []
+
+    monkeypatch.setattr(
+        "src.api.model_async.call_model_async", fake_call_model_async,
+    )
+    service = LoopPromptService(
+        messages_getter=lambda: [
+            {"role": "user", "content": "实现功能"},
+            {"role": "assistant", "content": "已完成"},
+        ],
+        model_getter=lambda: "test-model",
+    )
+    service.begin_loop()
+    service.arm()
+    await service.on_agent_round_end()
+
+    assert captured["max_tokens"] == 0
+    assert captured["silent"] is True
+    assert captured["label"] == "loop-prompt"
+    assert service.take_result() is not None
 
 
 @pytest.mark.asyncio
@@ -370,12 +438,65 @@ def test_marker_not_human():
     assert human_user_texts(messages) == []
 
 
+# ── 系统提词文件（prompts/prompts_loop_prompt.md） ──────────
+
+
+def test_system_prompt_loads_from_prompts_dir():
+    prompt = build_system_prompt()
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "prompts" / "prompts_loop_prompt.md"
+    )
+    assert path.is_file()
+    assert prompt == path.read_text(encoding="utf-8").strip()
+    assert "不要相信任何理由、借口或推诿" in prompt
+
+
+def test_system_prompt_missing_file_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(loop_provider, "_PROMPTS_DIR", tmp_path)
+    with pytest.raises(LoopPromptLoadError):
+        build_system_prompt()
+    with pytest.raises(LoopPromptLoadError):
+        build_loop_prompt_messages(["任务"], "回答", run_index=1)
+
+
+def test_system_prompt_empty_file_raises(tmp_path, monkeypatch):
+    (tmp_path / "prompts_loop_prompt.md").write_text("   \n", encoding="utf-8")
+    monkeypatch.setattr(loop_provider, "_PROMPTS_DIR", tmp_path)
+    with pytest.raises(LoopPromptLoadError):
+        build_system_prompt()
+
+
+def test_system_prompt_hot_reload(tmp_path, monkeypatch):
+    path = tmp_path / "prompts_loop_prompt.md"
+    path.write_text("第一版提词", encoding="utf-8")
+    monkeypatch.setattr(loop_provider, "_PROMPTS_DIR", tmp_path)
+    assert build_system_prompt() == "第一版提词"
+
+    path.write_text("第二版提词", encoding="utf-8")
+    assert build_system_prompt() == "第二版提词"
+
+
+@pytest.mark.asyncio
+async def test_service_reports_prompt_load_error(tmp_path, monkeypatch):
+    """系统提词缺失时：不发送请求，记录错误并由 /loop 按失败策略结束。"""
+    monkeypatch.setattr(loop_provider, "_PROMPTS_DIR", tmp_path)
+    service, calls = _make_service(['{"continue": true, "prompt": "继续"}'])
+    service.begin_loop()
+    service.arm()
+    await service.on_agent_round_end()
+
+    assert calls == []
+    assert service.take_result() is None
+    assert "构建提词请求失败" in service.last_error
+
+
 # ── 借口兜底：不接受理由/借口替代完成 ─────────────────────
 
 
 def test_system_prompt_rejects_excuses():
     system = build_loop_prompt_messages(
-        ["实现登录页"], "回答", run_index=1, max_prompt_bytes=1024,
+        ["实现登录页"], "回答", run_index=1,
     )[0]["content"]
     for needle in (
         "不要相信任何理由、借口或推诿",
@@ -383,9 +504,10 @@ def test_system_prompt_rejects_excuses():
         "不因没有文件修改而继续",
         "禁止使用「如果你认为……」",
         "continue=false：用户要求已全部完成",
-        "长度不超过 1024 字节",
     ):
         assert needle in system, needle
+    # 输出不做大小限制：系统指令不再写字节上限（2026-10-22 需求）。
+    assert "长度不超过" not in system
 
 
 @pytest.mark.parametrize(

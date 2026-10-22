@@ -449,7 +449,7 @@ python chat.py clawbot --re-login   # 强制重新扫码登录
 | 命令 | 别名 | 功能 |
 |------|------|------|
 | `/clear` | — | 清空对话（保留系统提词） |
-| `/loop [N] <提词>` | — | 循环执行提词：首次使用用户提词，之后每轮末尾由 LLM 根据未完成项生成续跑提词；N 为总运行次数（省略或 0 = 无限，直到 LLM 判断完成 / 用户输入 / ESC）。判定**不接受理由 / 借口 / 推诿**：改动类任务没有实际修改与验证证据就继续运行（纯问答 / 分析类按回答是否完整结束） |
+| `/loop <N> <提词>` | — | 按批次循环执行提词：N 为**批次数**（必须显式正整数；省略或 0 报错）。每批内只要 LLM 返回 `continue=true` 就继续执行（**不设运行次数上限**），每次使用上一轮生成的续跑提词；`continue=false` 表示本批完成、批次数减一，减到 0 结束。每批开始时清空对话并重新使用最初的提词；用户输入 / ESC 立即终止整个循环。判定**不接受理由 / 借口 / 推诿**：改动类任务没有实际修改与验证证据就继续运行（纯问答 / 分析类按回答是否完整结束） |
 | `/pet [on\|off]` | — | 召唤/收回**爱吃大白饭的蓝色大肥鱼宠物**（娘化萌版）：无边框、透明背景右侧 40 列浮窗；干饭、咀嚼、打嗝、追饭粒、吃撑躺平、跳舞、吃 tok 等 22 种动作，端着饭碗、冒热气、掉饭粒，并随机冒泡说干饭/撒娇/治愈台词（无参数 = 召唤/收回切换） |
 | `/pin` | — | 标记重要消息（压缩时保留） |
 | `/compact` | — | 压缩上下文历史：把最旧的平衡范围替换为一条结构化检查点（保留近期尾部），报告压缩条数与节省 token；压缩过程在模式行显示 `compact · N` |
@@ -835,7 +835,7 @@ chat_ui.clear_floating_windows()                            # 关闭全部
 ```
 ├── chat.py                # 入口脚本（asyncio.run(main())）
 ├── pyproject.toml         # 项目配置与依赖
-├── prompts/               # 系统提示词（7 个文件）
+├── prompts/               # 系统提示词（8 个文件）
 │   ├── prompts_export_main.md    # 主 Agent 系统提示词（标准模式：子代理编排范式）
 │   ├── prompts_export_main_simple.md  # 主 Agent 系统提示词（简单模式：命令式精简规则集）
 │   ├── prompts_export_main_empty.md  # 主 Agent 系统提示词（空模式：单体完整规则集；「空」指不含子代理编排，非规则量最少）
@@ -843,6 +843,7 @@ chat_ui.clear_floating_windows()                            # 关闭全部
 │   ├── prompts_export_plan.md    # plan SubAgent 计划提示词
 │   ├── prompts_export_execute.md  # execute SubAgent 提示词
 │   ├── prompts_export_review.md  # review SubAgent 审查提示词
+│   ├── prompts_loop_prompt.md    # /loop 续跑提词 LLM 的系统提词（每次构建热加载）
 
 ├── tests/                 # 测试（按被测模块分组）
 │   ├── renderer/          # Markdown/ANSI 解析与渲染、流式渲染

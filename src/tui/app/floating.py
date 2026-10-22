@@ -52,8 +52,8 @@ _logger = logging.getLogger(__name__)
 #: 默认浮窗宽度（列，含边框）。内容自适应（spec.width=None）时不设置。
 DEFAULT_FLOAT_WIDTH = 30
 
-#: 循环浮窗固定宽度（列）——容纳「⟳ /loop … 第 R/N 次」标题行、
-#: 进度条、「⏱ 本次 mm:ss … 生成状态」计时行与当前 / 下一轮提词。
+#: 循环浮窗固定宽度（列）——容纳「⟳ /loop … 第 B/T 批」标题行、
+#: 进度条、「⏱ 本次 mm:ss … 第 R 次运行」计时行与当前 / 下一轮提词。
 LOOP_FLOAT_WIDTH = 34
 
 #: ``/usage`` 用量浮窗 id。
@@ -531,9 +531,10 @@ def LoopFloatingWindow(props: dict) -> object:
     数据源：``model.loop_status``（``LoopStatusState``，由 /loop 每次运行前经
     InkBridge 更新）。五行内容：
 
-      1. ``⟳ /loop … 第 R/N 次``（无限时 ``第 R 次``；两端对齐）
-      2. ``████████░░░░░░░  40%``（有限次数显示进度；无限次显示流动条 + ``∞``）
-      3. ``⏱ 本次 1:23 … ✎ 生成提词中…``（本次已运行时间**每帧动态刷新**）
+      1. ``⟳ /loop … 第 B/T 批``（两端对齐）
+      2. ``████████░░░░░░░  40%``（按批次进度显示）
+      3. ``⏱ 本次 1:23 … 第 R 次运行`` / ``✎ 生成提词中…``（本次已运行时间
+         **每帧动态刷新**）
       4. ``❯ 当前提词``（超宽省略号截断，暗色斜体）
       5. ``↳ 下一轮生成提词`` / ``✎ 生成提词中…`` / ``↳ 等待生成``
 
@@ -553,15 +554,16 @@ def LoopFloatingWindow(props: dict) -> object:
         return h(TEXT, {"key": "loop-empty", "children": ""})
     total = max(0, _safe_int(getattr(st, "total", 0), 0))
     round_no = max(0, _safe_int(getattr(st, "round", 0), 0))
+    run_no = max(0, _safe_int(getattr(st, "run", 0), 0))
     generating = bool(getattr(st, "generating", False))
     now = time.monotonic()
 
-    # ── 1. 标题行：⟳ /loop（左）… 第 R/N 次（右） ──
+    # ── 1. 标题行：⟳ /loop（左）… 第 B/T 批（右） ──
     if round_no and total:
         shown_round = min(round_no, total)
-        round_label = f"第 {shown_round}/{total} 次"
+        round_label = f"第 {shown_round}/{total} 批"
     elif round_no:
-        round_label = f"第 {round_no} 次"
+        round_label = f"第 {round_no} 批"
     else:
         round_label = "准备中"
     header_runs = _right_aligned(
@@ -614,8 +616,10 @@ def LoopFloatingWindow(props: dict) -> object:
     elapsed_text = _loop_elapsed_text(getattr(st, "round_started_at", 0.0), now)
     if generating:
         run_label = "✎ 生成提词中…"
+    elif run_no:
+        run_label = f"第 {run_no} 次运行"
     elif round_no:
-        run_label = f"第 {round_no} 次"
+        run_label = f"第 {round_no} 批"
     else:
         run_label = "等待开始"
     time_runs = _right_aligned(

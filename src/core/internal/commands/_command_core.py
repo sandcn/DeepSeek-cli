@@ -91,7 +91,7 @@ class CommandContext:
 COMMANDS_HELP = (
     f"\n{DIM}  \u2500 可用命令{RESET}\n"
     f"  {TEAL}/clear{RESET}    清空对话\n"
-    f"  {TEAL}/loop{RESET}     循环执行提词（首次用户提词，之后 LLM 生成续跑提词）: /loop [次数] <提词>\n"
+    f"  {TEAL}/loop{RESET}     按批次循环执行（每批 continue=true 无限续跑，false 后批次数-1）: /loop <批次数> <提词>\n"
     f"  {TEAL}/pet{RESET}      召唤/收回爱吃大白饭的蓝色大肥鱼宠物（右侧浮窗，干饭/吃 tok/跳舞等 22 种动作）\n"
     f"  {TEAL}/pin{RESET}      标记重要消息（压缩时保留）\n"
     f"  {TEAL}/editmsg{RESET}  编辑当前会话消息 (Ctrl+O)\n"

@@ -682,6 +682,7 @@ async def stream_call_async(
     display=None,
     label: str | None = None,
     silent: bool = False,
+    max_tokens: int | None = None,
 ) -> tuple:
     """异步流式调用模型并实时渲染输出。
 
@@ -690,6 +691,8 @@ async def stream_call_async(
     Args:
         is_reasoner: 是否推理模型
         silent: 静默模式，跳过所有终端输出
+        max_tokens: 单次响应的最大输出 token 数（``None`` = 不主动设置，
+            ``<=0`` = 不限制）
 
     返回 (reasoning_content, content, usage, tool_calls)。
     """
@@ -705,6 +708,7 @@ async def stream_call_async(
         tools=tools,
         stream=True,
         stream_options={"include_usage": True},
+        max_tokens=max_tokens,
     )
 
     ctx = StreamContext(model, display, label, silent)

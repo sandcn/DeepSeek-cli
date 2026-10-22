@@ -93,11 +93,10 @@ def _clean_session_title(raw) -> dict:
 
 
 #: ``/loop`` 续跑提词配置字段规格（``键 → (类型, 最小值, 最大值)``）。
+#: 输入/输出字节上限字段已移除（2026-10-22 用户需求：不做大小限制）。
 _LOOP_PROMPT_FIELDS: dict = {
     "enabled": (bool, None, None),
     "timeout_ms": (int, 500, 600_000),
-    "max_input_bytes": (int, 256, 10_000_000),
-    "max_prompt_bytes": (int, 1, 100_000),
     "retry_once": (bool, None, None),
 }
 
@@ -117,6 +116,10 @@ def _clean_loop_prompt(raw) -> dict:
     base = dict(raw_default) if isinstance(raw_default, dict) else {}
     if not isinstance(raw, dict):
         return base
+    # 旧版字节上限字段已移除（2026-10-22 用户需求：输入/输出不做大小限制）：
+    # 遗留 RC 键在此清除，避免继续生效或误导用户。
+    for legacy_key in ("max_input_bytes", "max_prompt_bytes"):
+        raw.pop(legacy_key, None)
     for key, (kind, low, high) in _LOOP_PROMPT_FIELDS.items():
         if key not in raw:
             continue

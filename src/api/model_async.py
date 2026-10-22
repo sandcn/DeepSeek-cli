@@ -62,6 +62,7 @@ async def call_model_async(
     override_max_retries: int | None = None,
     fixed_delay_sec: float | None = None,
     empty_response_retries: int | None = None,
+    max_tokens: int | None = None,
 ) -> tuple:
     """异步流式调用模型。
 
@@ -78,6 +79,9 @@ async def call_model_async(
             EMPTY_RESPONSE_MAX_RETRIES（0 = 无限）；``<=0`` = 无限重试
             （交互主对话默认：不要以「模型返回空响应」错误结束本轮）；
             ``>0`` = 有界（内部调用方）。
+        max_tokens: 单次响应最大输出 token 数（透传到适配器）。``None`` =
+            不主动设置（保持 provider 默认），``<=0`` = 不限制（OpenAI 兼容
+            provider 不发送该字段；Anthropic 使用其最大输出常量）。
     """
     model = model or MODEL
     adapter = get_adapter(model)
@@ -92,7 +96,7 @@ async def call_model_async(
     return await retry_on_parse_failure_async(
         stream_call_async,
         silent=silent, display=display, label=label,
-        api_args=(messages_copy, model, is_reasoner, tools, display, label, silent),
+        api_args=(messages_copy, model, is_reasoner, tools, display, label, silent, max_tokens),
         override_max_retries=override_max_retries,
         fixed_delay_sec=fixed_delay_sec,
         empty_response_retries=empty_response_retries,

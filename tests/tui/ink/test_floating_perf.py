@@ -182,7 +182,7 @@ def test_render_frame_collects_floating_fibers_once(monkeypatch) -> None:
     assert calls["n"] == 1, "浮窗收集应每帧只做一次（定位写入、合成复用）"
     text = "\n".join(strip_ansi(line.render()) for line in frame.lines)
     assert "⟳ /loop" in text
-    assert "第 2/3 次" in text
+    assert "第 2/3 批" in text
 
 
 def test_render_frame_still_works_without_floating_window() -> None:
@@ -297,5 +297,5 @@ def test_render_to_string_shows_loop_window_content() -> None:
         renderToString(build_app_element(model, 90), {"columns": 90})
     )
     assert "⟳ /loop" in text
-    assert "第 2/3 次" in text
+    assert "第 2/3 批" in text
     assert "继续" in text

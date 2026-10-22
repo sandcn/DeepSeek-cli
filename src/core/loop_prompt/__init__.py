@@ -11,7 +11,7 @@
 from .provider import (
     LOOP_PROMPT_MARKER,
     LoopPromptDecision,
-    SYSTEM_TEMPLATE,
+    LoopPromptLoadError,
     apply_deferral_guard,
     build_forced_continuation_prompt,
     build_loop_prompt_messages,
@@ -22,15 +22,14 @@ from .provider import (
     is_human_user_text,
     last_assistant_text,
     parse_loop_prompt_response,
-    select_user_messages_within_budget,
 )
 from .service import LoopPromptService
 
 __all__ = [
     "LOOP_PROMPT_MARKER",
     "LoopPromptDecision",
+    "LoopPromptLoadError",
     "LoopPromptService",
-    "SYSTEM_TEMPLATE",
     "apply_deferral_guard",
     "build_forced_continuation_prompt",
     "build_loop_prompt_messages",
@@ -41,5 +40,4 @@ __all__ = [
     "is_human_user_text",
     "last_assistant_text",
     "parse_loop_prompt_response",
-    "select_user_messages_within_budget",
 ]

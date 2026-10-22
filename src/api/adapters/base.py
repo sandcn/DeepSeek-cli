@@ -101,6 +101,7 @@ class BaseLLMAdapter(ABC):
         tools: Optional[list] = None,
         stream: bool = False,
         stream_options: Optional[dict] = None,
+        max_tokens: Optional[int] = None,
     ) -> dict:
         ...
 
@@ -192,10 +193,15 @@ class BaseLLMAdapter(ABC):
                            tools: list | None = None,
                            stream: bool = False,
                            stream_options: dict | None = None,
+                           max_tokens: int | None = None,
                            *,
                            extra_body: dict | None = None,
                            extra_kwargs: dict | None = None) -> dict:
-        """构建 OpenAI 兼容格式的基础请求 kwargs。子类通过 extra_kwargs 注入差异。"""
+        """构建 OpenAI 兼容格式的基础请求 kwargs。子类通过 extra_kwargs 注入差异。
+
+        ``max_tokens``：``None`` / ``<=0`` 不写入请求（不限制，交给服务端默认），
+        正数则显式写入。
+        """
         kwargs: dict[str, Any] = {"model": model, "messages": messages}
         if stream:
             kwargs["stream"] = True
@@ -203,6 +209,8 @@ class BaseLLMAdapter(ABC):
             kwargs["tools"] = tools
         if stream_options:
             kwargs["stream_options"] = stream_options
+        if max_tokens is not None and int(max_tokens) > 0:
+            kwargs["max_tokens"] = int(max_tokens)
         if extra_body:
             kwargs.setdefault("extra_body", {}).update(extra_body)
         if extra_kwargs:

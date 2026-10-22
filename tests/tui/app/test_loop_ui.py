@@ -88,13 +88,15 @@ def test_floating_window_finite_progress():
     model = _model(
         total=3,
         round=2,
+        run=4,
         prompt="修复登录页",
         next_prompt="补充回归测试",
         round_started_at=time.monotonic() - 125,
     )
     text = _render(model)
     assert "⟳ /loop" in text
-    assert "第 2/3 次" in text
+    assert "第 2/3 批" in text
+    assert "第 4 次运行" in text
     assert "67%" in text
     assert "2:05" in text
     assert "修复登录页" in text
@@ -102,9 +104,10 @@ def test_floating_window_finite_progress():
 
 
 def test_floating_window_infinite_progress():
+    # total=0 仅为防御路径（新语义要求正整数批次数，不会传入）。
     model = _model(total=0, round=4, prompt="继续", round_started_at=time.monotonic() - 1)
     text = _render(model)
-    assert "第 4 次" in text
+    assert "第 4 批" in text
     assert "∞" in text
 
 

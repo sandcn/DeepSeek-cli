@@ -1,4 +1,4 @@
-"""``LoopPlugin`` 端到端编排：生成提词跨轮使用、LLM 判定停止、无限轮退出。"""
+"""``LoopPlugin`` 端到端编排：批次数语义（批内无限续跑、false→批次数-1、0 结束）。"""
 
 from __future__ import annotations
 
@@ -56,6 +56,7 @@ class _FakeSession:
         self.prompts = []
         self.cleared = 0
         self._service = service
+        self.interrupted = False
 
     def clear_messages(self):
         self.cleared += 1
@@ -63,6 +64,8 @@ class _FakeSession:
 
     async def run_round(self, prompt):
         self.prompts.append(prompt)
+        if self.interrupted:
+            return {"interrupted": True}
         self.messages = [
             {"role": "user", "content": prompt},
             {"role": "assistant", "content": self.answers.pop(0)},
@@ -72,17 +75,13 @@ class _FakeSession:
         return {"interrupted": False}
 
 
-@pytest.mark.asyncio
-async def test_loop_uses_generated_prompt_and_stops_on_false(monkeypatch):
-    responses = [
-        '{"continue": true, "prompt": "补充测试与验证"}',
-        '{"continue": false, "prompt": ""}',
-    ]
+def _make_env(monkeypatch, responses, answers):
+    """构造 LoopPlugin 运行环境（fake UI / session / service）。"""
+    ui = _FakeChatUI()
+    pending = list(responses)
 
     def call_model(_messages):
-        return responses.pop(0), ""
-
-    ui = _FakeChatUI()
+        return pending.pop(0), ""
 
     def emit(event, **data):
         if event == "loop_prompt_generating":
@@ -101,75 +100,8 @@ async def test_loop_uses_generated_prompt_and_stops_on_false(monkeypatch):
         call_model=call_model,
         config_getter=lambda: {"retry_once": False},
     )
-    session = _FakeSession(service, ["实现完成，还差测试", "测试已补齐"])
-    loop = SimpleNamespace(
-        _chat_ui=ui,
-        _loop_state={},
-        _force_exit=SimpleNamespace(clear=lambda: None),
-    )
-
-    async def _no_snapshot(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr(
-        "src.app_loop._save_loop_snapshot", _no_snapshot,
-    )
-    monkeypatch.setattr(
-        "src.core.interrupt_state.reset_interrupt_async", lambda *a, **k: None,
-    )
-    monkeypatch.setattr("src.core.stats.reset_token_speed", lambda *a, **k: None)
-
-    plugin = LoopPlugin()
-    plugin.bind_loop(loop)
-    handled = await plugin.async_execute(
-        SimpleNamespace(session=session, arg="5 实现功能"),
-    )
-
-    assert handled is True
-    assert session.cleared == 1
-    assert session.prompts[0] == "实现功能"
-    assert session.prompts[1] == f"{LOOP_PROMPT_MARKER}补充测试与验证"
-    assert len(session.prompts) == 2  # LLM 判定 false 后不再运行
-    assert loop._loop_state["_loop_mode"] is False
-    assert ui.opened == [(5, "实现功能", 1)]
-    assert ui.closed == 1
-    assert ui.bottom_bar.enabled == 1
-    assert ui.bottom_bar.disabled == 1
-    assert any("LLM 判断无需继续" in line for line in ui.lines)
-    assert any("下次提词" in line for line in ui.lines)
-    # 生成期间浮窗收到 generating=True；生成结果写入下一轮提词。
-    assert any(item.get("generating") is True for item in ui.statuses)
-    assert any(item.get("next_prompt") == "补充测试与验证" for item in ui.statuses)
-
-
-@pytest.mark.asyncio
-async def test_loop_infinite_stops_on_pending_user_input(monkeypatch):
-    responses = ['{"continue": true, "prompt": "继续"}'] * 5
-
-    def call_model(_messages):
-        return responses.pop(0), ""
-
-    ui = _FakeChatUI()
-
-    def emit(event, **data):
-        if event == "loop_prompt_generating":
-            ui.set_loop_status(generating=data.get("generating"))
-        elif event == "loop_prompt_generated":
-            keep = data.get("should_continue") is not False and not data.get("error")
-            ui.set_loop_status(
-                generating=False,
-                next_prompt=data.get("prompt", "") if keep else "",
-            )
-
-    service = LoopPromptService(
-        messages_getter=lambda: session.messages,
-        model_getter=lambda: "test-model",
-        emit=emit,
-        call_model=call_model,
-        config_getter=lambda: {"retry_once": False},
-    )
-    session = _FakeSession(service, ["一", "二", "三", "四", "五"])
-    loop_state = {}
+    session = _FakeSession(service, answers)
+    loop_state: dict = {}
     loop = SimpleNamespace(
         _chat_ui=ui,
         _loop_state=loop_state,
@@ -187,20 +119,147 @@ async def test_loop_infinite_stops_on_pending_user_input(monkeypatch):
 
     plugin = LoopPlugin()
     plugin.bind_loop(loop)
-    # 第一次运行后模拟用户输入 → 第二轮开头检测到并退出。
+    return ui, session, plugin, loop_state
+
+
+@pytest.mark.asyncio
+async def test_single_batch_runs_until_false(monkeypatch):
+    """``/loop 1``：一批内 continue=true 无限续跑，false 后结束。"""
+    ui, session, plugin, _state = _make_env(
+        monkeypatch,
+        [
+            '{"continue": true, "prompt": "补充测试"}',
+            '{"continue": true, "prompt": "继续验证"}',
+            '{"continue": false, "prompt": ""}',
+        ],
+        ["一", "二", "三"],
+    )
+    await plugin.async_execute(SimpleNamespace(session=session, arg="1 实现功能"))
+
+    assert len(session.prompts) == 3
+    assert session.prompts[0] == "实现功能"
+    assert session.prompts[1] == f"{LOOP_PROMPT_MARKER}补充测试"
+    assert session.prompts[2] == f"{LOOP_PROMPT_MARKER}继续验证"
+    assert session.cleared == 1
+    assert ui.opened == [(1, "实现功能", 1)]
+    assert ui.bottom_bar.enabled == 1
+    assert ui.bottom_bar.disabled == 1
+    assert ui.closed == 1
+
+    text = "\n".join(ui.lines)
+    assert "第 1/1 批开始" in text
+    assert "第 1/1 批完成" in text
+    assert "全部 1 批执行完毕" in text
+    # 每轮继续即时显示；最后一轮（false）在「本批完成」之后显示。
+    assert len([line for line in ui.lines if "LLM 输出" in line]) == 3
+    done_idx = next(
+        i for i, line in enumerate(ui.lines) if "第 1/1 批完成" in line
+    )
+    last_out_idx = max(
+        i for i, line in enumerate(ui.lines) if "LLM 输出" in line
+    )
+    assert last_out_idx > done_idx
+
+
+@pytest.mark.asyncio
+async def test_multi_batch_resets_messages_and_prompt(monkeypatch):
+    """多批：每批清空消息，并重新使用用户最初的提词。"""
+    ui, session, plugin, _state = _make_env(
+        monkeypatch,
+        [
+            '{"continue": true, "prompt": "A"}',
+            '{"continue": false, "prompt": ""}',
+            '{"continue": true, "prompt": "B"}',
+            '{"continue": false, "prompt": ""}',
+        ],
+        ["一", "二", "三", "四"],
+    )
+    await plugin.async_execute(SimpleNamespace(session=session, arg="2 实现功能"))
+
+    assert len(session.prompts) == 4
+    assert session.cleared == 2
+    assert session.prompts[0] == "实现功能"
+    assert session.prompts[1] == f"{LOOP_PROMPT_MARKER}A"
+    assert session.prompts[2] == "实现功能"  # 第二批重置为最初提词
+    assert session.prompts[3] == f"{LOOP_PROMPT_MARKER}B"
+    assert ui.opened == [(2, "实现功能", 1)]
+
+    text = "\n".join(ui.lines)
+    assert "第 1/2 批完成" in text
+    assert "第 2/2 批完成" in text
+    assert "全部 2 批执行完毕" in text
+    # 两批各显示一次 false 输出（每批最后一块在「本批完成」后）。
+    assert len([line for line in ui.lines if "LLM 输出" in line]) == 4
+
+
+@pytest.mark.asyncio
+async def test_requires_explicit_positive_batch_count(monkeypatch):
+    """省略批次数：报错并提示用法，不执行任何一轮。"""
+    ui, session, plugin, _state = _make_env(monkeypatch, [], [])
+    await plugin.async_execute(SimpleNamespace(session=session, arg="实现功能"))
+
+    assert session.prompts == []
+    assert session.cleared == 0
+    assert ui.opened == []
+    assert any("用法: /loop <批次数> <提词>" in line for line in ui.lines)
+
+
+@pytest.mark.asyncio
+async def test_zero_batch_count_errors(monkeypatch):
+    ui, session, plugin, _state = _make_env(monkeypatch, [], [])
+    await plugin.async_execute(SimpleNamespace(session=session, arg="0 实现功能"))
+
+    assert session.prompts == []
+    assert any("批次数必须是正整数" in line for line in ui.lines)
+
+
+@pytest.mark.asyncio
+async def test_user_input_stops_entire_loop(monkeypatch):
+    """批内检测到用户输入 → 立即终止整个 loop（不进入下一批）。"""
+    ui, session, plugin, state = _make_env(
+        monkeypatch,
+        ['{"continue": true, "prompt": "继续"}'],
+        ["一"],
+    )
     original_run = session.run_round
 
     async def run_and_queue(prompt):
         result = await original_run(prompt)
         if len(session.prompts) == 1:
-            loop_state["queued_input"] = "用户新消息"
+            state["queued_input"] = "用户新消息"
         return result
 
     session.run_round = run_and_queue  # type: ignore[assignment]
 
-    await plugin.async_execute(SimpleNamespace(session=session, arg="实现功能"))
+    await plugin.async_execute(SimpleNamespace(session=session, arg="2 实现功能"))
 
     assert len(session.prompts) == 1
-    assert any("检测到用户输入" in line for line in ui.lines)
-    assert ui.opened[0][0] == 0  # total=0 表示无限
-    assert ui.closed == 1
+    text = "\n".join(ui.lines)
+    assert "检测到用户输入" in text
+    assert "提前结束整个循环" in text
+    assert "第 2/2 批开始" not in text
+
+
+@pytest.mark.asyncio
+async def test_parse_failure_stops_entire_loop(monkeypatch):
+    ui, session, plugin, _state = _make_env(monkeypatch, ["not json"], ["完成"])
+    await plugin.async_execute(SimpleNamespace(session=session, arg="1 实现功能"))
+
+    text = "\n".join(ui.lines)
+    assert "提词生成失败" in text
+    assert "not json" in text
+    assert "解析: 失败" in text
+    assert "未返回有效 JSON" in text
+
+
+@pytest.mark.asyncio
+async def test_esc_stops_entire_loop(monkeypatch):
+    ui, session, plugin, _state = _make_env(monkeypatch, [], ["一"])
+    session.interrupted = True
+    await plugin.async_execute(SimpleNamespace(session=session, arg="2 实现功能"))
+
+    text = "\n".join(ui.lines)
+    assert "ESC 中断" in text
+    assert "提前结束整个循环" in text
+    assert "第 1 次 LLM 输出" in text
+    assert "解析: 失败" in text

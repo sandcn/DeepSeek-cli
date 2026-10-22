@@ -34,17 +34,9 @@ _logger = logging.getLogger(__name__)
 
 #: 默认请求超时（毫秒）。
 _DEFAULT_TIMEOUT_MS = 120_000
-#: 默认输入字节预算。
-_DEFAULT_MAX_INPUT_BYTES = 32_768
-#: 默认生成提词字节上限。
-_DEFAULT_MAX_PROMPT_BYTES = 4_096
-
-
-def _truncate_utf8(text: str, max_bytes: int) -> str:
-    raw = str(text or "").encode("utf-8", "replace")
-    if len(raw) <= max(0, int(max_bytes)):
-        return str(text or "")
-    return raw[: max(0, int(max_bytes))].decode("utf-8", "ignore").rstrip()
+#: 续跑提词请求的输出上限（``0`` = 不限制：非 Anthropic provider 不发送
+#: ``max_tokens``；Anthropic 由适配器使用其最大输出常量）。
+_LOOP_PROMPT_MAX_OUTPUT_TOKENS = 0
 
 
 class LoopPromptService:
@@ -80,6 +72,8 @@ class LoopPromptService:
         self._revision = 0
         self._result: LoopPromptDecision | None = None
         self._last_error = ""
+        #: 最近一次请求的模型原始输出（即使 JSON 解析失败也保留，供 /loop 展示）。
+        self._last_raw = ""
         #: 当前已完成运行序号（仅写入提示词，便于模型理解进度）。
         self._run_index = 0
 
@@ -92,6 +86,7 @@ class LoopPromptService:
             self._armed = False
             self._result = None
             self._last_error = ""
+            self._last_raw = ""
             self._generating = False
 
     def end_loop(self) -> None:
@@ -99,6 +94,7 @@ class LoopPromptService:
         with self._lock:
             self._armed = False
             self._result = None
+            self._last_raw = ""
             self._generating = False
 
     def arm(self) -> None:
@@ -108,6 +104,7 @@ class LoopPromptService:
             self._armed = True
             self._result = None
             self._last_error = ""
+            self._last_raw = ""
 
     def disarm(self) -> None:
         """禁止本次运行再生成（``run_round`` 返回后调用）。"""
@@ -120,6 +117,21 @@ class LoopPromptService:
             result = self._result
             self._result = None
             return result
+
+    def peek_result(self) -> LoopPromptDecision | None:
+        """查看本次生成结果但**不清空**（供 /loop 展示最后一轮输出）。
+
+        与 :meth:`take_result` 的区别：本方法不改变结果状态，调用方可在
+        编排结束处读取最后一轮 LLM 输出；``take_result`` 的原语义保持不变。
+        """
+        with self._lock:
+            return self._result
+
+    @property
+    def last_raw(self) -> str:
+        """最近一次请求的模型原始输出（解析失败时也有值；无则空串）。"""
+        with self._lock:
+            return self._last_raw
 
     @property
     def last_error(self) -> str:
@@ -225,15 +237,11 @@ class LoopPromptService:
             return
 
         run_index = max(0, int(getattr(self, "_run_index", 0) or 0))
-        max_input_bytes = self._as_int(cfg, "max_input_bytes", _DEFAULT_MAX_INPUT_BYTES)
-        max_prompt_bytes = self._as_int(cfg, "max_prompt_bytes", _DEFAULT_MAX_PROMPT_BYTES)
         try:
             request = build_loop_prompt_messages(
                 user_messages,
                 last_answer,
                 run_index=run_index,
-                max_input_bytes=max_input_bytes,
-                max_prompt_bytes=max_prompt_bytes,
             )
         except Exception as exc:
             self._set_error(f"构建提词请求失败：{exc}")
@@ -246,6 +254,7 @@ class LoopPromptService:
 
         decision: LoopPromptDecision | None = None
         last_error = ""
+        last_raw = ""
         for attempt in range(1, attempts + 1):
             try:
                 if timeout is None:
@@ -268,6 +277,7 @@ class LoopPromptService:
                 )
                 continue
 
+            last_raw = str(content or reasoning or "")
             decision = (
                 parse_loop_prompt_response(content)
                 or parse_loop_prompt_response(reasoning)
@@ -285,6 +295,8 @@ class LoopPromptService:
                 _logger.debug("丢弃陈旧的 /loop 提词结果（revision %s != %s）",
                               revision, self._revision)
                 return
+            # 原始输出（含解析失败的响应）保留给 /loop 展示；陈旧结果已丢弃。
+            self._last_raw = last_raw
 
         if decision is None:
             self._set_error(last_error or "提词生成失败")
@@ -306,7 +318,7 @@ class LoopPromptService:
             decision = forced
 
         if decision.should_continue:
-            prompt = _truncate_utf8(decision.prompt, max_prompt_bytes).strip()
+            prompt = decision.prompt.strip()
             if not prompt:
                 self._set_error("提词模型返回 continue=true 但 prompt 为空")
                 return
@@ -369,6 +381,7 @@ class LoopPromptService:
             silent=True,
             override_max_retries=1,
             empty_response_retries=1,
+            max_tokens=_LOOP_PROMPT_MAX_OUTPUT_TOKENS,
         )
         return str(content or ""), str(reasoning or "")
 

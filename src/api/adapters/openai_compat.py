@@ -74,6 +74,7 @@ class OpenAICompatAdapter(BaseLLMAdapter):
         tools: Optional[list] = None,
         stream: bool = False,
         stream_options: Optional[dict] = None,
+        max_tokens: Optional[int] = None,
     ) -> dict:
         # 温度：思考模式开启时 DeepSeek 会忽略该参数（官方文档「思考模式不
         # 支持 temperature」），此时不发送；关闭思考模式（Ctrl+T）后才携带。
@@ -81,6 +82,7 @@ class OpenAICompatAdapter(BaseLLMAdapter):
         extra_kwargs = {} if temperature is None else {"temperature": temperature}
         kwargs = self._build_base_kwargs(
             model, messages, tools, stream, stream_options,
+            max_tokens=max_tokens,
             extra_kwargs=extra_kwargs,
         )
 

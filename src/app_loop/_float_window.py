@@ -34,8 +34,9 @@ def _call(chat_ui, method: str, *args, **kwargs) -> None:
 def open_loop_window(chat_ui, total, prompt, runs_per_round: int = 1) -> None:
     """打开 ``/loop`` 循环浮窗并重置进度。
 
-    ``runs_per_round`` 保持关键字传递：生产实现 ``ChatUIConsumer`` 有默认值
-    （新语义固定为 1）；旧 ChatUI / 测试桩缺少该方法时由 ``_call`` 静默降级。
+    ``total`` 为**批次数**；``runs_per_round`` 为保留字段（批内运行次数不设
+    上限，固定传 1）。生产实现 ``ChatUIConsumer`` 有默认值；旧 ChatUI / 测试桩
+    缺少该方法时由 ``_call`` 静默降级。
     """
     _call(
         chat_ui, "open_loop_floating_window", total, prompt,
@@ -44,7 +45,8 @@ def open_loop_window(chat_ui, total, prompt, runs_per_round: int = 1) -> None:
 
 
 def set_loop_window_status(chat_ui, **fields) -> None:
-    """更新 ``/loop`` 浮窗进度（total/round/run/runs_per_round/prompt/active）。
+    """更新 ``/loop`` 浮窗进度（total=批次数 / round=当前批次 /
+    run=批内运行次数 / runs_per_round=保留 / prompt / active）。
 
     ★ 计时锚点（2026-10-21 用户需求：单轮已运行时间动态刷新）：
     传入 ``round`` 时自动补 ``round_started_at``、传入 ``run`` 时自动补

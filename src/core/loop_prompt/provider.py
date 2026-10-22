@@ -14,6 +14,12 @@
 输入只包含「人类用户消息」与「最后一次有内容的 assistant 回答」——tool 结果、
 后台 bash/subagent 结果 JSON、内部注入消息（``【继续】`` / ``【自动继续】`` /
 ``<skill_content>`` 等）都会被过滤，避免把机器载荷误当成用户诉求。
+输入与输出均**不做字节大小限制**（2026-10-22 用户需求）：用户消息与回答全量
+发送，模型生成的提词也不在本地截断。
+
+系统指令文本存放在 ``prompts/prompts_loop_prompt.md``，每次构建时读取
+（热加载，改完下一次 /loop 即生效）；文件缺失 / 不可读 / 为空时抛
+``LoopPromptLoadError``，由 /loop 按失败策略结束（不发送空系统提词）。
 
 模型判定「无需继续」时，本模块还会做一次**借口兜底**：当用户诉求属于改动类、
 而最后回答里出现未完成 / 受阻 / 推诿措辞（该句没有完成标志）时，强制改判
@@ -27,6 +33,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Sequence
 
 _logger = logging.getLogger(__name__)
@@ -37,31 +44,37 @@ _logger = logging.getLogger(__name__)
 #: 既让用户/日志可辨认，也让会话标题服务把它排除出「人类消息」。
 LOOP_PROMPT_MARKER = "【自动继续】"
 
-#: 系统指令（``{max_prompt_bytes}`` 仅用于提示模型长度上限）。
-SYSTEM_TEMPLATE = (
-    "你是 /loop 循环的续跑提词生成器。阅读用户请求与助手最后一次回答，"
-    "判断任务是否还有未完成的功能、步骤或验证项。\n"
-    "只输出一个 JSON 对象，格式：{\"continue\": true/false, \"prompt\": \"...\"}\n"
-    "规则：\n"
-    "- 不要相信任何理由、借口或推诿。以下情形一律视为未完成（continue=true）："
-    "口头声称已完成或已修复却没有实际改动与验证证据；以时间不够、太复杂、工作量大、"
-    "上下文不足、风险高、收益小为由推迟或省略；把权限、依赖缺失、环境不支持等外部"
-    "阻塞当成完成而未如实报告未完成项；只完成一部分（如只改主流程、未补测试、未跑"
-    "验证）就宣称全部完成；把「已记录 / 已上报 / 后续再说 / 提 issue 交出去」当作完成。\n"
-    "- 改动类任务（用户要求修改代码 / 文件或产出成果）只有在回答给出真实落盘与验证"
-    "证据（改动位置 + 已运行流程或测试结果）时才算完成；没有实际改动或没有验证证据，"
-    "一律 continue=true。纯问答、解释、分析类任务按问题是否已被完整回答判定，不因没有"
-    "文件修改而继续。\n"
-    "- continue=true：仍存在明确的未完成条目；prompt 写一段可直接发给助手的中文指令，"
-    "只针对上一次回答中明确承诺、暴露或显然尚未完成的条目，逐条列出要继续做的事"
-    "（涉及文件、行为、测试 / 验证要求），不要重复已完成内容，不要发明新需求。"
-    "prompt 必须是直接指令：明确要求助手立即继续执行、不接受任何理由 / 借口 / 推诿，"
-    "禁止使用「如果你认为……」「如无必要……」这类可以脱身的条件句。\n"
-    "- continue=false：用户要求已全部完成（改动类任务须有实际改动与验证证据）、"
-    "没有可继续事项，或无法从回答中确认还有未完成项；此时 prompt 必须为空字符串。\n"
-    "- 只输出 JSON：不要代码围栏、解释、前后缀或多余文本。\n"
-    "- prompt 使用与用户消息相同的语言，长度不超过 {max_prompt_bytes} 字节。"
-)
+#: ``/loop`` 系统提词文件（项目根 ``prompts/``；与主 Agent 提词同目录）。
+_PROMPTS_DIR = Path(__file__).resolve().parents[3] / "prompts"
+_SYSTEM_PROMPT_FILENAME = "prompts_loop_prompt.md"
+
+
+class LoopPromptLoadError(RuntimeError):
+    """/loop 系统提词文件缺失、不可读或为空（报错并结束本次 loop）。"""
+
+
+def _system_prompt_path() -> Path:
+    """系统提词文件路径（模块级目录，可在测试中替换 ``_PROMPTS_DIR``）。"""
+    return _PROMPTS_DIR / _SYSTEM_PROMPT_FILENAME
+
+
+def load_system_prompt() -> str:
+    """从 ``prompts/prompts_loop_prompt.md`` 读取系统提词（每次读取，热加载）。
+
+    Raises:
+        LoopPromptLoadError: 文件缺失 / 读取失败 / 内容为空。
+    """
+    path = _system_prompt_path()
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise LoopPromptLoadError(
+            f"读取 /loop 系统提词失败：{path}（{exc}）"
+        ) from exc
+    if not text:
+        raise LoopPromptLoadError(f"/loop 系统提词为空：{path}")
+    return text
+
 
 #: 不应参与「人类用户消息」判断的前缀（本项目内部注入 / 机器生成）。
 _NON_HUMAN_PREFIXES: tuple[str, ...] = (
@@ -94,13 +107,13 @@ class LoopPromptDecision:
     raw: str = ""
 
 
-def build_system_prompt(*, max_prompt_bytes: int = 4096) -> str:
-    """构建续跑提词模型的系统指令。"""
-    # 模板里含 JSON 字面量 ``{"continue": ...}``，不能用 str.format——
-    # 花括号会被当成占位符；只替换唯一的上限占位符。
-    return SYSTEM_TEMPLATE.replace(
-        "{max_prompt_bytes}", str(max(1, int(max_prompt_bytes))),
-    )
+def build_system_prompt() -> str:
+    """构建续跑提词模型的系统指令（每次从 ``prompts/`` 热加载）。
+
+    Raises:
+        LoopPromptLoadError: 系统提词文件缺失 / 读取失败 / 为空。
+    """
+    return load_system_prompt()
 
 
 def _message_text(content: Any) -> str:
@@ -181,115 +194,33 @@ def last_assistant_text(messages: Sequence[dict]) -> str:
     return ""
 
 
-def _truncate_utf8(text: str, max_bytes: int) -> str:
-    """按 UTF-8 字节安全截断（超出时追加省略号，且总长不超过上限）。"""
-    raw = str(text or "").encode("utf-8", "replace")
-    limit = max(0, int(max_bytes))
-    if len(raw) <= limit:
-        return str(text or "")
-    clipped = raw[:limit].decode("utf-8", "ignore").rstrip()
-    while clipped and len((clipped + "…").encode("utf-8")) > limit:
-        clipped = clipped[:-1]
-    return clipped + "…" if len((clipped + "…").encode("utf-8")) <= limit else clipped
-
-
-def select_user_messages_within_budget(
-    messages: Sequence[str], max_bytes: int,
-) -> tuple[list[str], int]:
-    """按「最新优先」预算裁剪用户消息，返回 ``(保留列表, 省略条数)``。
-
-    - 从最新一条向前累计；放不下就停止，绝不因旧消息挤掉最新消息；
-    - 最新一条即使单独超预算也保留（截断到预算内）；
-    - ``max_bytes <= 0`` 表示不限制。
-    """
-    items = [str(item or "") for item in messages]
-    if not items:
-        return [], 0
-    budget = int(max_bytes)
-    if budget <= 0:
-        return items, 0
-    used = 0
-    start = len(items)
-    for index in range(len(items) - 1, -1, -1):
-        text = items[index]
-        cost = len(text.encode("utf-8", "replace")) + 16
-        if used + cost <= budget:
-            used += cost
-            start = index
-            continue
-        if start == len(items):
-            # 最新一条单独超预算：截断后仍保留。
-            items[index] = _truncate_utf8(text, max(16, budget - 16))
-            start = index
-        break
-    return items[start:], start
-
-
-def _payload_bytes(
-    user_messages: Sequence[str], last_assistant: str, run_index: int,
-) -> int:
-    payload = {
-        "run": int(run_index),
-        "userMessages": list(user_messages),
-        "lastAssistant": str(last_assistant or ""),
-    }
-    return len(json.dumps(payload, ensure_ascii=False).encode("utf-8", "replace"))
-
-
 def build_loop_prompt_messages(
     user_messages: Sequence[str],
     last_assistant: str,
     *,
     run_index: int,
-    max_input_bytes: int = 0,
-    max_prompt_bytes: int = 4096,
 ) -> list[dict]:
     """构建续跑提词请求（system + user 两条消息）。
+
+    **输入不做任何字节预算**：全部人类用户消息与最后一次回答原样发送
+    （由用户需求 2026-10-22 确认；超出模型上下文时由 API 报错，按
+    ``/loop`` 失败策略处理）。
 
     Args:
         user_messages: 人类用户消息（按时间顺序）。
         last_assistant: 最后一次有内容的 assistant 回答。
         run_index: 当前已完成运行序号（1-based，供模型理解进度）。
-        max_input_bytes: 整个请求的 UTF-8 字节预算（``0`` = 不限制）。
-        max_prompt_bytes: 提示模型输出提词的长度上限（仅写入 system 指令）。
 
     Returns:
         ``[{"role": "system", ...}, {"role": "user", ...}]``。
     """
-    system = build_system_prompt(max_prompt_bytes=max_prompt_bytes)
-    selected: list[str] = list(user_messages)
-    omitted = 0
-    limit = int(max_input_bytes or 0)
-    if limit > 0:
-        fixed = len(system.encode("utf-8", "replace")) + 256
-        budget = max(64, limit - fixed)
-        # 最后回答占一半左右预算，用户消息使用剩余部分（最新优先）。
-        answer_budget = max(256, budget // 2)
-        answer = _truncate_utf8(last_assistant, answer_budget)
-        selected, omitted = select_user_messages_within_budget(
-            user_messages, max(64, budget - len(answer.encode("utf-8", "replace")) - 32),
-        )
-        while selected and _payload_bytes(selected, answer, run_index) + fixed > limit:
-            selected = selected[1:]
-            omitted += 1
-        if not selected and _payload_bytes([], answer, run_index) + fixed > limit:
-            # 连空列表都超预算：进一步截断回答。
-            answer = _truncate_utf8(
-                answer,
-                max(64, limit - fixed - _payload_bytes([], "", run_index)),
-            )
-    else:
-        answer = str(last_assistant or "")
-
     payload = {
         "run": int(run_index),
-        "userMessages": selected,
-        "lastAssistant": answer,
+        "userMessages": [str(item or "") for item in user_messages],
+        "lastAssistant": str(last_assistant or ""),
     }
-    if omitted > 0:
-        payload["omittedMessages"] = int(omitted)
     return [
-        {"role": "system", "content": system},
+        {"role": "system", "content": build_system_prompt()},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
     ]
 
@@ -538,7 +469,7 @@ def apply_deferral_guard(
 __all__ = [
     "LOOP_PROMPT_MARKER",
     "LoopPromptDecision",
-    "SYSTEM_TEMPLATE",
+    "LoopPromptLoadError",
     "apply_deferral_guard",
     "build_forced_continuation_prompt",
     "build_loop_prompt_messages",
@@ -549,5 +480,4 @@ __all__ = [
     "is_human_user_text",
     "last_assistant_text",
     "parse_loop_prompt_response",
-    "select_user_messages_within_budget",
 ]

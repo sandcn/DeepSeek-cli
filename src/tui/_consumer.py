@@ -521,10 +521,11 @@ class ChatUIConsumer:
         """打开 ``/loop`` 循环浮窗并重置循环进度。
 
         浮窗锚定输入区最上方的分隔线右端、向上展开（带边框），显示
-        总运行次数 / 当前提词 / 当前运行次数 / 本次已运行时间（动态刷新）/
-        下一轮生成提词与生成状态；进度经 ``set_loop_status`` 更新，循环结束
-        （含中断）经 ``close_loop_floating_window`` 关闭——关闭后原内容由
-        下一帧整帧重建自动还原。``total=0`` 表示无限次。
+        总批次数 / 当前批次 / 批内运行次数 / 当前提词 / 本次已运行时间
+        （动态刷新）/ 下一轮生成提词与生成状态；进度经 ``set_loop_status``
+        更新，循环结束（含中断）经 ``close_loop_floating_window`` 关闭——
+        关闭后原内容由下一帧整帧重建自动还原。``total=0`` 仅作防御
+        （新语义要求批次数为正整数，不会传入 0）。
         """
         from src.tui.app.floating import loop_window_spec
 

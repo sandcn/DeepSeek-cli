@@ -14,8 +14,14 @@ class LLMProtocol(Protocol):
         tools: Optional[list] = None,
         stream: bool = False,
         stream_options: Optional[dict] = None,
+        max_tokens: Optional[int] = None,
     ) -> dict:
-        """构建 API 请求参数（含 provider 特定的 thinking/参数处理）"""
+        """构建 API 请求参数（含 provider 特定的 thinking/参数处理）
+
+        ``max_tokens``：单次响应的最大输出 token 数；``None`` = 不主动设置，
+        ``<=0`` = 不限制（OpenAI 兼容 provider 不发送该字段，Anthropic 使用
+        其最大输出常量）。
+        """
         ...
 
     def parse_response(self, response: dict) -> dict:

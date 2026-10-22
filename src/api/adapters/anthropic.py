@@ -85,6 +85,29 @@ def _convert_tool_content_blocks(blocks: list) -> list:
     return converted
 
 
+#: 未指定 ``max_tokens`` 时的保守默认值（保持既有行为）。
+_DEFAULT_MAX_OUTPUT_TOKENS = 4096
+#: 调用方要求「不限制」（``max_tokens <= 0``）时的输出上限。Anthropic 的
+#: ``max_tokens`` 为必填字段，无法真正省略，故取项目内置模型元数据
+#: （``config.defaults.PROVIDERS``）标注的最大输出量级（claude-opus-5-5
+#: 128K 输出）；更老模型若上限更低，由 API 返回明确错误，调用方按自身
+#: 失败策略处理。
+_UNLIMITED_MAX_OUTPUT_TOKENS = 128_000
+
+
+def _resolve_max_tokens(max_tokens: int | None) -> int:
+    """把通用的 ``max_tokens`` 语义映射为 Anthropic 必填字段。
+
+    - ``None``：未指定 → 保守默认 4096；
+    - ``<= 0``：不限制 → 最大输出常量；
+    - ``> 0``：使用调用方指定的值。
+    """
+    if max_tokens is None:
+        return _DEFAULT_MAX_OUTPUT_TOKENS
+    value = int(max_tokens)
+    return _UNLIMITED_MAX_OUTPUT_TOKENS if value <= 0 else value
+
+
 class AnthropicAdapter(BaseLLMAdapter):
     """Anthropic API 适配器"""
 
@@ -117,6 +140,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         tools: Optional[list] = None,
         stream: bool = False,
         stream_options: Optional[dict] = None,
+        max_tokens: Optional[int] = None,
     ) -> dict:
         """将 OpenAI 格式消息转换为 Anthropic 格式
 
@@ -129,6 +153,8 @@ class AnthropicAdapter(BaseLLMAdapter):
         Args:
             stream_options: 被忽略。Anthropic API 通过 message_delta
                 事件自动返回 usage，无需通过 stream_options 显式请求。
+            max_tokens: 输出上限；``None`` = 保守默认 4096，``<=0`` = 不限
+                制（使用 :data:`_UNLIMITED_MAX_OUTPUT_TOKENS`），``>0`` 用指定值。
         """
         # ★ 每次新请求开始时创建新的流式累积状态实例，而非 clear() 复用，
         #    彻底避免缓存适配器实例跨请求复用导致的残留污染。
@@ -139,10 +165,9 @@ class AnthropicAdapter(BaseLLMAdapter):
             "model": model,
             "messages": anthro_messages,
             # max_tokens 为单次响应的最大输出 token 上限（Anthropic 必填）。
-            # 4096 为保守值，与全局 max_output_chars（默认 1M 字符，
-            # 见 config.defaults）不同口径、不做换算；长输出任务
-            # （整文件生成）需要更高上限时在此调整。
-            "max_tokens": 4096,
+            # 未显式指定时保持 4096 保守值（与全局 max_output_chars 不同口径、
+            # 不做换算）；调用方要求不限制时使用最大输出常量。
+            "max_tokens": _resolve_max_tokens(max_tokens),
         }
         # 温度（当前模型档案 > 全局默认，Anthropic 官方支持 0.0~1.0，clamp 保证安全）。
         # 与 DeepSeek 一致：思考模式开启时温度会被服务端忽略，故此时不发送
