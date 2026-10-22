@@ -9,7 +9,14 @@
 
 .. code-block:: json
 
-    {"continue": true, "prompt": "继续完成 ..."}
+    {"continue": true, "prompt": "继续完成 ...", "compact": false}
+
+``compact`` 表示**是否应执行一次全量上下文压缩**：模型分析输入数据（全部
+人类用户消息 + 最后一次回答），若最后一次回答出现「上下文不够 / 上下文不足 /
+token 不够 / 上下文快满了」等以上下文不足为借口推脱或无法继续完成任务的
+说法，则置 ``true``；字段缺失 / 非法值一律按 ``false`` 处理（兼容旧模型输出）。
+``/loop`` 编排在拿到 ``compact=true`` 的决策后调用
+``ContextManager.check_and_compress(force=True)`` 做全量压缩。
 
 输入只包含「人类用户消息」与「最后一次有内容的 assistant 回答」——tool 结果、
 后台 bash/subagent 结果 JSON、内部注入消息（``【继续】`` / ``【自动继续】`` /
@@ -98,11 +105,15 @@ class LoopPromptDecision:
         should_continue: 是否继续循环。
         prompt: 续跑提词（``should_continue=False`` 时恒为空串）。
         raw: 模型原始输出（诊断 / 日志用）。
+        compact: 是否应先执行一次全量上下文压缩（模型判定最后一次回答以
+            「上下文不够」等理由推脱时为 ``True``；字段缺失 / 非法时为
+            ``False``）。
     """
 
     should_continue: bool
     prompt: str = ""
     raw: str = ""
+    compact: bool = False
 
 
 def build_system_prompt() -> str:
@@ -273,7 +284,12 @@ def parse_loop_prompt_response(raw: object) -> LoopPromptDecision | None:
     """把模型输出解析成 :class:`LoopPromptDecision`（失败返回 ``None``）。
 
     容忍：代码围栏、前后说明、字段别名（``continue`` / ``should_continue`` /
-    ``是否继续``，``prompt`` / ``next_prompt`` / ``继续提词``）、布尔字符串。
+    ``是否继续``，``prompt`` / ``next_prompt`` / ``继续提词``，``compact`` /
+    ``compress`` / ``是否压缩``）、布尔字符串。
+
+    ``compact`` 字段缺失 / 非法（``None``、无法识别的字符串等）时按
+    ``False`` 处理——旧模型输出或字段拼写错误不得中断 ``/loop``，也不得
+    触发多余的全量压缩。
     """
     if raw is None:
         return None
@@ -311,10 +327,21 @@ def parse_loop_prompt_response(raw: object) -> LoopPromptDecision | None:
             return None
     else:
         prompt = ""
+
+    compact_raw = _first_present(
+        data,
+        (
+            "compact", "compress", "compress_context", "compact_context",
+            "should_compact", "是否压缩", "压缩上下文",
+        ),
+    )
+    compact = bool(_as_bool(compact_raw))
+
     return LoopPromptDecision(
         should_continue=bool(should_continue),
         prompt=prompt,
         raw=text,
+        compact=compact,
     )
 
 __all__ = [

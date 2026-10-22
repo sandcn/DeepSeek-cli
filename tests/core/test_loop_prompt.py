@@ -173,6 +173,48 @@ def test_parse_true_without_prompt_is_invalid():
     assert parse_loop_prompt_response('{"continue": true, "prompt": "   "}') is None
 
 
+def test_parse_compact_true():
+    decision = parse_loop_prompt_response(
+        '{"continue": true, "prompt": "继续完成", "compact": true}'
+    )
+    assert decision is not None
+    assert decision.should_continue is True
+    assert decision.compact is True
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"continue": true, "prompt": "继续", "compress": "true"}',
+        '{"continue": true, "prompt": "继续", "compress_context": 1}',
+        '{"continue": true, "prompt": "继续", "是否压缩": "是"}',
+        '{"continue": false, "prompt": "", "compact": "true"}',
+    ],
+)
+def test_parse_compact_aliases(raw):
+    decision = parse_loop_prompt_response(raw)
+    assert decision is not None
+    assert decision.compact is True
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # 字段缺失（旧模型输出）→ False，不得中断 /loop。
+        '{"continue": true, "prompt": "继续"}',
+        '{"continue": false, "prompt": ""}',
+        # 非法值 → False（不触发多余压缩）。
+        '{"continue": true, "prompt": "继续", "compact": "maybe"}',
+        '{"continue": true, "prompt": "继续", "compact": null}',
+        '{"continue": true, "prompt": "继续", "compact": []}',
+    ],
+)
+def test_parse_compact_missing_or_invalid_defaults_false(raw):
+    decision = parse_loop_prompt_response(raw)
+    assert decision is not None
+    assert decision.compact is False
+
+
 @pytest.mark.parametrize(
     "raw",
     ["", "not json", "[]", '{"prompt": "缺少 continue"}', '{"continue": "maybe"}'],
@@ -271,6 +313,7 @@ async def test_armed_generates_and_emits_events():
     assert events[1][1]["should_continue"] is True
     assert events[1][1]["prompt"] == "补测试"
     assert events[1][1]["error"] == ""
+    assert events[1][1]["compact"] is False
 
 
 @pytest.mark.asyncio
@@ -538,6 +581,8 @@ def test_system_prompt_matches_loaded_file():
     assert "JSON" in system
     assert "continue=true" in system
     assert "continue=false" in system
+    assert "compact" in system
+    assert "上下文" in system
 
 
 @pytest.mark.asyncio
@@ -567,6 +612,38 @@ async def test_service_follows_llm_json_without_local_override():
     assert decision.should_continue is False
     assert decision.prompt == ""
     assert service.last_error == ""
+
+
+@pytest.mark.asyncio
+async def test_service_preserves_compact_for_continue_and_stop():
+    """``compact`` 原样透传到决策与事件：/loop 据此执行全量压缩（不看 continue）。"""
+    events = []
+    service, _calls = _make_service(
+        [
+            '{"continue": true, "prompt": "继续", "compact": true}',
+            '{"continue": false, "prompt": "", "compact": true}',
+        ],
+        emit=lambda e, **kw: events.append((e, kw)),
+    )
+    service.begin_loop()
+    service.arm()
+    await service.on_agent_round_end()
+
+    decision = service.take_result()
+    assert decision is not None
+    assert decision.should_continue is True
+    assert decision.compact is True
+    assert events[-2][1]["compact"] is True
+
+    service.arm()
+    await service.on_agent_round_end()
+
+    decision = service.take_result()
+    assert decision is not None
+    assert decision.should_continue is False
+    assert decision.prompt == ""
+    assert decision.compact is True
+    assert events[-2][1]["compact"] is True
 
 
 @pytest.mark.asyncio

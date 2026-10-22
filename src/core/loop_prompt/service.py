@@ -331,9 +331,21 @@ class LoopPromptService:
             if not prompt:
                 self._set_error("提词模型返回 continue=true 但 prompt 为空")
                 return
-            decision = LoopPromptDecision(True, prompt, decision.raw)
+            decision = LoopPromptDecision(
+                should_continue=True,
+                prompt=prompt,
+                raw=decision.raw,
+                compact=decision.compact,
+            )
         else:
-            decision = LoopPromptDecision(False, "", decision.raw)
+            # ``compact`` 原样保留：/loop 在「判定 compact=true」时即执行
+            # 全量上下文压缩（不由本服务决定是否继续，见 LoopPlugin）。
+            decision = LoopPromptDecision(
+                should_continue=False,
+                prompt="",
+                raw=decision.raw,
+                compact=decision.compact,
+            )
 
         if await self._interrupted():
             self._set_error("提词生成期间对话被中断")
@@ -348,6 +360,7 @@ class LoopPromptService:
             should_continue=decision.should_continue,
             prompt=decision.prompt,
             error="",
+            compact=decision.compact,
         )
 
     def set_run_index(self, run_index: int) -> None:
@@ -411,12 +424,15 @@ class LoopPromptService:
 
     def _notify_generated(
         self, *, should_continue: bool | None, prompt: str, error: str,
+        compact: bool = False,
     ) -> None:
         self._emit_event(
             "loop_prompt_generated",
             should_continue=should_continue,
             prompt=str(prompt or ""),
             error=str(error or ""),
+            # 是否要求 /loop 先执行全量上下文压缩（失败 / 无结果时恒 False）。
+            compact=bool(compact),
         )
 
     def _set_error(self, message: str) -> None:

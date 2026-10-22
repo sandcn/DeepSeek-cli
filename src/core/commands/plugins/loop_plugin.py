@@ -24,6 +24,13 @@
   （system + user）与模型原始输出（原文 JSON）都不再上屏，只显示解析结果
   （``continue`` 判定、失败原因）与最终提词——原文整段刷屏价值低，提词在
   循环浮窗与「下次提词」提示中同样可见。
+- **上下文不足自动全量压缩**（2026-10-23 用户需求）：续跑提词 JSON 新增
+  ``compact`` 字段；模型分析输入数据后，若最后一次回答出现「上下文不够 /
+  上下文不足 / token 不够」等借口，则返回 ``compact=true``。``/loop`` 一旦
+  判定为 ``true``（无论 ``continue`` 真假）即调用
+  ``ContextManager.check_and_compress(force=True)`` 执行一次**全量上下文
+  压缩**（不保留近期尾部、系统提词不参与压缩），随后按原流程继续；压缩
+  不可用 / 失败 / 无可压缩历史只提示并继续，**绝不终止循环**。
 """
 
 from __future__ import annotations
@@ -124,12 +131,90 @@ def _write_loop_llm_output(
         )
         return
     continue_text = "true" if decision.should_continue else "false"
-    _write_line(chat_ui, f"  {DIM}解析:{RESET} continue={continue_text}")
+    compact_text = "true" if bool(getattr(decision, "compact", False)) else "false"
+    _write_line(
+        chat_ui,
+        f"  {DIM}解析:{RESET} continue={continue_text} compact={compact_text}",
+    )
     if decision.prompt:
         _write_line(chat_ui, f"  {DIM}提词:{RESET}")
         _write_line(chat_ui, decision.prompt)
     else:
         _write_line(chat_ui, f"  {DIM}提词: （空）{RESET}")
+
+
+async def _full_compact_context(chat_ui, session, decision) -> bool:
+    """``compact=true`` 时执行一次全量上下文压缩（用户需求 2026-10-23）。
+
+    - 入口：``ContextManager.check_and_compress(force=True)``——强制全量压缩
+      （不保留近期尾部），系统提词不参与压缩（引擎只回放被遮蔽区域，系统
+      提词原样保留在消息列表头部）；
+    - 阻塞的摘要模型调用经 ``asyncio.to_thread`` 执行，不阻塞 TUI 事件循环；
+    - 判定只看决策字段：``compact`` 缺失 / 非真时什么都不做（兼容旧模型输出）；
+    - 任何失败（上下文管理器缺失 / 压缩被禁用 / 无可压缩历史 / 摘要异常）
+      只提示并返回 ``False``，**绝不终止 /loop**。
+
+    Returns:
+        True 表示确实完成了一次全量压缩，False 表示未压缩（含被跳过 / 失败）。
+    """
+    if decision is None or not bool(getattr(decision, "compact", False)):
+        return False
+
+    from ...constants import DIM, GREEN, RESET, YELLOW
+
+    _write_line(
+        chat_ui,
+        f"  {DIM}  ↺ 提词判定 compact=true：执行全量上下文压缩…{RESET}",
+    )
+    context_manager = (
+        getattr(session, "context_manager", None) if session is not None else None
+    )
+    if context_manager is None:
+        _write_line(
+            chat_ui,
+            f"  {YELLOW}  ↺ 全量上下文压缩不可用：上下文管理器未初始化"
+            f"（继续循环）{RESET}",
+        )
+        return False
+
+    try:
+        result = await asyncio.to_thread(
+            context_manager.check_and_compress, force=True,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 压缩失败不得终止循环
+        _logger.warning("/loop 全量上下文压缩失败", exc_info=True)
+        _write_line(
+            chat_ui,
+            f"  {YELLOW}  ↺ 全量上下文压缩失败：{exc}（继续循环）{RESET}",
+        )
+        return False
+
+    if result is None:
+        _write_line(
+            chat_ui,
+            f"  {YELLOW}  ↺ 全量上下文压缩跳过：暂无可压缩的历史"
+            f"或压缩未启用（继续循环）{RESET}",
+        )
+        return False
+    if not bool(getattr(result, "success", False)):
+        stats = getattr(result, "stats", None) or {}
+        reason = stats.get("error") if isinstance(stats, dict) else ""
+        _write_line(
+            chat_ui,
+            f"  {YELLOW}  ↺ 全量上下文压缩未完成："
+            f"{reason or '摘要失败'}（继续循环）{RESET}",
+        )
+        return False
+
+    _write_line(
+        chat_ui,
+        f"  {GREEN}  ↺ 全量上下文压缩完成："
+        f"{int(getattr(result, 'shadowed_count', 0) or 0)} 条历史 → 检查点，"
+        f"节省 ~{int(getattr(result, 'saved_tokens', 0) or 0)}t{RESET}",
+    )
+    return True
 
 
 def _has_pending_input(loop) -> bool:
@@ -365,31 +450,35 @@ class LoopPlugin(InteractiveCommandPlugin):
                                 )
                             last_round = (1, None, error)
                             stop_all = True
-                        elif not decision.should_continue:
-                            last_round = (1, decision, "")
-                            batch_completed = True
                         else:
-                            _write_loop_llm_output(
-                                chat_ui,
-                                round_index=1,
-                                decision=decision,
-                                error="",
-                            )
-                            last_displayed_round = 1
-                            service.take_result()
-                            next_prompt = f"{LOOP_PROMPT_MARKER}{decision.prompt}"
-                            set_loop_window_status(
-                                chat_ui,
-                                prompt=prompt,
-                                next_prompt=decision.prompt,
-                                generating=False,
-                            )
-                            _write_line(
-                                chat_ui,
-                                f"  {DIM}  ↳ 下次提词（第 2 次运行）: "
-                                f"{_preview(decision.prompt)}{RESET}",
-                            )
-                            current_prompt = next_prompt
+                            # ★ 判定 compact=true 即执行全量上下文压缩（用户需求
+                            #   2026-10-23：无论 continue 真假，先压缩再按原流程走）。
+                            await _full_compact_context(chat_ui, session, decision)
+                            if not decision.should_continue:
+                                last_round = (1, decision, "")
+                                batch_completed = True
+                            else:
+                                _write_loop_llm_output(
+                                    chat_ui,
+                                    round_index=1,
+                                    decision=decision,
+                                    error="",
+                                )
+                                last_displayed_round = 1
+                                service.take_result()
+                                next_prompt = f"{LOOP_PROMPT_MARKER}{decision.prompt}"
+                                set_loop_window_status(
+                                    chat_ui,
+                                    prompt=prompt,
+                                    next_prompt=decision.prompt,
+                                    generating=False,
+                                )
+                                _write_line(
+                                    chat_ui,
+                                    f"  {DIM}  ↳ 下次提词（第 2 次运行）: "
+                                    f"{_preview(decision.prompt)}{RESET}",
+                                )
+                                current_prompt = next_prompt
                 else:
                     # ★ 每批开始：清空对话并重新使用用户最初的提词。
                     session.clear_messages()
@@ -497,6 +586,11 @@ class LoopPlugin(InteractiveCommandPlugin):
                         last_round = (batch_run, None, error)
                         stop_all = True
                         break
+
+                    # ★ 判定 compact=true 即执行全量上下文压缩（用户需求
+                    #   2026-10-23：无论 continue 真假，先压缩再按原流程走）。
+                    await _full_compact_context(chat_ui, session, decision)
+
                     if not decision.should_continue:
                         # 本批完成：输出在「本批完成」提示之后展示。
                         last_round = (batch_run, decision, error)

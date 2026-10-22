@@ -545,7 +545,12 @@ class ContextManager:
         引擎不可用（未配置 / 配置禁用 / 解析失败）时回退内置策略链。
 
         Args:
-            force: 是否强制全量压缩
+            force: 是否强制全量压缩（不保留近期尾部）。
+
+        Returns:
+            引擎路径的 ``CompactionResult``（成功 / 失败 / 无需压缩时由引擎
+            判定；无可压缩范围时为 ``None``）。回退策略链路径返回 ``None``。
+            ``/loop`` 的 ``compact=true`` 分支据此向用户报告压缩结果。
         """
         with self._lock:
             messages = self.messages
@@ -569,10 +574,9 @@ class ContextManager:
                     #   比例算出的压力阈值触发，该配置会被绕过（引擎启用时
                     #   回退策略链不执行）。
                     engine_force = force or self._auto_force_triggered()
-                    engine.compact_if_needed(
+                    return engine.compact_if_needed(
                         trigger=CompactionTrigger.PRESSURE, force=engine_force,
                     )
-                    return
                 except Exception:
                     _logger.debug("压缩引擎执行失败，回退策略链", exc_info=True)
 
