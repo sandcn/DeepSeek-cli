@@ -50,6 +50,22 @@ def test_three_prompts_are_distinct_paradigms() -> None:
     assert len(set(contents)) == len(contents)
 
 
+def test_simple_prompt_forbids_deferring_work_to_next_round() -> None:
+    """简单模式锁定「本轮执行不完也不许跳过」条款（防退化成允许延后）。"""
+    content = builder._load_prompt("prompts_export_main_simple")
+
+    assert "强制禁止因本轮执行不完就不执行" in content
+    # 必须要求本轮持续执行到完成，不得把未完成项推给下一轮
+    assert "必须在本轮持续执行到全部需求实际完成并验证通过" in content
+    assert "剩余部分留到下一轮" in content
+    # 仅用户叫停或按规则 user_select 澄清时才能暂停，答复后必须继续执行
+    assert "仅用户明确叫停时可暂停" in content
+    assert "用户答复后必须继续执行" in content
+    # 既有的「耗时/难度不作为不做的理由」禁令不得被新条款顶掉
+    assert "禁止以任务耗时长、复杂度高为由选择不做" in content
+    assert "禁止以任务宏大、难度大为由选择不做" in content
+
+
 def test_build_system_prompt_uses_current_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     original = builder.get_mode()
     try:
