@@ -38,19 +38,13 @@ class WebFetchFunc(Func):
             "type": "function",
             "function": {
                 "name": "web_fetch",
-                "description": (
-                    "获取指定 URL 的网页全文内容（自动提取标题、发布时间和正文，"
-                    "去除导航/广告/页脚噪音）。查找资源先用 web_search，"
-                    "需要页面完整内容时再用本工具。"
-                    "仅 http/https，禁止内网地址。"
-                    "获取的代码片段须标注来源 URL 和验证状态。"
-                ),
+                "description": "获取指定 URL 的网页全文。",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "url": {
                             "type": "string",
-                            "description": "要获取全文的网页 URL（仅 http/https，禁止内网地址）",
+                            "description": "网页 URL",
                         }
                     },
                     "required": ["url"]

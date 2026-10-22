@@ -10,22 +10,17 @@ class WriteFunc(FileToolBase):
             "type": "function",
             "function": {
                 "name": "write",
-                "description": (
-                    "创建新文件或整体覆盖写入文件。适用：1.创建新文件；2.重写超过一半内容的文件。"
-                    "少量修改用 edit（更安全）。覆盖写入，UTF-8 编码，原子写入，自动创建父目录；"
-                    "写入前建议先 read 确认现有内容。"
-                    "返回：写入结果（成功含行数/字节数）；失败以 ( 开头。超过 100MB 拒绝；路径穿越被拒绝；沙盒可撤回。"
-                ),
+                "description": "创建新文件或整体覆盖写入。",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "file_path": {
                             "type": "string",
-                            "description": "目标文件路径，相对或绝对路径。父目录不存在时自动创建。"
+                            "description": "目标文件路径"
                         },
                         "content": {
                             "type": "string",
-                            "description": "要写入的完整文件内容（UTF-8）。超过 100MB 会被拒绝。"
+                            "description": "完整文件内容"
                         }
                     },
                     "required": ["file_path", "content"]

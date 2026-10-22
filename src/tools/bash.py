@@ -1056,39 +1056,8 @@ class BashFunc(Func):
             "function": {
                 "name": "bash",
                 "description": (
-                    "执行 shell 命令，返回 JSON：{\"stdout\":..., \"stderr\":..., \"returncode\": 退出码}"
-                    "（命令统一在**伪终端（PTY）**中执行：Windows 走 ConPTY、POSIX 走 pty.openpty，"
-                    "子进程拿到真 TTY——行缓冲、彩色与进度条正常、交互式程序可用；"
-                    "PTY 只有一条输出流，stdout 与 stderr **物理合并**到 stdout，"
-                    "stderr 通常为空——被中断 / 工具级错误时放提示说明。"
-                    "stdout 超 1000 行截断保留尾部；"
-                    "returncode 是命令的退出码，等价 bash 的 $?：0 成功、非 0 命令失败、被信号杀死为 128+sig、"
-                    "-1 工具级错误）。"
-                    "命令由当前命令行（见「当前执行环境」的「命令行」）对应的 shell 解释器执行"
-                    "（bash / zsh / fish / cmd / powershell 等），请按该 shell 的语法书写。"
-                    "用途：编译构建、git、包管理、进程管理、系统信息查询。"
-                    "禁止替代专用工具：读文件用 read、改文件用 edit、写文件用 write、搜索用 grep、找文件用 glob/ls、建目录用 mkdir。"
-                    "仅当专用工具功能不足（如正则多行匹配、二进制）时才用 bash，并加注释 `# 例外原因：<原因>`。"
-                    f"前台执行超过 {cls._AUTO_BG_TIMEOUT} 秒自动转后台，返回 task_id JSON，用 bash_opt 继续管理。"
-                    "后台运行强制用 bash_opt 清理：background=true（含前台超时自动转后台）返回的 task_id "
-                    "只能由 bash_opt 接管——任务结束时必须用 bash_opt wait 取走结果，不再需要时必须用 "
-                    "bash_opt kill 终止整棵进程树；禁止放任后台任务遗留运行，禁止另起命令（其他 bash 调用 / "
-                    "系统 kill / 任务管理器）清理后台任务。"
-                    "禁止交互式命令（vim/top/less）；禁止 git push -f / reset --hard；"
-                    "禁止 rm -rf / mkfs / dd / chmod 777 / sudo / chown。对 git 状态断言前先 git log/diff/status 验证。"
-                    "★ Windows PowerShell 5.1 环境（当前常见）：`&&` / `||` 不是有效的语句分隔符，"
-                    "请用 `;` 顺序执行（需要「前一条成功才执行」时用 `if ($?) { ... }`），"
-                    "确实要在 cmd 内组合时写成 `cmd /c \"a && b\"`（引号内由 cmd 解释）。"
-                    "命令输出统一按 UTF-8 收集（包装脚本会把 PowerShell / 原生程序 / Python 的"
-                    " stdio 编码统一为 UTF-8，并消除 PowerShell 5.1 管道给子进程 stdin 加的 BOM）；"
-                    "如需读取二进制或非 UTF-8 文件，请用 read / 专门工具，不要靠管道文本再用。"
-                    "★ 全屏 TUI 程序（vim / top / less）会持续输出光标控制序列，"
-                    "剥离 ANSI 后只剩互相覆盖的文本，对判断命令结果没有价值——不要用于这类程序。"
-                    "★ 输入回显已尽量过滤（POSIX 关闭 ECHO；ConPTY 按最近写入行去重），"
-                    "但子进程自己回显的内容不保证完全去除。"
-                    "★ 被中断时（Esc / Ctrl+C）stderr 返回「(命令已被中断)」提示；"
-                    "Windows ConPTY 下 ctrl+c（写入 \\x03）对部分程序可中断，但不保证所有程序都响应——"
-                    "进程无响应时请用 bash_opt op=kill 终止任务。"
+                    "执行 shell 命令，返回 JSON（stdout/stderr/returncode）。"
+                    f"前台执行超过 {cls._AUTO_BG_TIMEOUT} 秒自动转后台，返回 task_id。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -1096,21 +1065,13 @@ class BashFunc(Func):
                         "command": {
                             "type": "string",
                             "description": (
-                                "要执行的 shell 命令，由当前命令行对应的解释器执行（bash/zsh/fish/cmd/powershell 等），"
-                                "语法按其支持情况书写（管道 |、重定向 > >> <、环境变量、$(...) 子 shell、通配符等）。"
-                                "★ Windows PowerShell 5.1 不支持 `&&` / `||`：用 `;` 顺序执行，"
-                                "或在 cmd 内写成 `cmd /c \"a && b\"`。"
-                                "命令在伪终端（PTY）中执行，stdout 与 stderr 合并到 stdout（stderr 通常为空），"
-                                "无输出时对应字段为空字符串；returncode 为退出码；stdout 超 1000 行截断保留尾部。"
+                                "要执行的 shell 命令"
                             )
                         },
                         "background": {
                             "type": "boolean",
                             "description": (
-                                "是否后台执行（默认 false）。true 立即返回 task_id JSON，后台完成自动注入对话；"
-                                "false 前台执行，超 1 分钟自动转后台。"
-                                "★ 后台运行强制由 bash_opt 清理：返回的 task_id 必须用 bash_opt wait 取走结果、"
-                                "不再需要时必须用 bash_opt kill 终止进程树，不得放任后台任务遗留运行。"
+                                "是否后台执行"
                             )
                         }
                     },

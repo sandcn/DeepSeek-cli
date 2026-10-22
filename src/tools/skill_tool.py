@@ -16,12 +16,7 @@ from typing import Optional
 from ..skills import default_registry, is_model_invocable, render_skill_content
 from .base import Func
 
-_TOOL_DESCRIPTION = (
-    "加载可用技能（skill）的完整指令。调用前必须先确认技能名来自会话中的"
-    "可用技能目录（<available_skills>）。技能是一组可复用的任务专用指令；"
-    "当用户点名某个技能、或任务与某技能描述明确匹配时，在执行任务动作前"
-    "先用本工具加载该技能，然后遵循其完整指令。"
-)
+_TOOL_DESCRIPTION = "加载可用技能的完整指令。"
 
 
 class SkillFunc(Func):
@@ -50,7 +45,7 @@ class SkillFunc(Func):
                     "properties": {
                         "name": {
                             "type": "string",
-                            "description": "技能名（来自可用技能目录，kebab-case）。"
+                            "description": "技能名"
                         },
                     },
                     "required": ["name"],

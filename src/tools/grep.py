@@ -109,53 +109,21 @@ class GrepFunc(Func):
             "type": "function",
             "function": {
                 "name": "grep",
-                "description": (
-                    "在项目源码中按正则搜索内容，返回「文件:行号:内容」列表。"
-                    "引用任何配置项/环境变量前先用 grep 确认其存在。"
-                    "query 始终按正则处理；未知符号建议用 | 覆盖命名变体（snake|camel|Pascal）或中英同义词；"
-                    "搜调用链加 ( 过滤 import 噪音；搜定义用 \"def |class \"；锚定用 ^ $ \\b。"
-                    "path 缩小范围，include 过滤文件类型（如 *.py）。自动排除 node_modules/.git/venv 等。无结果返回明确提示。"
-                    "结果超过 1000 行时自动截断（保留前 500 行与后 500 行，中间以省略标记替代）。"
-                ),
+                "description": "按正则搜索内容，返回「文件:行号:内容」列表。",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": (
-                                "搜索模式（始终按正则表达式处理）。支持中英文混合搜索。支持 .* | \\b ^ $ \\d \\w 等完整正则语法。"
-                                "\n\n"
-                                "常用模式示例："
-                                "\n- 精确符号：grep query=\"func_name(\""
-                                "\n- 多命名变体：grep query=\"snake_case|camelCase|PascalCase\""
-                                "\n- 中英混合：grep query=\"用户|user|account\""
-                                "\n- 调用链：grep query=\"ClassName.method(\""
-                                "\n- 多符号 OR：grep query=\"def |class \""
-                                "\n- 行首锚定：grep query=\"^import \""
-                                "\n- 单词边界：grep query=\"\\bcount\\b\""
-                            ),
+                            "description": "搜索模式（正则）",
                         },
                         "path": {
                             "type": "string",
-                            "description": (
-                                "搜索路径范围（可选）。缩小范围可提高搜索精度。"
-                                "\n- 省略时：搜索当前工作目录下的所有文件"
-                                "\n- 指定子目录：如 'src/' 仅搜索 src 目录"
-                                "\n- 指定文件：如 'src/main.py' 仅搜索单个文件"
-                                "\n- 指定多级子目录：如 'src/tools/'"
-                                "\n- 记忆搜索：如 '~/.chat/memory/'"
-                            ),
+                            "description": "搜索路径",
                         },
                         "include": {
                             "type": "string",
-                            "description": (
-                                "文件类型过滤，空格分隔多个模式（可选）。"
-                                "\n- '*.py'：仅搜索 Python 文件"
-                                "\n- '*.py *.js *.ts'：搜索多类型文件"
-                                "\n- '*.md'：仅搜索 Markdown 文件"
-                                "\n- '*.json *.yaml *.toml'：搜索配置文件"
-                                "\n- 省略时：搜索所有文件类型"
-                            ),
+                            "description": "文件类型过滤（空格分隔）",
                         },
                     },
                     "required": ["query"],

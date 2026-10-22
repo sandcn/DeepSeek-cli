@@ -19,20 +19,17 @@ class MkdirFunc(FileSystemToolBase):
             "type": "function",
             "function": {
                 "name": "mkdir",
-                "description": (
-                    "创建目录。设置 parents=true 递归创建父目录（类似 mkdir -p）。"
-                    "目录已存在视为成功。返回：创建结果；失败以 ( 开头。路径穿越被拒绝；沙盒可撤回。"
-                ),
+                "description": "创建目录。",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "要创建的目录路径（支持相对路径和绝对路径）。路径安全校验会拒绝路径穿越攻击（如../../etc/passwd）。"
+                            "description": "要创建的目录路径"
                         },
                         "parents": {
                             "type": "boolean",
-                            "description": "是否递归创建父目录（类似 mkdir -p）。为 true 时自动创建所有不存在的父目录；为 false（默认）时父目录不存在则返回提示。",
+                            "description": "是否递归创建父目录",
                             "default": False
                         }
                     },

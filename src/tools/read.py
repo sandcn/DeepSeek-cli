@@ -43,36 +43,28 @@ class ReadFunc(Func):
             "type": "function",
             "function": {
                 "name": "read",
-                "description": (
-                    "读取文件内容，返回文件文本。支持整文件读取或按行号范围读取"
-                    "（start_line/end_line，含两端，行号从 1 开始）。"
-                    "show_line_numbers 开启时在返回内容中为每行附加行号（默认关闭）。"
-                    "首次读取某文件必须读完整内容（不设行号限制）以全面理解；"
-                    "读取多个文件时并发调用多个 read。"
-                    "返回：文件内容；错误以「(」开头（如「(文件不存在: xxx)」）；"
-                    "编码自动检测（UTF-8/GBK/Latin-1），二进制/编码错误自动降级不崩溃；危险/系统关键路径被拒绝。"
-                ),
+                "description": "读取文件内容，返回文件文本（支持整文件或行号范围）。",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "file_path": {
                             "type": "string",
-                            "description": "文件路径，支持相对路径（如 src/main.py）或绝对路径。"
+                            "description": "文件路径"
                         },
                         "start_line": {
                             "type": "integer",
                             "minimum": 1,
-                            "description": "起始行号（从 1 开始，含该行）。省略时从文件开头读取。"
+                            "description": "起始行号"
                         },
                         "end_line": {
                             "type": "integer",
                             "minimum": 1,
-                            "description": "结束行号（含该行）。省略时读到文件末尾；start_line>end_line 时自动交换。"
+                            "description": "结束行号"
                         },
                         "show_line_numbers": {
                             "type": "boolean",
                             "default": False,
-                            "description": "是否在返回内容中为每行附加行号（行号从 1 开始；配合行号范围读取时从 start_line 起连续编号）。默认关闭。"
+                            "description": "是否附加行号"
                         }
                     },
                     "required": ["file_path"]

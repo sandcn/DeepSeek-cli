@@ -23,25 +23,21 @@ class CpFunc(FileSystemToolBase):
             "type": "function",
             "function": {
                 "name": "cp",
-                "description": (
-                    "复制文件或目录（source → destination）。"
-                    "复制目录必须设 recursive=true；目标已存在则覆盖（文件保留元数据）。"
-                    "返回：复制结果；失败以 ( 开头。路径穿越被拒绝；沙盒可撤回。"
-                ),
+                "description": "复制文件或目录（source → destination）。",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "source": {
                             "type": "string",
-                            "description": "源路径（文件或目录）。源路径必须存在，支持文件或目录类型；不支持符号链接（返回提示信息）。"
+                            "description": "源路径"
                         },
                         "destination": {
                             "type": "string",
-                            "description": "目标路径。目标已存在时直接覆盖（文件用 shutil.copy2，目录用 shutil.copytree）。目录复制时需 recursive=True。"
+                            "description": "目标路径"
                         },
                         "recursive": {
                             "type": "boolean",
-                            "description": "是否递归复制目录。复制目录时必传 true，否则返回拒绝提示信息。如果 source 是目录，必须为 true。",
+                            "description": "是否递归复制目录",
                             "default": False
                         }
                     },

@@ -495,66 +495,51 @@ class ReadImageFunc(Func):
             "function": {
                 "name": "read_image",
                 "description": (
-                    "Read a PNG/JPEG/WebP/GIF (or any Pillow-readable image) file and "
-                    "return the image itself. Large images are downscaled automatically "
-                    "to a 2048x2048 total-pixel budget / 4 MiB target; do not install "
-                    "image libraries or create thumbnails to inspect an image. "
-                    "Requires the current routed model to declare image input "
-                    "(多模态读图=true in /models); otherwise execution is refused. "
-                    "Extension-less files are identified from their content. "
-                    "Project extensions (DSH superset): start_x/start_y/end_x/end_y "
-                    "crop a pixel region; operation applies grayscale / rotate90 / "
-                    "rotate180 / rotate270 / flip_h / flip_v / scale before return. "
-                    "Path security rejects dangerous paths (device files/system paths)."
+                    "Read an image (PNG/JPEG/WebP/GIF or Pillow-readable) and return it; "
+                    "optional crop region and image operation."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "file_path": {
                             "type": "string",
-                            "description": "Path to the image file."
+                            "description": "Image file path."
                         },
                         "start_x": {
                             "type": "integer",
                             "minimum": 0,
-                            "description": "分块区域起始 x（像素，默认 0）。"
+                            "description": "Crop region start x."
                         },
                         "start_y": {
                             "type": "integer",
                             "minimum": 0,
-                            "description": "分块区域起始 y（像素，默认 0）。"
+                            "description": "Crop region start y."
                         },
                         "end_x": {
                             "type": "integer",
                             "minimum": 0,
-                            "description": "分块区域结束 x（含，默认图像宽度-1）。"
+                            "description": "Crop region end x."
                         },
                         "end_y": {
                             "type": "integer",
                             "minimum": 0,
-                            "description": "分块区域结束 y（含，默认图像高度-1）。"
+                            "description": "Crop region end y."
                         },
                         "operation": {
                             "type": "string",
                             "enum": sorted(_SUPPORTED_OPERATIONS),
-                            "description": (
-                                "图像操作（先裁剪区域再应用操作）："
-                                "none 不操作 / grayscale 灰度化 / rotate90 顺时针旋转90° / "
-                                "rotate180 旋转180° / rotate270 旋转270° / "
-                                "flip_h 水平翻转 / flip_v 垂直翻转 / scale 缩放"
-                                "（需配合 scale_width/scale_height）。"
-                            ),
+                            "description": "Image operation.",
                             "default": "none"
                         },
                         "scale_width": {
                             "type": "integer",
                             "minimum": 1,
-                            "description": "缩放目标宽度（operation=scale 时使用，省略时按比例自动计算）。"
+                            "description": "Scale target width."
                         },
                         "scale_height": {
                             "type": "integer",
                             "minimum": 1,
-                            "description": "缩放目标高度（operation=scale 时使用，省略时按比例自动计算）。"
+                            "description": "Scale target height."
                         },
                     },
                     "required": ["file_path"]

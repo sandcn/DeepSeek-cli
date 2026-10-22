@@ -49,29 +49,23 @@ class SubagentFunc(Func):
             "function": {
                 "name": cls.name,
                 "description": (
-                    "派发子 Agent 执行任务（独立上下文+文件沙盒），同轮多次调用自动并行"
-                    "（每次调用独立后台执行、互不阻塞）。"
-                    "type：execute（读写+bash，默认）/ map（只读分析）/ review（代码审查 P0-P3）/ plan（生成计划，仅写 ~/.chat/plan/）。"
-                    "同一文件的所有修改必须在单次调用内完成。"
-                    "直接后台执行：立即返回 {\"task_id\": ...} JSON，"
-                    "后台 subagent 继续运行，完成后结果自动插入对话（或由 subagent_opt "
-                    "工具按 task_id 主动管理）。后台 subagent 仅主 Agent 可派发。"
+                    "派发子 Agent 执行任务；type：execute（默认）/ map / review / plan。"
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "description": {
                             "type": "string",
-                            "description": "简短的任务摘要，显示在 UI 中作为子任务的标题标签。建议不超过50字，提炼任务核心，如「解析 user.py 模块」「测试 auth.py 登录流程」。",
+                            "description": "任务摘要",
                         },
                         "prompt": {
                             "type": "string",
-                            "description": "子Agent的完整任务指令。必须包含：目标、具体文件路径、输出格式要求、约束条件等全部信息。长度不限，但建议结构清晰、分点列出，避免模糊表述，确保子Agent可独立执行无需额外上下文。",
+                            "description": "完整任务指令",
                         },
                         "type": {
                             "type": "string",
                             "enum": ["map", "review", "plan", "execute"],
-                            "description": "子Agent类型。execute（默认）：排除 subagent、user_select 和 web_search，保留所有读写工具+bash，无路径限制，用于执行计划文件步骤并返回修改文件列表。map：只读分析型，仅保留 read/grep/glob/ls 等读取工具，专用于项目代码分析和地图生成。review：代码审查型，纯只读工具集（含 read/grep/glob/ls/web_search，无 bash/bash_opt 等任何 shell 执行工具），专用于文件列表的 Code Review（P0-P3 分级输出）。plan：计划型，只读分析工具 + write/edit/mkdir（仅限写入 ~/.chat/plan/ 目录），根据指令生成计划。",
+                            "description": "子 Agent 类型",
                         },
                     },
                     "required": ["description", "prompt"],

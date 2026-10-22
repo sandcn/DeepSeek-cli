@@ -24,21 +24,17 @@ class RmFunc(FileSystemToolBase):
             "type": "function",
             "function": {
                 "name": "rm",
-                "description": (
-                    "删除文件或目录。删除非空目录必须设 recursive=true。"
-                    "删除前必须先 grep 全量搜索引用，确认无依赖关系。"
-                    "返回：删除结果；失败以 ( 开头。路径穿越被拒绝；沙盒可撤回。"
-                ),
+                "description": "删除文件或目录。",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "要删除的文件或目录路径（支持相对路径和绝对路径）。路径不存在时返回明确信息「路径不存在: xxx」，非错误。路径安全校验会拒绝路径穿越攻击（如../../etc/passwd）。"
+                            "description": "要删除的路径"
                         },
                         "recursive": {
                             "type": "boolean",
-                            "description": "是否递归删除目录。如果 path 是目录且非空，必须传 true（类似 rm -r），否则拒绝删除并返回提示。默认为 false 防止误删非空目录。删除时递归收集所有文件内容逐一记录沙盒后执行 shutil.rmtree。",
+                            "description": "是否递归删除目录",
                             "default": False
                         }
                     },

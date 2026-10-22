@@ -35,68 +35,27 @@ class GlobFunc(Func):
             "type": "function",
             "function": {
                 "name": "glob",
-                "description": (
-                    "在项目中按文件名模式（fnmatch 通配符）查找文件和目录，返回匹配路径列表。"
-                    "引用任何文件路径前先用 glob 确认其存在。"
-                    "pattern 支持 * ? [...] 通配符，多模式空格分隔（OR）；"
-                    "path 限定根目录，type 过滤 file/dir，depth 控制深度（0 无限制）。"
-                    "自动排除 node_modules/.git/__pycache__ 等。无结果返回明确提示。"
-                ),
+                "description": "按文件名模式（fnmatch 通配符）查找文件和目录，返回匹配路径列表。",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "pattern": {
                             "type": "string",
-                            "description": (
-                                "文件/目录名匹配模式，支持 shell 通配符（fnmatch 语法，不支持 ** 递归）。"
-                                "多个模式用空格分隔（OR 匹配，满足其一即返回）。"
-                                "\n\n"
-                                "常用通配符："
-                                "\n- * 任意字符：*.py（所有 Python 文件）、test_*（所有 test_ 开头）"
-                                "\n- ? 单字符：config?.py（如 config1.py config2.py）"
-                                "\n- [...] 字符集：[Tt]est.py（Test.py 或 test.py）"
-                                "\n- [!...] 排除：[!.]*（非隐藏文件）"
-                                "\n\n"
-                                "示例："
-                                "\n- 所有 Python：*.py"
-                                "\n- 测试文件：test_*.py"
-                                "\n- JSON 或 YAML：*.json *.yaml"
-                                "\n- 按主文件名：main.py app.py"
-                                "\n- 隐藏文件：.*"
-                                "\n- 多数字后缀：test_*_v[0-9].py"
-                                "\n\n"
-                                "注意：该模式仅匹配文件名/目录名（basename），不匹配路径。"
-                                "要限制搜索目录请使用 path 参数。"
-                            ),
+                            "description": "文件/目录名匹配模式",
                         },
                         "path": {
                             "type": "string",
-                            "description": (
-                                "搜索根路径（可选）。缩小搜索范围可提高速度。"
-                                "\n- 省略时：使用进程当前工作目录"
-                                "\n- 指定子目录：如 'src/' 或 '/home/user/project/src'，只在该目录下递归搜索"
-                                "\n- 多层嵌套：如 'src/renderer/ansi/'"
-                                "\n- 记忆目录：如 '~/.chat/memory/'"
-                            ),
+                            "description": "搜索根路径",
                         },
                         "type": {
                             "type": "string",
-                            "description": (
-                                "过滤类型（可选）。"
-                                "\n- 'file'：只返回文件"
-                                "\n- 'dir'：只返回目录"
-                                "\n- 省略时：文件和目录都返回"
-                                "\n\n"
-                                "最佳实践："
-                                "\n- 想找模块结构：type=\"dir\" + depth=1"
-                                "\n- 想找特定文件：type=\"file\" + pattern=\"*.py\""
-                            ),
+                            "description": "过滤类型",
                             "enum": ["file", "dir"],
                         },
                         "depth": {
                             "type": "integer",
                             "minimum": 0,
-                            "description": "最大搜索深度（目录层级，0 无限制）。1 仅当前层，2 含子目录。",
+                            "description": "最大搜索深度",
                             "default": 0,
                         },
                     },

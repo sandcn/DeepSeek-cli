@@ -41,46 +41,23 @@ class SubagentOptFunc(Func):
             "function": {
                 "name": "subagent_opt",
                 "description": (
-                    "按 task_id 操作后台 subagent 任务（subagent 直接后台启动）。"
-                    "op：read（读取当前状态与已产生的结果，立即返回不等待完成）、"
-                    "wait（等待完成取结果，timeout 秒，默认 300/0 无限）、"
-                    "kill（取消后台 subagent 任务）、"
-                    "wait_all（等待所有后台 subagent 任务完成，返回每个任务结果的"
-                    "JSON 数组，timeout 秒，默认 300/0 无限；无需 task_id）。"
-                    "task_id 必须是当前对话 subagent 后台返回的 sa-xxx。"
-                    "后台 subagent 仅主 Agent 可派发。返回：操作结果 JSON 或输出；失败以 ( 开头。"
+                    "按 task_id 操作后台 subagent 任务；op：read / wait / kill / wait_all。"
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "task_id": {
                             "type": "string",
-                            "description": (
-                                "后台 subagent 任务的 task_id（subagent 直接后台返回的 "
-                                "'sa-xxx' 格式 ID）。仅 read/wait/kill 需要；"
-                                "wait_all 为批量操作无需 task_id。"
-                            ),
+                            "description": "任务 ID（sa-xxx）",
                         },
                         "op": {
                             "type": "string",
                             "enum": ["read", "wait", "kill", "wait_all"],
-                            "description": (
-                                "要执行的操作："
-                                "\n- read：读取后台 subagent 任务当前状态与已产生的结果，"
-                                "立即返回（不等待任务完成）；任务继续运行"
-                                "\n- wait：等待任务完成并获取结果"
-                                "\n- kill：取消后台 subagent 任务（级联取消其内部 SubAgent）"
-                                "\n- wait_all：等待**所有**后台 subagent 任务完成，"
-                                "返回每个任务结果的 JSON 数组（无需 task_id）"
-                            ),
+                            "description": "要执行的操作",
                         },
                         "timeout": {
                             "type": "number",
-                            "description": (
-                                "仅 wait / wait_all 操作生效：等待完成的超时秒数"
-                                "（默认 300；传 0 表示无限等待）。支持小数（如 0.5）。"
-                                "超时后任务继续运行，可再次 wait / wait_all 或 kill。"
-                            ),
+                            "description": "超时秒数",
                         },
                     },
                     "required": ["op"],

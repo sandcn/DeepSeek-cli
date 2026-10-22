@@ -54,20 +54,13 @@ class WebSearchFunc(Func):
             "type": "function",
             "function": {
                 "name": "web_search",
-                "description": (
-                    "搜索网页获取当前信息。返回来源列表：每条包含标题、来源 URL 与"
-                    "摘要片段。回答时优先使用返回的摘要片段，并以 markdown 链接引用"
-                    "相关来源 URL；需要某个来源的完整内容时再用 web_fetch。"
-                ),
+                "description": "搜索网页，返回来源列表（标题、URL、摘要片段）。",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": (
-                                "搜索关键词（中文/英文均可）。"
-                                "建议包含关键实体、版本号或时间词以获取最新信息。"
-                            ),
+                            "description": "搜索关键词"
                         }
                     },
                     "required": ["query"]

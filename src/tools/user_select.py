@@ -189,54 +189,40 @@ class UserSelectFunc(Func):
             "function": {
                 "name": "user_select",
                 "description": (
-                    "向用户显示交互式选择界面，用于确认方案、选择选项或澄清歧义；需用户确认时优先使用。"
-                    "★ 支持并发向用户提问：当有多个需要用户决策/确认/澄清的问题时，"
-                    "应在同一轮同时发起多个 user_select 调用（并行提问、一次问完所有问题），"
-                    "所有问题会在一个弹窗界面里以 tab 形式一起显示给用户"
-                    "（Tab/←/→ 切换焦点、逐题 Enter 确认、最后统一提交）——"
-                    "用户一次答完所有问题，避免逐个串行提问打断用户。"
-                    "支持单选/多选（multi_select）；"
-                    "1 分钟没有任何操作（按键/滚动）才自动超时并回退 default_options，"
-                    "用户持续操作期间不会超时；非交互自动回退 default_options。"
-                    "★ 支持用户输入选项外的自定义答案：选项列表末尾自动追加"
-                    "『其他（自定义输入…）』入口，用户可输入任意文本；"
-                    "输入期间同样按空闲计时（每次按键重置 1 分钟倒计时）。"
-                    "返回 JSON：{\"selected\":[...], \"action\":...}，"
-                    "action 为 confirmed/cancel/timeout/non_interactive/empty/error；"
-                    "用户使用自由输入时 selected 中含该文本，并额外返回 "
-                    "\"custom\": \"用户输入文本\"。"
+                    "向用户显示交互式选择界面。"
+                    "1 分钟没有任何操作（按键/滚动）自动超时并回退 default_options。"
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "title": {
                             "type": "string",
-                            "description": "选择界面的标题，必填，建议简明扼要"
+                            "description": "选择界面标题"
                         },
                         "header": {
                             "type": "string",
-                            "description": "极短标签（≤12 字符），显示为多问题 tab 标签，如「认证方式」「优先级」；缺省时用 title 截断"
+                            "description": "多问题 tab 标签（≤12 字符）"
                         },
                         "options": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "选项字符串列表，用户从中选择；列表末尾自动追加『其他（自定义输入…）』入口，用户可输入不在选项中的答案；空列表时返回 {\"selected\":[], \"action\":\"empty\"}"
+                            "description": "选项列表"
                         },
                         "option_descriptions": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "与 options 等长的说明列表，option_descriptions[i] 为 options[i] 的说明；TUI 中说明缩进显示在选项下方（Claude 选项 label+description 布局）。可选，默认空",
+                            "description": "选项说明列表",
                             "default": []
                         },
                         "multi_select": {
                             "type": "boolean",
-                            "description": "是否允许多选：false=单选（默认），true=多选可勾选多项",
+                            "description": "是否多选",
                             "default": False
                         },
                         "default_options": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "超时/取消/非交互时回退的默认选项列表，值必须在 options 中",
+                            "description": "默认选项列表",
                             "default": []
                         }
                     },

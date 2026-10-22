@@ -36,31 +36,27 @@ class LsFunc(Func):
             "type": "function",
             "function": {
                 "name": "ls",
-                "description": (
-                    "列出目录下的文件和子目录，返回目录条目列表。"
-                    "引用任何文件路径前先用 ls 确认其存在。"
-                    "返回：目录内容列表；目录不存在/出错时返回错误信息。"
-                ),
+                "description": "列出目录下的文件和子目录。",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "要列出的目录路径（可选）。省略时使用当前工作目录。支持相对路径和绝对路径。路径安全校验会拒绝路径穿越攻击。",
+                            "description": "目录路径",
                         },
                         "long": {
                             "type": "boolean",
-                            "description": "是否以详细格式显示（类似 ls -l）。为 true 时显示：权限、硬链接数、所有者、组、大小、修改时间、名称。默认 false。",
+                            "description": "是否详细格式",
                             "default": False,
                         },
                         "all": {
                             "type": "boolean",
-                            "description": "是否显示隐藏文件（以 . 开头的文件和目录）。默认 false 只显示非隐藏项。",
+                            "description": "是否显示隐藏文件",
                             "default": False,
                         },
                         "human": {
                             "type": "boolean",
-                            "description": "long 模式下文件大小是否以人类可读格式显示（如 1.5K、3.2M、1.8G）。默认 true。设为 false 则以字节显示。",
+                            "description": "大小是否人类可读",
                             "default": True,
                         },
                     },

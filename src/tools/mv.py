@@ -24,20 +24,17 @@ class MvFunc(FileSystemToolBase):
             "type": "function",
             "function": {
                 "name": "mv",
-                "description": (
-                    "移动文件或目录（source → destination），支持跨文件系统。"
-                    "目标已存在将被覆盖。返回：移动结果；失败以 ( 开头。路径穿越被拒绝；沙盒可撤回。"
-                ),
+                "description": "移动文件或目录（source → destination）。",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "source": {
                             "type": "string",
-                            "description": "源文件或目录路径（必填）。源路径必须存在，支持文件或目录；符号链接移动链接本身而非其指向的目标。"
+                            "description": "源路径"
                         },
                         "destination": {
                             "type": "string",
-                            "description": "目标文件或目录路径（必填）。如果目标已存在，将被 shutil.move 覆盖；支持跨文件系统移动（自动使用 copy+delete 策略）。"
+                            "description": "目标路径"
                         }
                     },
                     "required": ["source", "destination"]
