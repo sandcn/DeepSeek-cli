@@ -301,6 +301,12 @@ def _is_extend_cp(cp: int) -> bool:
 #:   - Regional Indicator（国旗字母）：成对构成国旗（宽 2），拆开会变两个字母；
 #:   - 肤色修饰符（U+1F3FB-U+1F3FF）：附着在基 emoji 上，单独逐字符计宽为 2；
 #:   - 标签字符（U+E0020-U+E007F）：旗帜等标签序列。
+#: ★ VS16（U+FE0F）**不在此列**：Termux 的 ``WcWidth``（jquast/wcwidth 移植）
+#:   把 VS16 计入 ZERO_WIDTH、且 WIDE_EASTASIAN 不含 U+2764/U+26A0 等基字符
+#:   ——终端按「基字符宽度 + 0」渲染（``❤️``/``⚠️`` 均为 1 列）。若按 Unicode
+#:   emoji presentation 算 2 列会**高估**：宽度必须与终端逐列一致，高估与低估
+#:   同样会让渲染器记账/光标定位与实际屏幕分裂（2026-10-23 曾按 2 列试改，
+#:   经 Termux ``WcWidth`` 源码核对后回退）。
 _GRAPHEME_SPECIAL_RE = re.compile(
     r"[\u200d\u20e3\U0001F1E6-\U0001F1FF\U0001F3FB-\U0001F3FF\U000E0020-\U000E007F]"
 )

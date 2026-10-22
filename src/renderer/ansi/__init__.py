@@ -249,10 +249,19 @@ def _plain_paragraph_line(text: str) -> "AnsiLine":
 
 
 def _runs_have_esc(runs) -> bool:
-    """Run 序列是否含原始转义/告警控制字符（``_sanitize_lines`` 判定用）。"""
+    """Run 序列是否含需要消毒的控制字符（``_sanitize_lines`` 判定用）。
+
+    ★ 2026-10-23（用户报障：流式输出偶发写到下屏分割线）：判定范围从
+    「ESC 或 BEL」扩展为 ``has_dangerous_control``（C0 除 ``\\t`` / DEL /
+    C1）——修复前 ``\\x0b``（VT）/``\\x0c``（FF）/``\\x08``（BS）被当成
+    干净文本打上 ``_esc_checked`` 标记并原样进入渲染，终端执行换行/回退
+    使整屏错位一行。
+    """
+    from src._ansi_text import has_dangerous_control
+
     for r in runs:
         text = r.text
-        if text and ("\x1b" in text or "\x07" in text):
+        if text and has_dangerous_control(text):
             return True
     return False
 
@@ -2450,8 +2459,16 @@ class AnsiStreamRenderer:
         if not dirty:
             return lines
 
-        # 有原始转义序列（罕见）→ 全量消毒
-        from .helpers import ansi_to_runs, strip_ansi
+        # 有原始转义序列 / 危险控制字符（罕见）→ 全量消毒
+        # ★ 2026-10-23（用户报障：流式输出偶发写到下屏分割线）：快速路径
+        #   判据从「无 ESC 且无 BEL」扩展为「无任何渲染禁止的控制字符」
+        #   （C0 除 \t / DEL / C1）——修复前 ``\x0b``/``\x0c``/``\x08`` 等
+        #   直接走快速路径原样进入渲染文本：宽度按 0 计，终端却执行换行/
+        #   回退动作，整屏错位一行。清洗统一走 ``ansi_to_runs``（只保留
+        #   SGR，其余序列丢弃、危险控制字符剔除）。
+        from src._ansi_text import has_dangerous_control, sanitize_control_text
+
+        from .helpers import ansi_to_runs
         out: list[AnsiLine] = []
         for line in lines:
             if line._esc_checked:
@@ -2460,11 +2477,11 @@ class AnsiStreamRenderer:
             new_line = AnsiLine(cont_prefix=line.cont_prefix)
             for r in line.runs:
                 text = r.text or ""
-                if "\x1b" not in text and "\x07" not in text:
+                if not has_dangerous_control(text):
                     new_line.append(text, r.style, getattr(r, "link", None))
                     continue
                 for sub in ansi_to_runs(text, r.style):
-                    clean = strip_ansi(sub.text).replace("\x1b", "").replace("\x07", "")
+                    clean = sanitize_control_text(sub.text)
                     if clean:
                         new_line.append(clean, sub.style,
                                         getattr(r, "link", None))

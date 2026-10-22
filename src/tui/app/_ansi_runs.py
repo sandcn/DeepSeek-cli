@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 
+from src._ansi_text import iter_sgr_text
 from src.tui.core.color import TrueColor
 from src.tui.core.style import Style
 from src.tui.ink import StyledRun
@@ -137,22 +138,24 @@ def ansi_line_to_runs(text: str) -> list:
 
 
 def _parse(text: str) -> list:
+    """SGR 文本 → ``list[StyledRun]``（非 SGR 序列 / 危险控制字符统一消毒）。
+
+    ★ 2026-10-23（用户报障：流式输出偶发写到下屏分割线）：修复前只按 SGR
+    切分，光标移动/擦除/OSC 等序列与 C0 控制字符原样进入 ``StyledRun.text``
+    ——宽度按 0 计但终端会执行动作（换行/回退/定位），整屏错位一行。消毒
+    收敛在 ``src._ansi_text.iter_sgr_text``（与 ``renderer.ansi.ansi_to_runs``
+    同一实现，防两处漂移）。
+    """
     runs: list = []
     state = _SGR()
-    pos = 0
-    for m in _SGR_RE.finditer(text):
-        if m.start() > pos:
-            seg = text[pos:m.start()]
-            if seg:
-                runs.append(StyledRun(seg, state.style()))
-        raw = m.group(1)
+    for kind, segment in iter_sgr_text(text):
+        if kind == "text":
+            if segment:
+                runs.append(StyledRun(segment, state.style()))
+            continue
+        raw = segment[2:-1]
         codes = raw.split(";") if raw else ["0"]
         _apply_codes(state, codes)
-        pos = m.end()
-    if pos < len(text):
-        seg = text[pos:]
-        if seg:
-            runs.append(StyledRun(seg, state.style()))
     return runs
 
 

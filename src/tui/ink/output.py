@@ -87,6 +87,23 @@ class StyledRun:
         #   含 `\t` 的行触发终端自动换行，后续行错位）。在此（渲染文本最小
         #   单元）只展开一次，`width` 与实际渲染恒一致（见 ``_width.expand_tabs``）。
         text = self.text
+        # ★ 2026-10-23（用户报障「流式输出偶发写到下屏最顶分割线、闪一下就
+        #   好」）：**渲染文本最后一道消毒**——危险控制字符（C0 除 ``\t`` /
+        #   DEL / C1）与 ESC 序列在宽度上计 0，终端却真的执行光标/换屏动作
+        #   （``\\x1b[1A`` 上移、``\\x0b``/``\\x0c`` 换行、``\\x08`` 退格、
+        #   OSC 标题），渲染器「光标/物理缓冲记账」随即与真实屏幕脱节 →
+        #   整屏错位一行（下一帧重绘才恢复，即「闪一下」）。工具输出 / 浮窗
+        #   内容 / 历史回放 / 通知等所有外部文本最终都汇成 StyledRun，在此
+        #   统一消毒可一次覆盖全部入口（``__post_init__`` 是最小单元，
+        #   ``width`` 与实际渲染恒一致）。``isprintable()`` C 级快速路径：
+        #   正常可见文本零额外开销；含 ``\\t`` 时仍走下方 ``expand_tabs``。
+        if not text.isprintable():
+            from src._ansi_text import sanitize_control_text
+
+            # keep_newline=True：多行文本由上游 wrap_* 按 ``\n`` 拆分，消毒
+            # 只剔除 ESC/危险 C0（``\r`` 等），避免把多行并成一行。
+            text = sanitize_control_text(text, keep_newline=True)
+            object.__setattr__(self, "text", text)
         if "\t" in text or "\r" in text:
             text = expand_tabs(text)
             object.__setattr__(self, "text", text)
@@ -123,6 +140,12 @@ class StyledRun:
         ``_text_width(text)`` 一致；``width=None`` 时回退常规构造。
         """
         if width is None:
+            return cls(text, style, link)
+        # ★ 2026-10-23（控制字符消毒一致性）：本路径绕过 ``__post_init__``
+        #   直接写入预计算宽度——文本含危险控制字符 / ESC 序列时（宽度 0 但
+        #   终端会执行光标动作）必须回退常规构造（消毒 + 重新测宽），否则
+        #   消毒被性能快路径绕过。正常可见文本（``isprintable()``）零开销。
+        if not text.isprintable():
             return cls(text, style, link)
         obj = object.__new__(cls)
         object.__setattr__(obj, "text", text)

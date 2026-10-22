@@ -12,6 +12,7 @@ from itertools import count as _count
 from typing import Any
 
 from src._ansi_text import ANSI_RE
+from src._ansi_text import iter_sgr_text as _iter_sgr_text
 from src._ansi_text import strip_ansi as strip_ansi  # noqa: F401 — 全项目单一真源 re-export
 from src._compat import dataclass
 
@@ -688,19 +689,34 @@ def parse_sgr_params(params: str) -> tuple[Style | None, bool]:
 
 
 def ansi_to_runs(text: str, base_style: Any = None) -> list[Run]:
-    """将含 ANSI 转义序列的文本解析为 Run 序列（紧急回退）。"""
+    """将含 ANSI 转义序列的文本解析为 Run 序列（紧急回退）。
+
+    ★ 2026-10-23（用户报障：流式输出偶发写到下屏最顶分割线、闪一下就好）：
+    **只保留 SGR，其余 ANSI 整段丢弃，危险 C0/C1 控制字符剔除**。修复前
+    只用 ``_SGR_RE`` 切分 SGR，其余序列（光标移动 ``\\x1b[1A``、清行
+    ``\\x1b[K``、OSC 标题等）与 C0 控制字符（``\\x0b`` 换页、``\\x08`` 退格、
+    ``\\x07`` 响铃）原样留在 ``Run.text``：宽度测量按 0 计，终端却真的执行
+    光标/换屏动作 → 渲染器记账与实际屏幕脱节，整屏错位一行（bash 工具输出
+    最容易携带这类序列）。消毒后渲染文本只剩「可见字符 + SGR」两种语义，
+    宽度计算与实际渲染恒一致。统一实现见 ``src._ansi_text.iter_sgr_text``。
+    """
     runs: list[Run] = []
     current = Style() if base_style is None else base_style
     buf = ""
-    pos = 0
-    for m in _SGR_RE.finditer(text):
-        if m.start() > pos:
-            buf += text[pos:m.start()]
-        pos = m.end()
+
+    def _flush() -> None:
+        nonlocal buf
         if buf:
             runs.append(Run(buf, current) if current else Run(buf, None))
             buf = ""
-        style, is_reset = parse_sgr_params(m.group(1))
+
+    for kind, segment in _iter_sgr_text(text):
+        if kind == "text":
+            buf += segment
+            continue
+        _flush()
+        # segment 形如 ``\x1b[0;31m``——取参数串交 ``parse_sgr_params``。
+        style, is_reset = parse_sgr_params(segment[2:-1])
         if is_reset:
             # ★ 组合 SGR「重置 + 颜色」修复（方向1）：``\x1b[0;31m`` 等
             #   （Pygments 常输出）——终端语义先 reset 再应用颜色。
@@ -711,10 +727,7 @@ def ansi_to_runs(text: str, base_style: Any = None) -> list[Run]:
                 current = current.merge(style)
         else:
             current = current.merge(style) if style else current
-    if pos < len(text):
-        buf += text[pos:]
-    if buf:
-        runs.append(Run(buf, current) if current else Run(buf, None))
+    _flush()
     return runs
 
 
