@@ -177,6 +177,13 @@ def _props_identical(a: dict, b: dict) -> bool:
     return True
 
 
+#: layout effect 触发的渲染前重跑上限（React 语义：layout effect 中的
+#: set_state 应在**绘制前**同步 flush）。重跑属于**同一次帧入口调用**内部的
+#: 提交阶段（不改动对外「一帧一次渲染」语义），上限防被动 effect 每帧
+#: set_state 造成死循环。
+_MAX_PRE_PAINT_PASSES = 4
+
+
 class Reconciler:
     """组件树调和器。
 
@@ -186,6 +193,13 @@ class Reconciler:
 
     def __init__(self, schedule_callback: Callable[[], None] | None = None) -> None:
         self._schedule_callback = schedule_callback
+        #: 本帧提交阶段是否又产生了状态更新（layout effect set_state）——
+        #: 由 ``_on_state_update`` 在 schedule 回调前置位，``render`` 据此决定
+        #: 是否在**同一次调用内**重跑提交阶段（绘制前 flush）。
+        self._update_requested = False
+        #: 稳定的包装回调（实例属性——``set_schedule_callback`` 的覆盖告警按
+        #: 身份比较，绑定方法每次访问都是新对象，故缓存一份）。
+        self._state_update_cb = self._on_state_update
         #: 本渲染根的 hooks 会话上下文（多会话隔离——每个 Reconciler 一个
         #: 独立 ``HookContext``；渲染期经 ``_hooks.push_context`` 激活，hooks
         #: 函数读取它，输入事件/router 回调闭包捕获它）。
@@ -198,7 +212,23 @@ class Reconciler:
         # ★ 多会话隔离（P0 架构修复）：``set_schedule_callback`` 写入本根
         #   自己的 ``HookContext``（此前为模块级单例——第二个 Reconciler
         #   构造即覆盖第一个的重渲染回调，前一会话 setState 不再触发渲染）。
-        _hooks.set_schedule_callback(schedule_callback, ctx=self._hook_ctx)
+        _hooks.set_schedule_callback(self._state_update_cb, ctx=self._hook_ctx)
+
+    def _on_state_update(self) -> None:
+        """hooks 状态更新回调：标记本帧待 flush + 转发会话的渲染请求。
+
+        帧内（layout effect 提交阶段）置位 ``_update_requested``，``render``
+        在绘制前重跑提交阶段（React layout effect 语义）；帧外（异步线程
+        setState）同样置位，下一帧 ``render`` 开头会重置，不造成额外 pass。
+        """
+        self._update_requested = True
+        callback = self._schedule_callback
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:
+            _logger.debug("schedule 回调异常", exc_info=True)
 
     @property
     def hook_context(self) -> "_hooks.HookContext":
@@ -211,54 +241,85 @@ class Reconciler:
         element: Element,
         width: int,
         height: int,
-    ) -> None:
-        """调和 + 布局 + 提交 effects。
+    ) -> bool:
+        """调和 + 布局 + 提交 effects（一帧一次调用，内部完成全部 pass）。
+
+        ★ 2026-10-23（用户需求：render 线程像游戏引擎 game_loop，单次调用
+        完成所有工作）：``render`` 是**每帧唯一一次**调和入口——layout effect
+        中触发的 set_state 在同一调用内于**绘制前**重跑提交阶段（React 语义），
+        不再由调用方（``InkSession._render_frame_impl``）循环重建组件树。
 
         Args:
             root_fiber: 根 fiber（TAG_ROOT，挂载时由 ``create_root`` 创建）。
             element: 根元素（App）。
             width: 文档宽度。
             height: 文档高度（预留给未来视口约束；当前内容驱动）。
+
+        Returns:
+            True — 达到 ``_MAX_PRE_PAINT_PASSES`` 仍有待 flush 的状态更新
+            （调用方保留 ``_dirty``，下一帧继续）；
+            False — 本帧全部更新已在绘制前提交完毕。
         """
         self._pending_destroys = []
         # ★ 多会话隔离（P0 架构修复）：写入本根上下文 + 渲染期激活它——
         #   hooks 函数（use_*）、状态注入与 router 构建读取「当前上下文」；
         #   输入事件处理 / 订阅回调另经闭包捕获的 ctx 完成（见各 hooks 模块）。
-        _hooks.set_schedule_callback(self._schedule_callback, ctx=self._hook_ctx)
+        _hooks.set_schedule_callback(self._state_update_cb, ctx=self._hook_ctx)
         _hooks.push_context(self._hook_ctx)
         try:
-            # ★ 焦点管理（React Ink v6）：每帧渲染前重置可聚焦 id 收集列表
-            #   （useFocus 渲染期注册）。
-            _hooks._reset_focus_ids()
-            # 调和 root 的子元素
-            self._reconcile_children(root_fiber, [element])
-            # 布局（host 树）
-            _layout.layout_tree(root_fiber, width)
-            # ★ 性能（PERF-25）：合并渲染后置元数据收集——原实现 host ref 填充
-            #   （_attach_host_refs）、effects 提交（_traverse_functions 收集后
-            #   reversed 提交）、input router（_build_input_router →
-            #   _collect_input_hooks）各自独立遍历整棵 fiber 树（每帧 3 次全树
-            #   DFS）。合并为**一次 DFS** 同时收集：带 ref 的 host fiber / function
-            #   fiber 列表 / InputHook+PasteHook（遍历顺序保持前序——ref 填充顺序
-            #   无消费方、effects 后序提交、router 按 hooks_list 前序调用，与各自
-            #   原实现语义一致）。``_run_live_effects`` 独立遍历入口已删除
-            #   （2026-08-05 死代码清理：生产无调用方）。
-            function_fibers, ref_fibers, input_hooks, paste_hooks, mouse_hooks = (
-                self._collect_render_metadata(root_fiber)
-            )
-            # ★ host ref 填充（方向8）：layout 完成后将 layout_box 写入绑定的
-            #   ref（RefHook.current / 函数 ref 回调）——useMeasure 等据此在
-            #   layout effect 中读取尺寸。
-            self._fill_host_refs(ref_fibers)
-            # 提交 effects：先销毁（删除子树），再创建（依赖变化）
-            for fiber, hook in self._pending_destroys:
-                self._run_destroy(fiber, hook)
-            self._pending_destroys = []
-            self._run_live_effects_collected(function_fibers)
+            # ★ 单次调用完成全部提交（2026-10-23 game_loop）：绘制前 flush
+            #   layout effect 的 set_state——重跑「调和 + 布局 + 提交」，
+            #   最多 ``_MAX_PRE_PAINT_PASSES`` 轮（防被动 effect 死循环）。
+            #   element 由调用方构建一次（不在 pass 间重建组件树），同一
+            #   element 重新调和时函数组件会读取最新 hooks 状态。
+            pending_update = False
+            input_hooks: list = []
+            paste_hooks: list = []
+            mouse_hooks: list = []
+            for _pass in range(_MAX_PRE_PAINT_PASSES):
+                # 只把**本次 pass 内**产生的更新视为待 flush 更新（帧外异步
+                # setState 已由会话 ``_dirty`` 负责下一帧重建，不在此叠加）。
+                self._update_requested = False
+                # ★ 焦点管理（React Ink v6）：每帧渲染前重置可聚焦 id 收集列表
+                #   （useFocus 渲染期注册）。
+                _hooks._reset_focus_ids()
+                # 调和 root 的子元素
+                self._reconcile_children(root_fiber, [element])
+                # 布局（host 树）
+                _layout.layout_tree(root_fiber, width)
+                # ★ 性能（PERF-25）：合并渲染后置元数据收集——原实现 host ref 填充
+                #   （_attach_host_refs）、effects 提交（_traverse_functions 收集后
+                #   reversed 提交）、input router（_build_input_router →
+                #   _collect_input_hooks）各自独立遍历整棵 fiber 树（每帧 3 次全树
+                #   DFS）。合并为**一次 DFS** 同时收集：带 ref 的 host fiber / function
+                #   fiber 列表 / InputHook+PasteHook（遍历顺序保持前序——ref 填充顺序
+                #   无消费方、effects 后序提交、router 按 hooks_list 前序调用，与各自
+                #   原实现语义一致）。``_run_live_effects`` 独立遍历入口已删除
+                #   （2026-08-05 死代码清理：生产无调用方）。
+                function_fibers, ref_fibers, input_hooks, paste_hooks, mouse_hooks = (
+                    self._collect_render_metadata(root_fiber)
+                )
+                # ★ host ref 填充（方向8）：layout 完成后将 layout_box 写入绑定的
+                #   ref（RefHook.current / 函数 ref 回调）——useMeasure 等据此在
+                #   layout effect 中读取尺寸。
+                self._fill_host_refs(ref_fibers)
+                # 提交 effects：先销毁（删除子树），再创建（依赖变化）
+                for fiber, hook in self._pending_destroys:
+                    self._run_destroy(fiber, hook)
+                self._pending_destroys = []
+                self._run_live_effects_collected(function_fibers)
+                pending_update = bool(self._update_requested)
+                if not pending_update:
+                    break
+            else:
+                # 达到上限仍有更新：保留脏标记，下一帧继续应用（不静默丢弃）。
+                pending_update = True
             # ★ 发布 composite input router（use_input 钩子，INK-1）
-            # 用合并遍历已收集的 hooks 构建（免再次全树收集——PERF-25）
+            # 用合并遍历已收集的 hooks 构建（免再次全树收集——PERF-25）。
+            # 最后一次 pass 的 hooks 为最终状态（layout effect 更新已提交）。
             router = self._build_input_router_from_hooks(input_hooks, paste_hooks, mouse_hooks)
             _hooks._publish_input_router(router, ctx=self._hook_ctx)
+            return pending_update
         finally:
             _hooks.pop_context()
 

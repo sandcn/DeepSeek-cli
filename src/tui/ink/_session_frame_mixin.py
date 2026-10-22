@@ -63,9 +63,8 @@ _logger = logging.getLogger(__name__)
 _SIZE_POLL_INTERVAL = 0.2
 
 #: layout effect 触发的渲染前重跑上限（React 语义：layout effect 中的
-#: set_state 应在绘制前 flush；本框架通过重跑 reconcile 实现，最多 N 轮，
-#: 防止被动 effect 每帧 set_state 造成死循环）。
-_MAX_PRE_PAINT_PASSES = 4
+#: set_state 应在绘制前 flush）——定义在 ``reconciler``（同一次
+#: ``render`` 调用内部的提交阶段，不改变对外「一帧一次构建」语义）。
 
 
 def _safe_int(value, default: int = 0) -> int:
@@ -184,10 +183,11 @@ class _SessionFrameMixin:
         据此区分「正在执行超长单帧」（单帧耗时无上界，视作有进展续期等待）
         与「渲染线程挂起」（无进展，按软超时/硬上限降级）。
 
-        ★ 渲染互斥（``_render_lock``，可重入）：统一串行化本帧执行——外部
-        线程的**同步渲染**（``request_bottom_redraw`` / ``flush_input_router``
-        主动渲染）与渲染线程的常规帧互斥，消除「双线程并发写 stream」（P3-20
-        输出撕裂）。stub（无 ``_render_lock``）保持既有语义。
+        ★ 渲染互斥（``_render_lock``，可重入）：统一串行化本帧执行——正常
+        路径下只有 render 线程的每拍单次调用会进入本方法；**例外**是
+        render 线程未运行（suspend 期间）时 ``request_bottom_redraw`` /
+        ``clear_screen`` 的同步渲染（无 game_loop 可用），锁避免其与
+        线程帧并发写 stream。stub（无 ``_render_lock``）保持既有语义。
         """
         lock = getattr(self, "_render_lock", None)
         if lock is None:
@@ -356,6 +356,12 @@ class _SessionFrameMixin:
         return elapsed >= interval
 
     def _render_frame_impl(self) -> None:
+        # ★ 2026-10-23（game_loop 单次调用）：清屏请求在帧内统一消费——
+        #   模型 reset_display + 终端 full_clear 都发生在 render 线程本帧，
+        #   外部线程只置 ``_clear_pending``（见 InkSession.clear_screen）。
+        apply_clear = getattr(self, "_apply_pending_clear", None)
+        if callable(apply_clear):
+            apply_clear()
         if self._build_tree is None:
             return
         # 终端尺寸变化标志（下方内容行基线同步用；模型为空时保持 False）
@@ -500,24 +506,21 @@ class _SessionFrameMixin:
             #   内提交，其中的 set_state 只排队到下一帧；但绘制发生在
             #   reconciler.render 之后（render_frame），因此 effect 更新不会
             #   反映到本帧（useMeasure/useBoxMetrics 首帧 0x0、状态切换闪烁）。
-            #   React 语义要求 layout effect 的更新在绘制前 flush。这里在
-            #   「本帧还有待渲染变更」时有界重跑 reconcile（最多
-            #   _MAX_PRE_PAINT_PASSES 轮），再做最终绘制；cap 防止被动 effect
-            #   每轮 set_state 造成死循环。
-            frame = None
-            for _pass in range(_MAX_PRE_PAINT_PASSES):
-                element = self._build_tree(self._model, width)
-                self._reconciler.render(
-                    self._root_fiber, element, width,
-                    self._width_cache.get_height(),
-                )
-                if not self._dirty:
-                    break
-                self._dirty = False
-            else:
-                # 达到上限仍有更新：保留脏标记，下一拍继续应用，避免状态
-                # 更新被静默丢弃。
-                self._dirty = True
+            #   React 语义要求 layout effect 的更新在绘制前 flush。
+            # ★ 2026-10-23（game_loop 单次调用）：组件树只构建一次，
+            #   pre-paint flush 由 ``reconciler.render`` 在**同一次调用内部**
+            #   完成（重跑提交阶段，最多 ``_MAX_PRE_PAINT_PASSES`` 轮）——不再
+            #   由本方法循环重建组件树。返回值表示达到上限仍有待 flush 更新，
+            #   此时保留脏标记到下一拍（不静默丢弃）。
+            element = self._build_tree(self._model, width)
+            pending_update = self._reconciler.render(
+                self._root_fiber, element, width,
+                self._width_cache.get_height(),
+            )
+            self._dirty = bool(pending_update)
+            if pending_update:
+                from .reconciler import _MAX_PRE_PAINT_PASSES
+
                 _logger.warning(
                     "layout effect 更新超过 %d 轮，剩余更新延后到下一帧",
                     _MAX_PRE_PAINT_PASSES,

@@ -9,18 +9,18 @@ from __future__ import annotations
 
 import logging
 import time
-import asyncio
 
 from ._tool_parse_utils import convert_tool_calls_map, convert_tool_calls_map_with_status, parse_raw_tool_calls, parse_raw_tool_calls_with_status, full_args_str  # noqa: F401 — 重导出
 from .tokens import estimate_tokens
 from ..core.stats import set_tool_parse_elapsed
-from .interrupt_async import is_interrupted_async
+from ..core.interrupt_state import is_interrupted
+from ..core.frame_tick import get_frame_tick_registry
 from ..core.tool_display import get_tool_display_name
 
 _logger = logging.getLogger(__name__)
 
 
-#: 解析进度刷新间隔（秒）——60Hz（每秒 60 拍）。
+#: 解析进度刷新间隔（秒）——60Hz（每秒 60 拍；兼容常量）。
 #: ★ 2026-09-10 修复（用户需求：``⠙ Write 384t 1.01s`` 不会每帧刷新信息）：
 #:   修复前为 0.2s（5Hz）——解析进度行（工具名 + token 数 + 耗时）每 0.2s 才
 #:   推送一次 ``update_parse_info``，而 TUI 渲染循环为 **60Hz**、进度行 spinner
@@ -30,11 +30,15 @@ _logger = logging.getLogger(__name__)
 #:   消费一次，进度行信息随 spinner 平滑刷新。
 #: ★ 2026-10-20（用户需求：render 线程跟 input 处理改成 60hz，不能降减少和
 #:   降级）：随渲染循环 30Hz → 60Hz 同步提升，保持「每帧推送一次」不降采样。
+#: ★ 2026-10-23（用户需求：单次调用完成所有工作，像游戏引擎的 game_loop）：
+#:   推送不再由本模块自建 asyncio 定时任务驱动——``ToolParseTracker.tick``
+#:   注册到 ``core.frame_tick``，由 TUI render 线程每帧调用一次；本常量仅
+#:   保留为兼容导出（不再参与调度）。
 _PARSE_INFO_REFRESH_INTERVAL = 1.0 / 60
 
-#: 解析进度推送异常告警限频（秒）——单拍异常不终止推送循环（见
-#: ``ToolParseTracker._update_loop_async``），同频率窗口内仅记 1 条 warning
-#: （其余记 debug），防持续异常刷屏。
+#: 解析进度推送异常告警限频（秒）——单拍异常不终止后续刷新（见
+#: ``ToolParseTracker.tick``），同频率窗口内仅记 1 条 warning（其余记 debug），
+#: 防持续异常刷屏。
 _PUSH_ERR_LOG_INTERVAL = 5.0
 
 #: 兼容重导出面：这些符号的实现位于 ``api._tool_parse_utils``，本模块保留
@@ -56,14 +60,16 @@ __all__ = [
 class ToolParseTracker:
     """管理流式工具调用解析的计时与动态显示。
 
-    全异步实现：使用 asyncio.Task 替代 threading.Thread，
-    使用 asyncio.Event 替代 threading.Event。
+    ★ 2026-10-23（用户需求：render 线程只有 60Hz 且不能改变；单次调用完成
+    所有工作，像游戏引擎的 game_loop）：**不再自建 asyncio 60Hz 定时任务**。
+    ``start()`` 把 ``tick`` 注册到 ``core.frame_tick`` 全局注册表，由 TUI
+    render 线程每帧（``FRAME_TICKS`` 阶段）调用一次——解析进度与渲染循环
+    共用同一节拍，进程内只有一套 60Hz 驱动。
 
-    刷新频率：``REFRESH_INTERVAL``（60Hz）——与 TUI 渲染循环／解析进度行
-    spinner 帧率对齐（见 ``_PARSE_INFO_REFRESH_INTERVAL`` 注释）。
+    刷新频率：与渲染循环同帧率（60Hz；``REFRESH_INTERVAL`` 保留为兼容常量）。
     """
 
-    #: 解析进度刷新间隔（秒）——60Hz。类属性便于测试注入（惰性读取）。
+    #: 解析进度刷新间隔（秒）——60Hz（兼容常量；实际节拍由 render 帧驱动）。
     REFRESH_INTERVAL = _PARSE_INFO_REFRESH_INTERVAL
 
     def __init__(self, tool_calls_map, display=None, label=None, silent=False):
@@ -71,47 +77,51 @@ class ToolParseTracker:
         self._display = display
         self._label = label
         self._start_time = None
-        self._task: asyncio.Task | None = None
+        #: 兼容字段：帧驱动后不再创建 asyncio 任务（保留属性供既有清理代码读取）
+        self._task = None
         self._interrupted = False
+        #: 是否已注册到帧驱动注册表（幂等注销）
+        self._registered = False
         #: 上次推送异常告警时间戳（5s 限频，见 ``_log_push_error``）
         self._last_err_log: float = 0.0
 
     async def start(self):
-        """首次检测到工具调用时调用，启动计时。"""
-        self._start_time = time.monotonic()
-        self._task = asyncio.get_running_loop().create_task(self._update_loop_async())
+        """首次检测到工具调用时调用，启动计时并注册帧驱动。
 
-    async def _update_loop_async(self):
-        """异步更新循环：每秒刷新 60 次（60Hz），仅更新 display（不打印终端）。
-
-        间隔取 ``self.REFRESH_INTERVAL``（60Hz）——与 TUI 渲染循环 60Hz 对齐
-        （修复前 0.2s＝5Hz：spinner 每帧推进而 token/耗时几拍一更，进度行
-        信息「不随帧刷新」）。
-
-        ★ 2026-09-20（解析进度行卡住修复）：**单拍异常不再终止推送循环**——
-        修复前循环体除 CancelledError 外无捕获，任一单拍异常（条目缺 ``name``
-        键的 KeyError、非字符串工具名导致的 join TypeError 等）会静默结束本
-        asyncio 任务（仅留下 "Task exception was never retrieved"），此后解析
-        进度行**永远停在上一次推送值**（工具参数仍在接收 → 用户看到「数字卡住、
-        数据有传过来」）。异常记 warning（5s 限频）后继续下一拍。
+        保留 ``async`` 签名以兼容既有 ``await ctx.tracker.start()`` 调用方
+        （本方法不含任何 await）。
         """
-        try:
-            while True:
-                if await is_interrupted_async():
-                    self._interrupted = True
-                    break
-                try:
-                    await self._push_once()
-                except Exception:
-                    self._log_push_error()
-                # ★ 60Hz（1/60s）——与渲染循环同帧率；每拍刷新（不累积多拍后
-                #   一次推送，否则进度行信息又退化为低频跳变）。
-                await asyncio.sleep(self.REFRESH_INTERVAL)
-        except asyncio.CancelledError:
-            _logger.debug("ToolParseTracker update task cancelled")
-            raise
+        self._start_time = time.monotonic()
+        if not self._registered:
+            get_frame_tick_registry().register(self.tick)
+            self._registered = True
+        # 立即推送首拍（原实现首拍在第一个 1/60s 定时器到期后）。
+        self.tick()
 
-    async def _push_once(self) -> None:
+    def tick(self) -> None:
+        """帧驱动单拍：检测中断并推送一次解析进度（render 线程调用）。
+
+        ★ 2026-09-20（解析进度行卡住修复）：单拍异常只记 warning（5s 限频）
+        并继续下一拍——不再让异常终止后续刷新。
+        """
+        if self._start_time is None:
+            return
+        if is_interrupted():
+            self._interrupted = True
+            self._unregister()
+            return
+        try:
+            self._push_once()
+        except Exception:
+            self._log_push_error()
+
+    def _unregister(self) -> None:
+        """从帧驱动注册表注销（幂等）。"""
+        if self._registered:
+            get_frame_tick_registry().unregister(self.tick)
+            self._registered = False
+
+    def _push_once(self) -> None:
         """推送一拍解析进度（工具名 + token 估算 + 耗时）。
 
         与 ``finalize`` 共享同一计算口径（args_parts 全量 join → estimate_tokens
@@ -177,14 +187,15 @@ class ToolParseTracker:
         return self._interrupted
 
     async def finalize(self):
-        """完成工具调用解析，更新全局状态。"""
-        if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
+        """完成工具调用解析，更新全局状态。
+
+        保留 ``async`` 签名以兼容既有 ``await ctx.tracker.finalize()``。
+        ★ 2026-10-23（game_loop）：帧驱动后不再有内部 asyncio 任务需要取消，
+        这里只从注册表注销，并推送最终值 + 完成事件（帧内/帧外均由调用方
+        线程同步执行，单次收尾）。
+        """
+        self._unregister()
+        self._task = None
 
         if self._start_time is None:
             set_tool_parse_elapsed(0.0)

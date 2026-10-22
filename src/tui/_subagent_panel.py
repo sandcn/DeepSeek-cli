@@ -379,6 +379,24 @@ class SubAgentPanelController:
 
     # ── 事件处理器（委托 StateStore 变更 + 置脏 + 节流推送） ──
 
+    def _request_emit(self) -> None:
+        """请求刷新面板（统一收敛到 render 线程的每帧一次推送）。
+
+        ★ 2026-10-23（用户需求：game_loop 单次调用完成所有工作）：事件处理器
+        只更新状态并置 ``_pending_emit``，由 render 帧的 ``_panel_refresh``
+        （``FRAME_TICKS``/``PANELS`` 阶段，60Hz 每拍一次）统一渲染 + 推送——
+        事件线程不再各自即时渲染面板（消除同一时刻多次面板渲染）。
+
+        例外（无 render 帧驱动时）：``_cb_registered=False``（测试桩 / 异常
+        装配 / 无 chat_ui）保留原即时 ``_emit_frame`` 降级路径，保证
+        ``push_cmd`` 注入场景仍能刷新。
+        """
+        self._dirty = True
+        if self._cb_registered:
+            self._pending_emit = True
+            return
+        self._emit_frame()
+
     def _emit_frame(self) -> None:
         """渲染并推送当前帧（受 _EMIT_INTERVAL 节流）。
 
@@ -423,17 +441,17 @@ class SubAgentPanelController:
             dispatch_label=getattr(event, 'dispatch_label', ''),
         )
         self._dirty = True
-        self._emit_frame()
+        self._request_emit()
 
     def _on_agent_status_changed(self, event) -> None:
         self._store.update_status(event.label, event.status)
         self._dirty = True
-        self._emit_frame()
+        self._request_emit()
 
     def _on_model_phase(self, event) -> None:
         self._store.set_model_phase(event.label, event.phase, event.info)
         self._dirty = True
-        self._emit_frame()
+        self._request_emit()
 
     def _on_tool_parsing(self, event) -> None:
         """ToolParsingEvent — 流式解析工具参数时创建/更新 parsing 记录。
@@ -452,7 +470,7 @@ class SubAgentPanelController:
             getattr(event, "tool_id", ""),
         )
         self._dirty = True
-        self._emit_frame()
+        self._request_emit()
 
     def _on_parse_info(self, event) -> None:
         """ParseInfoEvent — ToolParseTracker 定时推送的解析摘要（rf,rf 51t 0.74s）。"""
@@ -460,13 +478,13 @@ class SubAgentPanelController:
             event.label, event.tool_names, event.tokens, event.elapsed,
         )
         self._dirty = True
-        self._emit_frame()
+        self._request_emit()
 
     def _on_parse_info_done(self, event) -> None:
         """ParseInfoDoneEvent — 工具解析完成，清除解析摘要和 phase。"""
         self._store.clear_parse_info(event.label)
         self._dirty = True
-        self._emit_frame()
+        self._request_emit()
 
     def _on_tool_started(self, event) -> None:
         # P1-1（review 方向）：透传 event.tool_id——同名工具连续调用且事件
@@ -474,21 +492,21 @@ class SubAgentPanelController:
         self._store.start_tool(event.label, event.tool_name, event.detail,
                                getattr(event, "tool_id", ""))
         self._dirty = True
-        self._emit_frame()
+        self._request_emit()
 
     def _on_tool_done(self, event) -> None:
         # P1-1（review 方向）：透传 event.tool_id（同上）。
         self._store.done_tool(event.label, event.tool_name, event.success,
                               getattr(event, "tool_id", ""))
         self._dirty = True
-        self._emit_frame()
+        self._request_emit()
 
     def _on_usage_updated(self, event) -> None:
         self._store.update_usage(
             event.label, event.usage, getattr(event, 'replace', False),
         )
         self._dirty = True
-        self._emit_frame()
+        self._request_emit()
 
     def _on_metrics(self, event) -> None:
         """MetricsUpdateEvent → 增量更新实时 token 计数和速度。"""
@@ -500,7 +518,7 @@ class SubAgentPanelController:
             event.speed,
         )
         self._dirty = True
-        self._emit_frame()
+        self._request_emit()
 
     def _on_reasoning_chunk(self, event) -> None:
         """ReasoningChunkEvent → 累积 subagent 流式思考内容（动态部分）。
@@ -519,7 +537,7 @@ class SubAgentPanelController:
         #   False，测试桩/异常装配）时流式内容无法经 _panel_refresh 推进——
         #   补走 _emit_frame 推送路径，保证 push_cmd 路径下也刷新。
         if not self._cb_registered:
-            self._emit_frame()
+            self._request_emit()
 
     def _on_content_chunk(self, event) -> None:
         """ContentChunkEvent → 累积 subagent 流式回答内容（动态部分）。"""
@@ -529,7 +547,7 @@ class SubAgentPanelController:
         self._dirty = True
         # ★ P3（review 2026-08-22）：同上——无 panel refresh 回调时补 _emit_frame。
         if not self._cb_registered:
-            self._emit_frame()
+            self._request_emit()
 
     # ── 面板刷新回调 ────────────────────────────────────
 
@@ -574,19 +592,15 @@ class SubAgentPanelController:
     def _panel_refresh(self) -> None:
         if not self._cb_registered:
             self._register_panel_refresh()
-        # ★ PERF-2：无事件、无动画需求且无待补推时跳过全量渲染（避免每帧
-        #   重建整个面板）；_pending_emit 置位（节流期丢帧）时绕过短路补推。
+        # ★ PERF-2：无事件、无动画需求且无待推送时跳过全量渲染（避免每帧
+        #   重建整个面板）。
         if not self._dirty and not self._needs_animation() and not self._pending_emit:
             return
-        # ★ PERF-4：面板刷新节流——与 _emit_frame 共用 _last_emit_time/
-        #   _EMIT_INTERVAL（60Hz）。修复前每渲染循环迭代都渲染+推送（流式
-        #   期间命令持续唤醒循环 → 循环高频运转），subagent 活跃时 CPU 满。
-        #   节流跳过时置 _pending_emit，下一允许拍补推最新帧（不丢状态）。
-        now = time.time()
-        if now - self._last_emit_time < self._EMIT_INTERVAL:
-            self._pending_emit = True
-            return
-        self._last_emit_time = now
+        # ★ 2026-10-23（用户需求：game_loop 单次调用完成所有工作）：本方法
+        #   由 render 帧每拍调用一次（本身就是 60Hz），不再叠加时间节流——
+        #   事件处理器置位的 ``_pending_emit`` 在**本帧内**消费，不推迟到
+        #   下一拍（否则一帧的工作被拆成多帧完成）。
+        self._last_emit_time = time.time()
         self._pending_emit = False
         try:
             lines = self._render_frame()
@@ -604,8 +618,7 @@ class SubAgentPanelController:
             # ★ BUG-54（review 方向）：渲染异常时**不复位脏标记**——修复前
             #   ``self._dirty = False`` 在 try 外无条件执行：异常后脏标记被清，
             #   且无动画状态（needs_animation False）时面板不再重试渲染 →
-            #   卡在陈旧内容。保留脏标记使下一允许拍重试（_EMIT_INTERVAL 节流
-            #   60Hz，不会无限高频重试）。
+            #   卡在陈旧内容。保留脏标记使下一帧重试。
             _logger.debug("_panel_refresh 异常", exc_info=True)
             return
         self._frame += 1

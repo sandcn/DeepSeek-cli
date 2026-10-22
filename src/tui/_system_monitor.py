@@ -2,6 +2,11 @@
 
 惰性初始化：首次采集才检测平台/尝试导入 psutil；1 秒缓存消峰。
 供 InkSession 每 2 秒刷新 model.status.cpu/mem（输入区顶部分隔线显示）。
+
+★ 2026-10-23（用户需求：render 线程只有 60Hz 且不能改变；单次调用完成
+所有工作，像游戏引擎的 game_loop）：不再启动独立后台采集线程——采集
+统一由 render 帧的 SYSTEM_STATS 阶段（每 2s 一次）在帧内同步完成，进程内
+只有一套 60Hz 驱动。1 秒 TTL 缓存仍消峰（同一轮多次读取不重复采集）。
 """
 
 from __future__ import annotations
@@ -11,7 +16,6 @@ import platform
 import re
 import subprocess
 import sys
-import threading
 import time
 from typing import Any
 
@@ -23,8 +27,7 @@ class _SystemMonitor:
 
     CPU_CACHE_TTL: float = 1.0
     MEM_CACHE_TTL: float = 1.0
-    #: 停止后台线程时 join 上限（秒）——stop() 在渲染/退出路径调用，不能
-    #: 长时间阻塞界面；线程为 daemon，超时后由进程退出回收。
+    #: 停止语义兼容常量（帧驱动后无后台线程；保留供调用方引用）。
     STOP_JOIN_TIMEOUT: float = 0.2
 
     def __init__(self) -> None:
@@ -39,16 +42,6 @@ class _SystemMonitor:
         self._have_prev_cpu: bool = False
         self._mem_percent: float = 0.0
         self._last_mem_time: float = 0.0
-        # 子进程平台后台刷新（darwin/windows 无 psutil 时启用）——渲染线程
-        # 不阻塞等待 iostat/sysctl/vm_stat/wmic 子进程（方向3 性能）。
-        self._bg_started: bool = False
-        self._bg_stop = threading.Event()
-        self._bg_thread: threading.Thread | None = None
-        # ★ P2-1（review 方向）：后台线程启动锁——检查/置位原子化，防并发
-        #   首次调用（get_cpu_and_mem 双线程同时见 _bg_started=False）启动
-        #   双后台线程。
-        self._bg_lock = threading.Lock()
-        self._bg_interval: float = 2.0
 
     @staticmethod
     def _detect_platform() -> str:
@@ -118,69 +111,21 @@ class _SystemMonitor:
         return self._mem_percent
 
     def get_cpu_and_mem(self) -> tuple[float, float]:
-        # 子进程平台（darwin/windows 且无 psutil）：同步采集可能阻塞渲染线程
-        # 数秒（iostat 含 2s 采样 / sysctl+vm_stat 双子进程最坏 ~11s）——启动
-        # 后台 daemon 线程持续刷新缓存，渲染线程只读缓存（方向3 性能）。
-        if (
-            not self._bg_started
-            and not self._has_psutil
-            and self._platform in ("darwin", "windows")
-        ):
-            self._start_bg_refresh()
-        elif not self._bg_started:
-            self.get_cpu_percent()
-            self.get_memory_percent()
+        """采集 CPU/MEM（帧内同步；1s TTL 缓存消峰）。
+
+        ★ 2026-10-23（game_loop）：原本 darwin/windows 无 psutil 时会启动
+        后台线程起子进程采样，现统一由 render 帧的 SYSTEM_STATS 阶段同步
+        采集——单次调用完成本帧所有工作，不再有额外线程/节拍。慢平台首次
+        采集会让该帧变长（固定 60Hz 节拍不降频，慢帧连续运转）。
+        """
+        self.get_cpu_percent()
+        self.get_memory_percent()
         return (self._cpu_percent, self._mem_percent)
 
-    def _start_bg_refresh(self) -> None:
-        """启动后台刷新线程（幂等；daemon 线程随进程退出自动终止）。
-
-        ★ P2-1（review 方向）：检查/置位在 ``_bg_lock`` 内原子完成——修复前
-        无锁（``self._bg_started = True`` 在启动前裸置位），并发首次调用
-        （get_cpu_and_mem 双线程同时通过 ``not self._bg_started`` 检查）可
-        启动双后台线程。锁内二次检查保证仅启动一个。
-        """
-        with self._bg_lock:
-            if self._bg_started:
-                return
-            self._bg_started = True
-            self._bg_stop.clear()
-            try:
-                t = threading.Thread(target=self._bg_loop, daemon=True,
-                                     name="tui-sysmon")
-                self._bg_thread = t
-                t.start()
-            except Exception:
-                _logger.debug("系统监控后台线程启动失败", exc_info=True)
-                self._bg_started = False
-                self._bg_thread = None
-
     def stop(self) -> None:
-        """停止后台刷新线程（幂等；会话 stop 时调用）。"""
-        with self._bg_lock:
-            if not self._bg_started:
-                return
-            self._bg_started = False
-            self._bg_stop.set()
-            thread = self._bg_thread
-            self._bg_thread = None
-        if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=self.STOP_JOIN_TIMEOUT)
+        """停止（帧驱动后无后台线程——保留 API 兼容，幂等 no-op）。"""
+        return
 
-    def _bg_loop(self) -> None:
-        """后台刷新循环：每 2 秒采集一次 CPU/MEM（get_* 内部含 1s TTL 缓存）。
-
-        使用 ``Event.wait`` 而非 ``sleep``：stop() 可立即唤醒退出，避免
-        daemon 线程在进程/会话结束后继续采样（修复前无停止入口）。
-        """
-        while not self._bg_stop.is_set():
-            try:
-                self.get_cpu_percent()
-                self.get_memory_percent()
-            except Exception:
-                _logger.debug("系统监控后台刷新异常", exc_info=True)
-            if self._bg_stop.wait(self._bg_interval):
-                break
 
     def _read_cpu_proc_stat(self) -> float:
         try:

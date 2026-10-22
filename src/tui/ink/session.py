@@ -168,10 +168,10 @@ def _release_high_resolution_timer() -> None:
 class RenderLoopPhase(Enum):
     """渲染循环单帧阶段（架构改进方向 E，2026-08-16：显式状态迁移）。
 
-    ``_drain_queue`` 按本枚举驱动单帧七阶段处理，阶段迁移显式化：
+    ``_drain_queue`` 按本枚举驱动单帧八阶段处理，阶段迁移显式化：
 
-      SIGWINCH → INPUT → PANELS → SYSTEM_STATS → DRAIN_COMMANDS
-      → APPLY → RENDER（终态，返回本帧是否有命令变更）
+      SIGWINCH → INPUT → FRAME_TICKS → PANELS → SYSTEM_STATS
+      → DRAIN_COMMANDS → APPLY → RENDER（终态，返回本帧是否有命令变更）
 
     显式迁移收益：
       - 阶段顺序可读/可测（原隐式顺序仅靠注释维系）；
@@ -182,6 +182,8 @@ class RenderLoopPhase(Enum):
     SIGWINCH = "sigwinch"
     #: 输入事件分发（stdin 读取/解析/缓冲）
     INPUT = "input"
+    #: 帧驱动回调（解析进度等——所有 60Hz 周期工作统一由本帧驱动）
+    FRAME_TICKS = "frame_ticks"
     #: 面板刷新回调（subagent 面板等）
     PANELS = "panels"
     #: 系统监控采集（CPU/MEM，2s 节流）
@@ -336,6 +338,11 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         # ★ 方向3（resize 全量刷新）：终端尺寸变化（width/height 任一）置位，
         #   _render_frame 消费后重置渲染器 prev——resize 后全量重写而非增量 diff。
         self._resize_pending: bool = False
+        # ★ 2026-10-23（game_loop 单次调用）：清屏请求标志——外部线程/渲染
+        #   线程内的 clear_screen/request_clear 只置位，由**帧内**统一执行
+        #   ``model.reset_display()`` + ``InkRenderer.full_clear()``（终端写入
+        #   与模型变更都收敛到 render 线程单次调用内）。
+        self._clear_pending: bool = False
         # ★ 2026-10-20（用户需求：启动时从「当前光标下一行」开始渲染）：
         #   首帧尺寸基准同步标志。上方 ``_last_render_*`` 初始为 0，首帧必然
         #   看到「尺寸变化」——修复前该变化被当作 resize 处理
@@ -742,27 +749,27 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         清空模型显示状态（``model.reset_display()``，保留 status/输入）→
         渲染器全帧清屏（``full_clear``）→ 立即重建空文档。scrollback 历史
         保留；会话消息内存不受影响。调用方须保证非流式（生成中忽略）。
+
+        ★ 2026-10-23（game_loop 单次调用）：模型重置 + 终端清屏 + 重建统一
+        收敛到 render 线程的**下一帧单次调用内**（``_clear_pending`` 标志由
+        ``_apply_pending_clear`` 消费）——非渲染线程不再直接改模型 / 写终端 /
+        渲染帧。仅 render 线程未运行（suspend 期间）保留同步例外路径：此时
+        没有 game_loop 可用，交互工具仍需要一个立即可见的干净屏幕。
         """
-        if self._model is not None:
-            try:
-                self._model.reset_display()
-            except Exception:
-                _logger.debug("clear_screen reset_display 异常", exc_info=True)
-        try:
-            self._ink_renderer.full_clear()
-        except Exception:
-            _logger.debug("clear_screen full_clear 异常", exc_info=True)
-        # ★ P3（review）：渲染线程内（INPUT 阶段回调）不重入 ``_render_frame``
-        #   ——修复前构成「_drain_queue 的 INPUT 阶段内嵌套一次完整调和+渲染」，
-        #   随后 DRAIN/RENDER 阶段再渲染一帧（双帧开销），且嵌套渲染期间
-        #   ``_on_input_router`` 会替换 dispatcher 正在使用的 router，且不经
-        #   输出锁（``request_bottom_redraw`` 的同步渲染有锁保护，本处没有）。
-        #   改为置脏标记交由本帧 RENDER 阶段统一渲染（``_should_render`` 见脏
-        #   即渲染）；非渲染线程调用保持同步渲染语义（外部 API 期望立即重建）。
+        self._clear_pending = True
+        self._dirty = True
+        self._bottom_redraw_requested.set()
+        self._cmd_event.set()
         if threading.current_thread() is self._render_thread:
-            self._dirty = True
-            self._bottom_redraw_requested.set()
+            # 渲染线程内（INPUT 阶段回调）：交给本帧 RENDER 阶段统一执行，
+            # 不重入调和/渲染（避免嵌套帧与 router 替换）。
             return
+        if self._render_running:
+            # 等下一帧完成清屏（正常 ≤1/60s；慢帧按超时降级，不永久阻塞）。
+            self._await_frame_advance(1, timeout=2.0)
+            return
+        # 例外（render 线程未运行）：无 game_loop 驱动，同步完成清屏 + 重建。
+        self._apply_pending_clear()
         try:
             # 清屏后立即重建（显式渲染请求）→ 禁用空闲帧复用
             self._idle_ok = False
@@ -774,23 +781,67 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             self._dirty = True
             _logger.debug("clear_screen 重建空文档异常", exc_info=True)
 
+    def _apply_pending_clear(self) -> None:
+        """帧内消费清屏请求：重置模型显示 + 终端全帧清屏（幂等）。
+
+        调用时机：``_render_frame_impl`` 开头（render 线程单次调用内），或
+        render 线程未运行时的同步例外路径（``clear_screen``）。
+        """
+        if not getattr(self, "_clear_pending", False):
+            return
+        self._clear_pending = False
+        if self._model is not None:
+            try:
+                self._model.reset_display()
+            except Exception:
+                _logger.debug("清屏 reset_display 异常", exc_info=True)
+        try:
+            self._ink_renderer.full_clear()
+        except Exception:
+            _logger.debug("清屏 full_clear 异常", exc_info=True)
+        # 清屏后必须全量重建（禁用空闲帧复用）。
+        self._idle_ok = False
+        self._dirty = True
+
+    def _await_frame_advance(self, count: int = 1, timeout: float = 2.0) -> bool:
+        """等待 render 线程再完成 ``count`` 帧（不触发外部同步渲染）。
+
+        供非渲染线程的「请求—等待下一帧」语义使用（``clear_screen`` 等）：
+        只投递请求并等帧序号推进，渲染工作全部由 game_loop 单次调用完成。
+
+        Returns:
+            True — 目标帧已完成；False — 超时 / render 线程未运行。
+        """
+        thread = self._render_thread
+        if thread is None or not thread.is_alive():
+            return False
+        event = threading.Event()
+        with self._frame_seq_lock:
+            target = self._frame_seq + max(1, int(count))
+            self._frame_flush_waiters.append((target, event))
+        # 唤醒渲染线程（若其正在节流等待）
+        self._cmd_event.set()
+        done = event.wait(timeout)
+        if not done:
+            with self._frame_seq_lock:
+                self._frame_flush_waiters = [
+                    w for w in self._frame_flush_waiters if w[1] is not event
+                ]
+        return done
+
     def request_clear(self) -> None:
         """请求全帧清屏重绘（useApp().clear 触发）。
 
         非全屏模型无 DECSTBM 清屏——实现为**先清屏再强制全量重绘**：
         ``full_clear()`` 写入 ``clear_screen()``（``\\033[2J\\033[H``）并重置
         渲染状态 → 下一帧从空文档全量写入。修复前仅 ``reset()``（置 prev=None）
-        不清屏——新帧比旧文档短时旧行残留在可见区。``reset()`` 保留调用
-        （测试契约：渲染器状态重置显式调用）。
+        不清屏——新帧比旧文档短时旧行残留在可见区。
+
+        ★ 2026-10-23（game_loop 单次调用）：清屏动作统一置
+        ``_clear_pending``，由下一帧（或 render 线程未运行时的同步例外路径）
+        在帧内执行，不在调用线程直接写终端。
         """
-        try:
-            self._ink_renderer.reset()
-        except Exception:
-            _logger.debug("request_clear reset 异常", exc_info=True)
-        try:
-            self._ink_renderer.full_clear()
-        except Exception:
-            _logger.debug("request_clear full_clear 异常", exc_info=True)
+        self._clear_pending = True
         self.request_bottom_redraw()
 
     def is_render_running(self) -> bool:
@@ -890,26 +941,9 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             self._cmd_event.set()
             _logger.warning("flush_input_router 在渲染线程内调用，改为请求下一帧")
             return False
-        # ★ 主动同步渲染（消除时序窗口）：拿渲染互斥后由**本线程**渲染一帧
-        #   ——返回时 router 已按最新模型重建，无需「猜帧数」等待（修复前
-        #   依赖渲染线程完成 2 帧，慢渲染下窗口长且只能靠超时兜底）。
-        #   ``_render_lock`` 与渲染线程常规帧互斥（不会并发写 stream）。
-        #   stub（无 ``_render_lock``）走下方回退路径（既有等待语义）。
-        lock = getattr(self, "_render_lock", None)
-        if lock is not None:
-            acquired = lock.acquire(timeout=max(0.1, float(timeout)))
-            if acquired:
-                try:
-                    # 同步渲染为显式请求 → 禁用空闲帧复用（须重建以发布新 router）
-                    self._idle_ok = False
-                    self._render_frame()
-                    return True
-                except Exception:
-                    _logger.warning("flush_input_router 同步渲染异常", exc_info=True)
-                    return False
-                finally:
-                    lock.release()
-            _logger.warning("flush_input_router 获取渲染锁超时，降级为等待渲染线程")
+        # ★ 2026-10-23（game_loop 单次调用）：不再由调用线程主动渲染一帧
+        #   ——渲染只允许由 render 线程的每拍单次调用完成。这里只投递重绘
+        #   请求并等待帧序号推进（目标 2 帧：避免等到「清理前模型」的旧帧）。
         ev = threading.Event()
         with self._frame_seq_lock:
             target = self._frame_seq + 2
@@ -1564,13 +1598,18 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                     )
 
     def _drain_queue(self) -> bool:
-        """单帧处理：七阶段显式状态机（架构改进方向 E，2026-08-16）。
+        """单帧处理：八阶段显式状态机（架构改进方向 E，2026-08-16）。
 
-        阶段迁移：``SIGWINCH → INPUT → PANELS → SYSTEM_STATS →
-        DRAIN_COMMANDS → APPLY → RENDER``（RENDER 为终态，返回本帧是否有
+        阶段迁移：``SIGWINCH → INPUT → FRAME_TICKS → PANELS → SYSTEM_STATS
+        → DRAIN_COMMANDS → APPLY → RENDER``（RENDER 为终态，返回本帧是否有
         命令变更）。各阶段职责与改动前完全一致（行为零变化）——仅将隐式
         顺序改写为显式阶段迁移（``RenderLoopPhase``），阶段可独立测试/
         扩展，未来插入新阶段（如崩溃恢复检查）不破坏既有流程。
+
+        ★ 2026-10-23（用户需求：单次调用完成所有工作，像游戏引擎的
+        game_loop）：本方法是 render 线程**每拍唯一一次**帧入口——一次调用
+        内依次完成输入排空、全部 60Hz 帧驱动工作、面板刷新、系统采集、
+        命令排空/应用、渲染与提交，不把任何阶段的工作留给另一次调用。
 
         设计要点（保留自重构前注释）：
           - 输出锁仅保护队列排空（DRAIN_COMMANDS 阶段）——命令应用（APPLY）
@@ -1579,9 +1618,8 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             亦不持锁。
           - 锁不可用（DRAIN_COMMANDS 超时未获取）→ 跳过本帧（返回 False，
             不渲染），与旧行为一致。
-          - P3-20：渲染本身不受锁互斥（request_bottom_redraw 同步渲染可能
-            与本线程渲染并行，双写终端——output lock 串行化写入防撕裂，
-            双帧顺序不确定性可接受）；若未来需要渲染互斥，应引入独立渲染锁。
+          - 渲染互斥（``_render_lock``）已在 ``_render_frame`` 内串行化外部
+            同步帧（仅 render 线程未运行时的例外路径——suspend 期间）。
         """
         phase = RenderLoopPhase.SIGWINCH
         commands: list = []
@@ -1592,6 +1630,9 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                 phase = RenderLoopPhase.INPUT
             elif phase is RenderLoopPhase.INPUT:
                 self._phase_process_input()
+                phase = RenderLoopPhase.FRAME_TICKS
+            elif phase is RenderLoopPhase.FRAME_TICKS:
+                self._phase_run_frame_ticks()
                 phase = RenderLoopPhase.PANELS
             elif phase is RenderLoopPhase.PANELS:
                 self._phase_pre_update_panels()
@@ -1801,13 +1842,32 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         ★ 2026-10-20（用户需求：input 处理改成 60Hz）：本阶段位于
         ``_drain_queue`` 的固定阶段链（SIGWINCH → INPUT → ...），由
         ``_render`` 循环每拍调用一次；渲染线程 60Hz 节拍下输入轮询同为
-        60Hz，不跳帧、不降采样、不减少单帧输入处理预算。
+        60Hz，不跳帧、不降采样。
+
+        ★ 2026-10-23（game_loop 单次调用）：``process_events`` 已改为
+        **单次调用排空全部输入**（无 4096 事件 / 20ms 预算），本阶段一次性
+        处理完本帧所有待处理输入再进入后续阶段。
         """
         if self._input is not None:
             try:
                 self._input.process_events()
             except Exception:
                 _logger.warning("_phase_process_input 异常", exc_info=True)
+
+    def _phase_run_frame_ticks(self) -> None:
+        """FRAME_TICKS 阶段：本帧单次驱动全部 60Hz 周期工作。
+
+        ★ 2026-10-23（用户需求：render 线程只有 60Hz 且不能改变；单次调用
+        完成所有工作，像游戏引擎的 game_loop）：解析进度等原先各自持有
+        60Hz 定时任务/线程的子系统，统一注册到 ``core.frame_tick`` 注册表，
+        由本阶段每拍调用一次——不再有多套独立节拍。
+        """
+        try:
+            from src.core.frame_tick import get_frame_tick_registry
+
+            get_frame_tick_registry().run()
+        except Exception:
+            _logger.warning("帧驱动回调阶段异常", exc_info=True)
 
     def _phase_pre_update_panels(self) -> None:
         if self._panel_refresh_cb is not None:
