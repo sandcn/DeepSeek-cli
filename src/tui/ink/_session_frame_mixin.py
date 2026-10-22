@@ -51,6 +51,7 @@ from src.tui.ink._cmd_priority import _get_cmd_id, _cmd_name
 from src.tui.ink import components as _components
 from src.tui.ink import hooks as _hooks
 from src.tui.ink import _cursor
+from src.tui.ink import _stream_height
 from src.tui.ink._animation import advance_animation, has_active_animations
 
 _logger = logging.getLogger(__name__)
@@ -106,6 +107,12 @@ class _SessionFrameMixin:
     _width_cache: Any
     _config: Any
     _input_fiber: Any
+    #: 下屏（``dataFloatAnchor="bottom_area"``）fiber 缓存（高度锁定补白锚点）
+    _bottom_area_fiber: Any
+    #: 流式高度锁定器（``_stream_height.StreamHeightLock``）
+    _height_lock: Any
+    #: 最近一帧实际补白行数（诊断/测试用）
+    _frame_bottom_pad: int
     _last_render_width: int
     _last_render_height: int
     _last_size_poll: float
@@ -359,6 +366,9 @@ class _SessionFrameMixin:
         # ★ 2026-10-23（game_loop 单次调用）：清屏请求在帧内统一消费——
         #   模型 reset_display + 终端 full_clear 都发生在 render 线程本帧，
         #   外部线程只置 ``_clear_pending``（见 InkSession.clear_screen）。
+        # ★ 2026-10-23（流式高度锁定）：清屏/resize 会重建文档坐标系，
+        #   必须重置高度锁定高水位（否则下一帧按旧高水位补出大段空白）。
+        lock_reset = bool(getattr(self, "_clear_pending", False))
         apply_clear = getattr(self, "_apply_pending_clear", None)
         if callable(apply_clear):
             apply_clear()
@@ -471,6 +481,9 @@ class _SessionFrameMixin:
         #   full=True；其余路径均走增量 diff。
         if getattr(self, "_resize_pending", False):
             self._resize_pending = False
+            # ★ 2026-10-23（流式高度锁定）：resize/清屏重建文档坐标系——
+            #   重置高水位，避免按旧高度补出错误空白。
+            lock_reset = True
             self._ink_renderer.reset(full=True)
             # ★ 2026-10-20（resize 布局不跟随修复）：本帧禁止空闲帧复用。
             #   修复前 ``_resize_pending`` 在此即被清除，下方
@@ -499,9 +512,12 @@ class _SessionFrameMixin:
         #   False → 本拍强制重建，重绘当前状态的界面。
         static_now = self._idle_static_now()
         frame: Any = None
+        #: 本帧是否实际重建（True 时才应用高度锁定；复用帧已含上一帧补白）
+        built_frame = False
         if self._should_reuse_idle_frame(static_now) and self._last_frame is not None:
             frame = self._last_frame
         else:
+            built_frame = True
             # ★ P1 修复（layout effect 更新时序）：effects 在 reconciler.render
             #   内提交，其中的 set_state 只排队到下一帧；但绘制发生在
             #   reconciler.render 之后（render_frame），因此 effect 更新不会
@@ -544,6 +560,12 @@ class _SessionFrameMixin:
             #   复用帧不更新该时间（否则 ``_float_refresh_due`` 永远不到期，
             #   计时浮窗会冻结）。
             self._last_frame_built_at = time.monotonic()
+        # ★ 2026-10-23（流式高度锁定）：实际重建帧后按高水位补白（下屏之前），
+        #   防止流式期间解析进度行消失 / Markdown 预览重排等**合法高度缩短**
+        #   让上方内容整体跳动一行。复用帧已含上一帧补白，不重复处理。
+        if built_frame:
+            frame = self._apply_stream_height_lock(frame, reset=lock_reset)
+            self._last_frame = frame
         # ★ 输出历史接线（committed 内容行数）：InkRenderer 只回调 committed
         #   区的**新增内容行**（修复前用文档末尾行区间推断 → 状态栏/输入区/
         #   时间线被反复写入输出历史且真正内容行漏记）。committed_lines 为
@@ -603,6 +625,102 @@ class _SessionFrameMixin:
                 advance()
             except Exception:
                 _logger.debug("_advance_frame_seq 异常", exc_info=True)
+
+    # ── 流式高度锁定（防内容整体跳行） ───────────────
+
+    def _stream_height_active(self) -> bool:
+        """当前是否处于需要「高度锁定」的活跃期。
+
+        与空闲帧复用的静态预测口径一致（流式输出/工具执行/参数解析中），
+        任一为真即视为活跃：``status.status_active``（模型阶段）、
+        ``model.tool_boxes``（工具卡运行）、``model.parse_line``（解析进度行）。
+
+        Returns:
+            True — 活跃（文档高度变化应被锁定）；False — 空闲。
+        """
+        model = self._model
+        if model is None:
+            return False
+        status = getattr(model, "status", None)
+        if status is not None and getattr(status, "status_active", False):
+            return True
+        if getattr(model, "tool_boxes", None):
+            return True
+        return getattr(model, "parse_line", None) is not None
+
+    def _find_bottom_area_fiber(self):
+        """查找（并缓存）下屏 fiber（高度锁定补白锚点）。
+
+        下屏是 App 根组件中包裹状态栏 + 输入区的 Box，带
+        ``dataFloatAnchor="bottom_area"``。fiber 跨帧由调和器复用；缓存
+        失效条件：被删除 / props 标记变化（如模态底部视图替换）→ 重新遍历。
+
+        Returns:
+            下屏 host fiber；未找到返回 None。
+        """
+        fiber = getattr(self, "_bottom_area_fiber", None)
+        if (
+            fiber is not None
+            and not getattr(fiber, "deleted", False)
+            and isinstance(getattr(fiber, "props", None), dict)
+            and fiber.props.get("dataFloatAnchor") == "bottom_area"
+        ):
+            return fiber
+        fiber = _stream_height.find_bottom_area(self._root_fiber)
+        self._bottom_area_fiber = fiber
+        return fiber
+
+    def _apply_stream_height_lock(self, frame, *, reset: bool = False):
+        """应用流式高度锁定：必要时在**下屏之前**补空行，返回（可能新的）帧。
+
+        设计见 ``_stream_height`` 模块 docstring。关键点：
+
+          - 只在实际**重建帧**后调用（空闲复用帧已含上一帧的补白，不重复补）；
+          - 补白插在下屏 fiber 的 ``layout_box.y`` 之前，同时把下屏子树
+            layout_box.y 下移同样的行数——``_position_cursor`` 读输入区
+           布局盒定位光标，必须与补白后的物理位置一致；
+          - 浮窗 / 全屏视图 / 模态底部视图 / 未知屏幕高度不锁定（补白会
+            破坏浮窗锚点/模态布局）；
+          - 清屏 / resize 时重置高水位（``reset=True``）。
+
+        Args:
+            frame: 本帧（实际重建的帧）。
+            reset: True 时先释放锁定（清屏/resize）。
+
+        Returns:
+            补白后的新 Frame（无需补白时原样返回）。
+        """
+        lock = getattr(self, "_height_lock", None)
+        if lock is None or frame is None:
+            return frame
+        if reset:
+            lock.reset()
+        model = self._model
+        if model is None:
+            return frame
+        disabled = bool(
+            getattr(model, "fullscreen", "")
+            or getattr(model, "bottom_view", "")
+            or getattr(model, "floating_windows", None)
+            or getattr(frame, "base_lines", None) is not None
+            or int(getattr(self._ink_renderer, "_height", 0) or 0) <= 0
+        )
+        bottom = None if disabled else self._find_bottom_area_fiber()
+        bottom_y = 0
+        box = getattr(bottom, "layout_box", None)
+        if box is not None:
+            bottom_y = int(getattr(box, "y", 0) or 0)
+        pad = lock.update(
+            active=self._stream_height_active(),
+            height=int(frame.height),
+            bottom_y=bottom_y,
+            disabled=disabled,
+        )
+        self._frame_bottom_pad = pad
+        if pad <= 0 or bottom is None:
+            return frame
+        _stream_height.shift_subtree_y(bottom, pad)
+        return _stream_height.pad_frame(frame, bottom_y, pad)
 
     # ── 系统监控 ─────────────────────────────────────
 

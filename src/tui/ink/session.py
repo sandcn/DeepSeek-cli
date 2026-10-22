@@ -37,6 +37,7 @@ from src.tui._screen import (
 )
 from .reconciler import Reconciler
 from .renderer import InkRenderer
+from ._stream_height import StreamHeightLock
 from .terminal import RawModeController, TerminalModeManager
 from . import hooks as _hooks
 # ★ 命令优先级策略（方向B 拆分，2026-08-05）：优先级常量与映射函数自
@@ -405,6 +406,16 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #: 最近一帧**实际重建**时刻（monotonic；空闲帧复用不更新）——
         #: 浮窗 ``refresh_interval`` 到期判定基准（``_float_refresh_due``）。
         self._last_frame_built_at: float = 0.0
+        # ── 流式高度锁定（2026-10-23，防内容整体跳行） ──
+        #: 流式/工具执行期间按文档高度高水位补白（插在下屏之前），避免解析
+        #: 进度行消失 / Markdown 预览重排等合法高度缩短让上方内容整体跳动。
+        #: 见 ``_stream_height.StreamHeightLock`` 与
+        #: ``_SessionFrameMixin._apply_stream_height_lock``。
+        self._height_lock = StreamHeightLock()
+        #: 下屏 fiber 缓存（补白锚点；``dataFloatAnchor="bottom_area"``）
+        self._bottom_area_fiber = None
+        #: 最近一帧实际补白行数（诊断/测试用）
+        self._frame_bottom_pad: int = 0
 
     # ── 注入 ─────────────────────────────────────────
 

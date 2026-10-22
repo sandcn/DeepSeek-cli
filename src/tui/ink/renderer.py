@@ -17,11 +17,13 @@ PERF-4 / 增量细化：
   - **差异区间重写**（取代旧的"首差异行→末尾全重写"）：头部动画（如标题栏
     呼吸色时间桶变化）只改动首行时仅重写首行，不再引发整帧重写——大文档下
     每帧输出从 O(文档) 降为 O(变更行)。
-  - 单帧重写行数上限 ``_MAX_REWRITE_ROWS``：实际待重写行数（差异区间行数 +
-    高度差行数）超限时**降级为一次受控全量重写**（``clear_screen`` + 单次
-    全量写入）——行数已与文档同阶时逐区间重写并不更快，且叠加数千次光标
-    移动与多次写入会长时间冻结 UI；降级全程单缓冲单次 write，无逐行 flush
-    闪烁。阈值内的常规帧一律增量（无 clear_screen）。
+  - 单帧重写行数告警阈值 ``_LARGE_REWRITE_WARN_ROWS``：实际待重写行数
+    （差异区间行数 + 高度差行数）超过该值时**仅记录限频告警日志**，渲染
+    路径仍然一律增量（**不清屏、不重写整篇文档**）。修复前超限会降级为
+    ``clear_screen`` + ``_write_full``：大输出帧（工具一次刷数百行）在
+    Termux 上表现为整片瞬时重绘/跳动，并把整篇历史重复写进 scrollback；
+    而增量路径此时正是「写必须显示的新增行」，重写量本就与输出量同阶，
+    清屏全量只会更慢、更闪。
 
 不切换备用屏幕、不用 DECSTBM——内容自然流入 scrollback。
 
@@ -33,8 +35,8 @@ PERF-4 / 增量细化：
 （``_rewrite_drifted``/``_grow_drifted`` 物理映射）与缩短/增长/等高**进入屏幕内**
 （文档底部对齐可见区底部，负偏移模型 ``_effective_offset`` 供 place_cursor）。
 说明：
-  1. ``_MAX_REWRITE_ROWS`` 超限降级为**受控全量重写**（clear + 单次全量写入，
-     防病态大重写冻结 UI；见上）；阈值内帧一律增量；
+  1. ``_LARGE_REWRITE_WARN_ROWS`` 超限**只记限频告警**（见上），渲染仍走
+     增量路径——不清屏、不整篇重写（清屏全量反而放大闪烁与 scrollback 冗余）；
   2. ``reset(full=False)`` / ``suspend()`` / ``full_clear()`` 使用空帧作为 prev
      （Frame([]), height=0）——与空帧 diff 等价于逐行写入但不触发 clear_screen，
      保持增量路径一致性；
@@ -59,6 +61,7 @@ from __future__ import annotations
 import io
 import logging
 import sys
+import time
 from typing import cast
 
 from src.tui._screen import (
@@ -80,8 +83,20 @@ _logger = logging.getLogger(__name__)
 # 行尾清除（防止旧行尾部残留）
 _CLEAR_EOL = "\033[K"
 
-# PERF-4：单帧重写行数上限（防病态大重写冻结 UI）
-_MAX_REWRITE_ROWS = 200
+#: 单帧重写行数告警阈值（**只告警，不降级**）。
+#:
+#: ★ 2026-10-23（流式输出闪烁修复）：修复前超阈值会降级为
+#:   ``clear_screen()`` + ``_write_full(frame)``——一次大输出帧（工具
+#:   read/bash/grep 一次刷数百行，或模型单 chunk 输出数百行）在 Termux 上
+#:   表现为整片瞬时清屏/重绘（用户报障「流式输出时会闪」「内容整体跳动
+#:   一行后恢复」），且会把整篇历史重复写进 scrollback（大文档单帧写
+#:   700+ 行）。增量路径此时写的是「必须显示的新增行」，量级与输出本身
+#:   同阶；清屏全量只会更大更闪。现超阈值仅记录限频告警（每 1s 至多一条），
+#:   便于观察极端重写，不影响正确性与渲染路径。
+_LARGE_REWRITE_WARN_ROWS = 200
+
+#: 大重写告警限频间隔（秒）——流式期间大输出可能连续多帧超阈值，避免日志刷屏。
+_LARGE_REWRITE_WARN_INTERVAL = 1.0
 
 #: committed 内容行在文档中的起始行号（0-based）——App 组件树首元素
 #: ``TopHeader`` 恒占文档第 0 行（单行渐变标题栏），committed 聊天历史
@@ -197,6 +212,10 @@ class InkRenderer(_RendererContentMixin):
         #   首帧（``_prev is None`` 且未经 reset）不置位——不得清掉用户
         #   终端里已有的历史输出。
         self._clear_before_full: bool = False
+        #: 上次「单帧重写行数超告警阈值」告警时刻（monotonic）——流式大输出
+        #: 可能连续多帧超阈值，按 ``_LARGE_REWRITE_WARN_INTERVAL`` 限频，
+        #: 避免日志刷屏（仅观测用途，不改变渲染路径）。
+        self._large_rewrite_warn_at: float = 0.0
 
     # ── 启动起始行锚定（用户需求：光标行 + 1） ──────────
 
@@ -536,7 +555,7 @@ class InkRenderer(_RendererContentMixin):
             # 帧完全一致：仅刷新光标位置（调用方自行 place_cursor）
             return
 
-        # 本帧将写终端（平移/增长/漂移重写/差异区间重写/降级全量）：
+        # 本帧将写终端（平移/增长/漂移重写/差异区间重写）：
         # 写入期间大量 cursor_up/down/forward + 重写，先隐藏光标避免跳动闪烁。
         self._hide_cursor_for_write()
 
@@ -665,48 +684,36 @@ class InkRenderer(_RendererContentMixin):
 
         if delta == 0:
             runs = self._diff_runs(self._prev, frame, min(prev_h, new_h), start=i)
-            # ★ PERF-4 单帧重写行数上限：超限时降级（避免病态大重写冻结 UI）。
+            # ★ 单帧重写行数统计（仅用于超阈值告警，不改变渲染路径）。
             #   行数 = 实际待重写行数（delta==0 时为差异区间行数）。修复前用
-            #   ``new_h - i`` 高估——头部动画场景 i=0 但仅首行差异会误触发
-            #   降级，引发全屏闪烁。
+            #   ``new_h - i`` 高估——头部动画场景 i=0 但仅首行差异会误报。
             rewrite_count = sum(end - start for start, end in runs)
         else:
             runs = []
-            # ★ PERF-4 单帧重写行数上限（delta!=0）：头部差异区间 + 位移区 +
-            #   高度变化（delta<0 时清除残留行）——病态大重写降级防冻结 UI。
+            # ★ 单帧重写行数统计（delta!=0，仅用于超阈值告警）：头部差异区间
+            #   + 位移区 + 高度变化（delta<0 时清除残留行）。
             rewrite_count = (
                 sum(end - start for start, end in head_runs)
                 + max(0, new_h - min(shift_start, new_h))
                 + max(0, prev_h - new_h)
             )
-        if rewrite_count > _MAX_REWRITE_ROWS:
-            # ★ 病态大重写保护（恢复）：超限时降级为**一次受控全量重写**
-            #   （clear_screen + 单次全量写入）——差异区间重写此时并不比重写
-            #   更快（行数已与文档同阶），而逐区间还叠加数千次光标移动与
-            #   多次 flush 风险，会长时间冻结 UI。降级全程单缓冲单次 write，
-            #   无逐行 flush 闪烁；clear 保证无残留（等价于窗口 resize 的
-            #   全量路径语义）。
-            _logger.warning(
-                "单帧重写行数 %d 超上限 %d，降级为受控全量重写",
-                rewrite_count, _MAX_REWRITE_ROWS,
-            )
-            try:
-                self._stream.write(clear_screen())
-                self._stream.flush()
-            except Exception:
-                _logger.debug("全量重写降级清屏异常", exc_info=True)
-            self._cursor_row = 1
-            self._buf_h = 0
-            self._top_aligned = True
-            # ★ 2026-10-22：已清屏——屏幕干净，重置会话写入范围允许清理整屏。
-            self._painted_top = 0
-            self._start_row = None
-            # 本路径已清屏；避免 _write_full 二次清屏（幂等但多一次 ED 序列）。
-            self._clear_before_full = False
-            self._prev = None
-            self._write_full(frame)
-            self._prev = frame
-            return
+        if rewrite_count > _LARGE_REWRITE_WARN_ROWS:
+            # ★ 2026-10-23（流式输出闪烁修复）：**只告警，不降级**。
+            #   修复前这里 clear_screen + _write_full（整篇文档重写）：
+            #   - 大输出帧（工具一次刷数百行）在 Termux 上整片瞬时重绘，
+            #     用户看到「闪/整体跳动一下」；
+            #   - 整篇历史被重复写进 scrollback（文档 700 行时单帧写 700 行），
+            #     而增量路径只写「需要显示的新增/变化行」，量级与输出同阶，
+            #     清屏全量严格更慢。
+            #   保留限频告警便于观察极端重写；渲染继续走下方增量路径。
+            now = time.monotonic()
+            last = self._large_rewrite_warn_at
+            if now - last >= _LARGE_REWRITE_WARN_INTERVAL:
+                self._large_rewrite_warn_at = now
+                _logger.warning(
+                    "单帧重写行数 %d 超过告警阈值 %d（继续增量渲染，不清屏）",
+                    rewrite_count, _LARGE_REWRITE_WARN_ROWS,
+                )
 
         # ★ 渲染策略按高度差分流：
         #   - 等高（delta==0）：逐差异区间重写（增量渲染细化）——头部动画
