@@ -10,7 +10,35 @@
 
 from __future__ import annotations
 
-from .output import Frame
+from .output import Frame, Line
+
+
+def _lines_equal(a: Line, b: Line) -> bool:
+    """两行内容是否相等（行级 diff 的唯一比较语义）。
+
+    与 ``Line.__eq__`` 同语义，但直接在函数体内做 O(1) 快速拒绝（同对象 /
+    同 runs 列表 / run 数 / 已缓存宽度），不额外走一次 Python 方法调用——
+    行级 diff 每帧对 live 区所有非同一对象行调用本函数，方法调用开销在
+    大文档下可感知。
+
+    ★ 性能（2026-10-23）：修复前各 diff 函数直接 ``p.runs != f.runs``——
+      大文档每帧对未变化行执行完整 run 比较；现在宽度（已缓存时）/run 数
+      不同即拒绝。语义不变：宽度是 runs 的派生值，宽度不同必然内容不同。
+    """
+    if a is b:
+        return True
+    ra = a.runs
+    rb = b.runs
+    if ra is rb:
+        return True
+    if len(ra) != len(rb):
+        return False
+    wa = a._w
+    if wa is not None:
+        wb = b._w
+        if wb is not None and wa != wb:
+            return False
+    return ra == rb
 
 
 def _skip_interval(prev: Frame, frame: Frame) -> tuple[int, int]:
@@ -78,7 +106,28 @@ def _diff_runs(
             continue
         p = p_lines[idx]
         f = f_lines[idx]
-        differs = p is not f and p.runs != f.runs
+        # 身份短路内联 + 内容比较内联（不调用 helper）：本函数在 delta!=0
+        # 的流式帧与 delta==0 的差异收集中每帧扫描共有行，热路径避免每行
+        # 一次 Python 函数调用。比较语义与 ``_lines_equal`` 完全一致。
+        if p is f:
+            differs = False
+        else:
+            pr = p.runs
+            fr = f.runs
+            if pr is fr:
+                differs = False
+            elif len(pr) != len(fr):
+                differs = True
+            else:
+                pw = p._w
+                if pw is not None:
+                    fw = f._w
+                    if fw is not None and pw != fw:
+                        differs = True
+                    else:
+                        differs = pr != fr
+                else:
+                    differs = pr != fr
         if differs and not in_run:
             in_run = True
             run_start = idx
@@ -121,7 +170,7 @@ def _is_tail_shifted(self_prev: Frame, frame: Frame, i: int, delta: int) -> bool
     for k in range(count):
         x = p[i + k]
         y = n[start + k]
-        if x is not y and x.runs != y.runs:
+        if x is not y and not _lines_equal(x, y):
             return False
     return True
 
@@ -152,11 +201,18 @@ def _find_tail_anchor(prev: Frame, frame: Frame, delta: int) -> int:
         new_idx = j - 1 + delta
         if 0 <= new_idx < len(n):
             new_line = n[new_idx]
-            if old_line is new_line or old_line.runs == new_line.runs:
-                j -= 1
-                continue
+            if old_line is not new_line and not _lines_equal(old_line, new_line):
+                break
+            j -= 1
+            continue
         break
     return j
 
 
-__all__ = ["_diff_runs", "_is_tail_shifted", "_find_tail_anchor", "_skip_interval"]
+__all__ = [
+    "_lines_equal",
+    "_diff_runs",
+    "_is_tail_shifted",
+    "_find_tail_anchor",
+    "_skip_interval",
+]

@@ -281,10 +281,33 @@ class Line:
         需要值比较——旧实现为字符串列表值比较，迁移后 Line 默认身份比较恒
         不相等（每次空转推送）。本方法按 runs 值比较（StyledRun 为 frozen
         dataclass，值语义）。
+
+        ★ 性能（2026-10-23 行级比较器优化）：先做 O(1) 拒绝——
+          - ``self is other``：同对象恒等；
+          - ``runs is other.runs``：跨帧复用同一 runs 列表恒等；
+          - run 数不同：必然不等（列表长度检查本来也在 C 层，但这里提前到
+            字段访问）；
+          - 双方 ``_w`` 均已缓存且不同：显示宽度是 runs 的派生值，宽度不同
+            必然内容不同（``_w`` 只会经 ``append`` 与 runs 同步更新，原地改
+            runs 属违反不变式）。
+        以上均不成立时才走原 runs 值比较；语义与旧实现完全一致。
         """
+        if self is other:
+            return True
         if not isinstance(other, Line):
             return NotImplemented
-        return self.runs == other.runs
+        runs = self.runs
+        other_runs = other.runs
+        if runs is other_runs:
+            return True
+        if len(runs) != len(other_runs):
+            return False
+        w = self._w
+        if w is not None:
+            other_w = other._w
+            if other_w is not None and w != other_w:
+                return False
+        return runs == other_runs
 
     # ★ P3（review）：显式声明不可哈希（固化契约）——定义 ``__eq__`` 后
     #   Python 自动置 ``__hash__ = None``；Line 为**可变**对象（append 可

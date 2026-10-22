@@ -6,14 +6,16 @@ InkRenderer 用它决定从哪一行开始重写：静态内容在首差异行�
 from __future__ import annotations
 
 from .output import Frame
+from ._frame_diff import _lines_equal
 
 
 def first_diff_line(prev: Frame, new: Frame) -> int:
     """计算首差异行索引（0-based）。
 
     规则：
-      - 逐行比较 runs（StyledRun 冻结 dataclass 值相等）；首个不等行返回其索引。
-        直接比较 runs 而非 render()（ANSI 串），避免为未变化行构建 ANSI。
+      - 逐行比较 runs（``_frame_diff._lines_equal``：同对象 / 同 runs 列表 /
+        run 数 / 双方已缓存宽度先做 O(1) 拒绝，再值比较）。直接比较 runs
+        而非 render()（ANSI 串），避免为未变化行构建 ANSI。
       - 前缀完全一致但高度不同：返回较短的帧高度（从该行开始补写/清行）。
       - 完全一致（含高度）：返回 -1。
 
@@ -57,10 +59,14 @@ def first_diff_line(prev: Frame, new: Frame) -> int:
         if skip_lo <= i < skip_hi:
             i = skip_hi
             continue
-        # ★ 身份短路：缓存行（committed-chat）为同一对象 → O(1) 跳过比较
+        # ★ 身份/宽度短路（2026-10-23）：缓存行（committed-chat）为同一对象
+        #   → O(1) 跳过比较；内容比较统一走 ``_lines_equal``（同对象 / 同
+        #   runs 列表 / run 数 / 已缓存宽度快速拒绝，见 ``_frame_diff``）。
+        #   身份判断内联在循环里（大文档前缀区间恒为同对象，避免每行一次
+        #   函数调用——修复前 1900 行前缀会让 helper 调用本身成为主要开销）。
         p = p_lines[i]
         f = n_lines[i]
-        if p is not f and p.runs != f.runs:
+        if p is not f and not _lines_equal(p, f):
             return i
         i += 1
     if len(p_lines) != len(n_lines):

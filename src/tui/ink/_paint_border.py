@@ -209,6 +209,24 @@ def _paint_border(fiber: Fiber, canvas: list[dict], border: int, clip=None) -> N
     if y0 >= len(canvas):
         return
 
+    def _row_at(y):
+        """返回画布行原始值（``None`` / ``Line`` / ``dict``）。
+
+        ★ 2026-10-23 画布性能：顶/底边不再强制把 ``Line`` 归一化为 ``dict``
+        ——``_merge_line`` 已支持 Line 的 run 级合并（全段覆盖/右侧拼接），
+        避免「Line→dict→Line」每帧两次全行转换。左右边仍需逐列写键，继续
+        走 ``_prepare_row``（dict 归一化）。
+
+        Returns:
+            ``(True, row)``——行在画布内且未被裁剪；``(False, None)``——
+            越界/被裁剪（调用方跳过本行）。
+        """
+        if y < 0 or y >= len(canvas):
+            return False, None
+        if clip_y0 is not None and (y < clip_y0 or y >= clip_y1):
+            return False, None
+        return True, canvas[y]
+
     def _prepare_row(y) -> dict | None:
         """获取/创建画布行（含裁剪行范围检查）；越界返回 None。"""
         if y < 0 or y >= len(canvas):
@@ -232,8 +250,8 @@ def _paint_border(fiber: Fiber, canvas: list[dict], border: int, clip=None) -> N
     #   语义（角/填充按实际可见区间）。hx1<hx0（裁剪空交集）时跳过顶边——
     #   不能提前 return（底边/左右边仍需绘制）。
     if show_top:
-        row = _prepare_row(y0)
-        if row is not None:
+        ok, row = _row_at(y0)
+        if ok:
             hx0 = max(x0, clip_x0 if clip_x0 is not None else x0)
             hx1 = min(x1, clip_x1 - 1 if clip_x1 is not None else x1)
             if hx1 >= hx0:
@@ -257,8 +275,8 @@ def _paint_border(fiber: Fiber, canvas: list[dict], border: int, clip=None) -> N
                     canvas[y0] = _merge_line(row, hx0, Line.of(_text, top_style))
     # 底边（含左下/右下角）
     if show_bottom and y1 != y0:
-        row = _prepare_row(y1)
-        if row is not None:
+        ok, row = _row_at(y1)
+        if ok:
             hx0 = max(x0, clip_x0 if clip_x0 is not None else x0)
             hx1 = min(x1, clip_x1 - 1 if clip_x1 is not None else x1)
             if hx1 >= hx0:

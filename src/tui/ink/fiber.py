@@ -343,6 +343,11 @@ class Fiber:
     #: committed 前缀超宽行截断结果缓存 ``(src_prefix, src_len, truncated,
     #: width)``——``components.render_frame`` 维护（仅超宽前缀路径使用）。
     _truncated_prefix_cache: Any = None
+    #: 画布字典行 → Line 的跨帧复用缓存（2026-10-23 画布性能）：
+    #: ``{row_index: (canvas_row, width, Line)}``——``components._to_lines``
+    #: 在行值相等且渲染宽度相同时复用上一帧 Line（未变化行因此在行级 diff
+    #: 中命中身份短路）；``render_frame`` 每帧重建缓存并写回本字段。
+    _canvas_line_cache: Any = None
     #: 浮窗锚点/输入区查找缓存（``ink._floating`` 维护）：
     #: ``{"input": fiber, "anchors": {anchor: fiber}}``——命中前校验
     #: ``deleted`` 与对应 props 标记（``dataInputArea`` / ``dataFloatAnchor``），

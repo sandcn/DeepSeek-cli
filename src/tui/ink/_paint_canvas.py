@@ -15,6 +15,52 @@ from src.tui._width import wcswidth_simple
 from .output import Line
 
 
+def _is_single_width_run(text: str, width: int | None = None) -> bool:
+    """文本是否为「每个字符显示宽度恰为 1」（可逐字符写列键）。
+
+    ASCII 可打印走 C 级 ``isascii()`` + ``isprintable()`` 快路径；非 ASCII
+    （如边框用的 ``─│┌`` 等 width-1 符号）先比 ``width == len(text)``——
+    含宽字符（CJK/emoji，宽 2）或零宽字符（组合标记/ZWJ/VS，宽 0）时两者
+    必然不等（唯一例外是宽字符与零宽容量的数量恰好抵消，此时逐字符复核），
+    因此长 CJK/emoji 文本无需逐字符扫描即可判否。仅当 ``width == len`` 时
+    逐字符查 ``wcswidth_simple``（单字符走 ``char_width`` 有界缓存，约
+    50ns/字符）。
+
+    ★ 2026-10-23 性能：修复前只有 ASCII 走批量快路径，边框字符（U+2500
+    区段）每个字符都要进 ``grapheme_clusters`` 生成器 + ``_put_char``
+    （80 列边框行实测 ~127µs/行）；本判定后单宽字符直接逐字符写键。
+
+    Args:
+        text: run 文本。
+        width: 该 run 的已缓存显示宽度（``StyledRun.width``）；None 时现算。
+    """
+    if text.isascii():
+        return text.isprintable()
+    if not text or not text.isprintable():
+        return False
+    if width is None:
+        width = wcswidth_simple(text)
+    if width != len(text):
+        # 宽字符/零宽字符（或二者混合且数量不等）→ 不能按每字符 1 列写入。
+        return False
+    for ch in text:
+        if wcswidth_simple(ch) != 1:
+            return False
+    return True
+
+
+def _is_single_width_line(line: Line) -> bool:
+    """行内所有 run 均为「单宽字符」（见 ``_is_single_width_run``）。
+
+    ``_merge_line`` 的 run 级拼接快路径要求目标行/新行不含宽字符与零宽
+    字符——只有单宽字符时，按 run 拼接与按列键合并的逐字结果完全一致。
+    """
+    for run in line.runs:
+        if not _is_single_width_run(run.text, run.width):
+            return False
+    return True
+
+
 def _put_char(d: dict, col: int, ch: str, st, link: str | None = None) -> int:
     """将字符写入列键字典，返回下一个列键（零宽字符合并到前一键）。
 
@@ -101,20 +147,25 @@ def _line_as_dict(line: Line) -> dict:
     ★ 性能（2026-08-05）：纯可打印 ASCII run 走批量快路径——宽度 == 字符数
     （``isascii()`` + ``isprintable()`` C 实现单趟扫描），免逐字符
     ``wcswidth_simple`` 调用（渲染热路径画布转换以 ASCII 文本为主）。
+    ★ 性能（2026-10-23）：单宽非 ASCII（边框 ``─│┌`` 等）同样走批量快路径
+    （``_is_single_width_run``）——修复前边框逐字符进 ``grapheme_clusters``
+    + ``_put_char``，80 列边框行实测 ~127µs。
     """
     d: dict = {}
     col = 0
     for run in line.runs:
         t = run.text
+        st = run.style
+        lk = run.link
         if t.isascii() and t.isprintable():
-            st = run.style
-            lk = run.link
+            for ch in t:
+                d[col] = (ch, st, lk)
+                col += 1
+        elif _is_single_width_run(t, run.width):
             for ch in t:
                 d[col] = (ch, st, lk)
                 col += 1
         else:
-            st = run.style
-            lk = run.link
             for cluster in grapheme_clusters(t):
                 # ★ P1-1 修复：零宽字符合并到前键（见 _put_char）；
                 #   字形簇整体写入（skin tone/keycap/ZWJ 不拆成多格）。
@@ -137,60 +188,116 @@ def _ensure_row_dict(row) -> dict:
     return row
 
 
-def _overlaps_wide_second_col(row: dict, slice_: dict) -> bool:
-    """检测 slice_ 是否存在「新字符落在既有宽字符第二列」的冲突（E2）。
+def _overlaps_wide_second_col(row: dict, boundaries) -> bool:
+    """检测待合并片段是否存在「新字符落在既有宽字符第二列」的冲突（E2）。
 
-    条件：任一 ``c in slice_`` 满足——``c > 0`` 且 ``(c-1) in row`` 且
-    ``row[c-1]`` 为宽字符（显示宽度 2）且 ``(c-1) not in slice_``（slice_ 自身
-    同时含首列+第二列时视为正常覆盖，不冲突——宽字符整体替换走逐键覆盖）。
+    条件：任一 ``c in boundaries`` 满足——``c > 0`` 且 ``(c-1) in row`` 且
+    ``row[c-1]`` 为宽字符（显示宽度 2）。
 
-    供 ``_merge_line`` 快路径判定：disjoint 命中（无普通键冲突）时仍可能
-    存在「新字符落在宽字符第二列」——批量 update 会让新字符被
-    ``_canvas_row_to_line`` 的 ``col < prev`` 跳过（静默丢失，E2）。
+    ``boundaries`` 为**切片中「左侧相邻键不在切片内」的键**（调用方在
+    构造切片时收集）——只有这些键才可能与底行既有宽字符的第二列冲突；
+    切片内部的键其左列已被本片段覆盖，无需检查。修复前遍历整个切片并
+    对每个键做 ``wcswidth_simple``（120 列文本 ≈ 120 次），本函数按边界
+    键检查后典型 ASCII 文本只有 1 个候选，开销 O(1)。
 
     Args:
         row: 目标画布行（dict 形态，col → (ch, style)）。
-        slice_: 待合并片段（col → (ch, style)）。
+        boundaries: 切片中的左边界键列表（``c-1 not in slice_``）。
 
     Returns:
         True — 存在宽字符第二列冲突，须走逐键覆盖分支。
     """
-    for c in slice_:
+    for c in boundaries:
         if c <= 0:
             continue
         left = row.get(c - 1)
-        if left is not None and wcswidth_simple(left[0]) == 2 and (c - 1) not in slice_:
+        if left is not None and wcswidth_simple(left[0]) == 2:
             return True
     return False
 
 
-def _overwrites_wide_second_col(row: dict, slice_: dict) -> bool:
+def _overwrites_wide_second_col(row: dict, wide_starts, slice_: dict) -> bool:
     """检测 slice_ 的新宽字符是否与既有行的「第二列键」冲突（P2）。
 
-    条件：任一 ``c in slice_`` 满足——新字符显示宽度 2（宽字符首列在 c，
-    占 c 与 c+1 两列）且 ``(c+1) in row`` 且 ``(c+1) not in slice_``。
-    快路径批量 ``row.update(slice_)`` 后行同时含 c（宽字符首列）与 c+1
-    （旧残字），而 ``_canvas_row_to_line`` 的连续段宽度推导
-    （``keys[j+1] == c2 + 1 → cw = 1``）会把宽字符按宽度 1 处理并拼接残字
-    → 后续字符错位/重叠。
+    条件：任一 ``c in wide_starts`` 满足——``(c+1) in row`` 且
+    ``(c+1) not in slice_``。``wide_starts`` 为切片中**新宽字符首列键**
+    （调用方构造切片时收集）；修复前遍历所有键并对每个键测宽，现在只对
+    宽字符（典型文本为 0 个）做 O(1) 检查。
 
     Args:
         row: 目标画布行（dict 形态）。
+        wide_starts: 切片中新宽字符的首列键列表。
         slice_: 待合并片段（dict 形态）。
 
     Returns:
         True — 存在冲突，须走逐键覆盖分支。
     """
-    for c, v in slice_.items():
-        if wcswidth_simple(v[0]) == 2 and (c + 1) in row and (c + 1) not in slice_:
+    for c in wide_starts:
+        if (c + 1) in row and (c + 1) not in slice_:
             return True
     return False
 
 
-def _merge_line(row, x: int, line: Line) -> dict:
+def _merge_line(row, x: int, line: Line):
     """将 Line 合并到画布行（从第 x 列开始），返回合并后的行。
 
-    性能快路径：构造 ``{col: (ch, style)}`` 片段，与目标行键集无交时批量
+    ★ 2026-10-23 画布性能优化：按目标行形态分派——
+      - **Line 且全段覆盖**（``x == 0`` 且新行宽度 >= 原行宽度）：新内容覆盖
+        全部显示列，直接返回新行（零 dict 构建、零逐字符重绘）；
+      - **Line 且无重叠**（``x >= 原行宽度``）：按 run 级拼接（原有 runs +
+        必要时补空格 + 新行 runs）——免整行 ``_line_as_dict`` + 逐列合并 +
+        ``_canvas_row_to_line`` 往返，是「一行多段文本」的主热路径；
+      - **None**：x==0 直接返回新行；x>0 生成「前导空格 + 新行」的 Line；
+      - 其余（Line 部分重叠 / dict / 带空行）：回退 ``_merge_line_dict``
+        （原算法逐字保持不变，作为快路径的参考实现与兜底）。
+
+    ★ 快路径仅用于**单宽字符行**（见 ``_is_single_width_line``：每个字符
+    显示宽度恰为 1，如 ASCII 与边框 ``─│┌`` 等）——宽字符/零宽字符在 dict
+    合并中有「第二列覆盖 / 合并到前键」等精确语义，run 级拼接无法逐字
+    复现，强行启用会改变 CJK/emoji 的渲染结果。含宽/零宽字符的行一律回退
+    dict 路径（行为与优化前完全一致）。
+
+    Args:
+        row: 目标画布行（None / Line / dict）。
+        x: 新行起始显示列。
+        line: 待合并的 Line。
+
+    Returns:
+        合并后的画布行（Line 或 dict）。
+    """
+    # 空行合并：目标行原样返回（None 归一化为空 dict，保持既有返回契约）。
+    if not line.runs:
+        return row if row is not None else {}
+    if not _is_single_width_line(line):
+        return _merge_line_dict(row, x, line)
+    if row is None:
+        if x == 0:
+            return line
+        out = Line()
+        out.append(" " * x)
+        for run in line.runs:
+            out.append(run.text, run.style, run.link)
+        return out
+    if isinstance(row, Line) and _is_single_width_line(row):
+        if x == 0:
+            # 新内容覆盖 [0, line.width)——原行全部显示列都被覆盖。
+            if line.width >= row.width:
+                return line
+        elif x >= row.width:
+            # 新内容从原行末尾（或更右）开始：纯拼接，无任何重叠。
+            out = row.clone()
+            if x > row.width:
+                out.append(" " * (x - row.width))
+            for run in line.runs:
+                out.append(run.text, run.style, run.link)
+            return out
+    return _merge_line_dict(row, x, line)
+
+
+def _merge_line_dict(row, x: int, line: Line) -> dict:
+    """``_merge_line`` 的 dict 路径（原实现，语义参考与兜底）。
+
+    构造 ``{col: (ch, style)}`` 片段，与目标行键集无交时批量
     ``row.update(slice_)``；重叠时回退逐字符覆盖（语义一致）。目标行可能
     为 Line/None/dict 任意形态——先 ``_ensure_row_dict`` 归一化再合并。
 
@@ -202,13 +309,17 @@ def _merge_line(row, x: int, line: Line) -> dict:
     语义：宽字符被覆盖为新字符，不再静默丢失；被替换字符为空格时同样整体
     替换——新写入内容优先）。
 
-    返回合并后的 dict 行（调用方写回 canvas[row]）——修复前返回 None，
-    Line→dict 转换结果无法写回画布，目标行保持 Line 引用导致后续兄弟节点
-    继续对 Line 做 dict 操作失败（row-of-texts 仅首项绘制）。
+    ★ 2026-10-23 性能：宽字符冲突检查只扫描**切片边界键**（``left_boundaries``）
+    与新宽字符首列键（``wide_starts``），不再对切片每个键调用两次
+    ``wcswidth_simple``（120 列文本的 merge 从 ~250 次测宽降为典型 1~2 次）。
+
+    Returns:
+        合并后的 dict 行（调用方写回 canvas[row]）。
     """
-    if not line.runs:
-        return _ensure_row_dict(row)
     slice_: dict[int, tuple[str, Style | None, str | None]] = {}
+    # 宽字符冲突候选（见 _overlaps_wide_second_col / _overwrites_wide_second_col）
+    left_boundaries: list[int] = []
+    wide_starts: list[int] = []
     col = x
     # ★ 性能（2026-08-05）：纯可打印 ASCII run 走批量快路径（宽度 == 字符数），
     #   免逐字符 ``wcswidth_simple`` 调用——画布合并热路径（TEXT 行合并、
@@ -218,6 +329,17 @@ def _merge_line(row, x: int, line: Line) -> dict:
         st = run.style
         lk = run.link
         if t.isascii() and t.isprintable():
+            # 整个 ASCII run 键连续（每字符 +1 列）：只需判断 run 首字符是否
+            # 有左邻键（run 内其余字符必然有）。
+            if (col - 1) not in slice_:
+                left_boundaries.append(col)
+            for ch in t:
+                slice_[col] = (ch, st, lk)
+                col += 1
+        elif _is_single_width_run(t, run.width):
+            # 单宽非 ASCII（边框字符等）：同样键连续、不产生宽字符冲突。
+            if (col - 1) not in slice_:
+                left_boundaries.append(col)
             for ch in t:
                 slice_[col] = (ch, st, lk)
                 col += 1
@@ -225,7 +347,13 @@ def _merge_line(row, x: int, line: Line) -> dict:
             for cluster in grapheme_clusters(t):
                 # ★ P1-1 修复：零宽字符合并到前键（见 _put_char）；
                 #   字形簇整体写入（skin tone/keycap/ZWJ 不拆成多格）。
+                prev_col = col
+                if (col - 1) not in slice_:
+                    left_boundaries.append(col)
                 col = _put_char(slice_, col, cluster, st, lk)
+                if col - prev_col > 1:
+                    # 宽字符（占 2 列，键只写首列）；零宽字符不推进 col。
+                    wide_starts.append(prev_col)
     row = _ensure_row_dict(row)
     # ★ P2（review）：空行（row={}）场景跳过宽字符扫描（常见合并热路径
     #   零额外开销）；非空行还需检测「新宽字符覆盖既有第二列键」
@@ -235,23 +363,39 @@ def _merge_line(row, x: int, line: Line) -> dict:
     if slice_.keys().isdisjoint(row) and (
         not row
         or (
-            not _overlaps_wide_second_col(row, slice_)
-            and not _overwrites_wide_second_col(row, slice_)
+            not _overlaps_wide_second_col(row, left_boundaries)
+            and not _overwrites_wide_second_col(row, wide_starts, slice_)
         )
     ):
         row.update(slice_)
     else:
+        # ★ 2026-10-23 性能：部分重叠路径改为「一次批量 update + 只对候选键
+        #   修正」——修复前对 slice_ 每个键做字典判断 + 两次测宽（120 列文本
+        #   ≈ 120 次循环 + 250 次 wcswidth）。候选键只需两类：
+        #     - E2（新字符落在旧宽字符第二列）：``left_boundaries`` 中 ``c-1``
+        #       在旧行且为宽字符的键；
+        #     - BUG-61（覆盖旧宽字符首列/新宽字符覆盖旧第二列）：仅
+        #       ``c+1 not in slice_`` 的键（连续切片通常只有最后一个键）。
+        #   其余键的写入语义与批量 update 完全一致。
+        left_conflicts: dict[int, int] = {}
+        for c in left_boundaries:
+            if c > 0 and (c - 1) in row and (c - 1) not in slice_:
+                if wcswidth_simple(row[c - 1][0]) == 2:
+                    left_conflicts[c] = c - 1
+        cleanup_wide = set()
+        for c in slice_:
+            if (c + 1) not in slice_ and c in row:
+                if wcswidth_simple(row[c][0]) == 2:
+                    cleanup_wide.add(c)
+        new_wide = set(wide_starts)
+        row.update(slice_)
         for c, v in slice_.items():
             # ★ E2（宽字符第二列覆盖）：新字符落在既有宽字符第二列——替换
             #   宽字符整体（新字符不再静默丢失）。语义：宽字符被新字符覆盖
             #   （如 ``中`` 第二列被 ``X`` 覆盖 → 渲染 ``X``，不残留 ``中``）。
-            if (
-                c > 0
-                and (c - 1) in row
-                and (c - 1) not in slice_
-                and wcswidth_simple(row[c - 1][0]) == 2
-            ):
-                row[c - 1] = v
+            conflict = left_conflicts.get(c)
+            if conflict is not None:
+                row[conflict] = v
                 row.pop(c, None)
                 continue
             # ★ BUG-61（review 方向）：宽字符残留清理——被覆盖位置为宽字符
@@ -259,11 +403,9 @@ def _merge_line(row, x: int, line: Line) -> dict:
             #   字形）；新写入字符为宽字符（占 c+1 列）时清除 c+1 旧内容
             #   （slice_ 未覆盖该键——宽字符只写首列键）。修复前覆盖宽字符
             #   首列后行含孤立第二列字形（渲染出 ``a``+残留字形）。
-            old = row.get(c)
-            if old is not None and wcswidth_simple(old[0]) == 2 and (c + 1) not in slice_:
+            if c in cleanup_wide:
                 row.pop(c + 1, None)
-            row[c] = v
-            if wcswidth_simple(v[0]) == 2 and (c + 1) not in slice_:
+            if c in new_wide and (c + 1) not in slice_:
                 row.pop(c + 1, None)
     return row
 
@@ -468,9 +610,14 @@ def _canvas_row_to_line(row) -> Line:
     对 CJK 字符（占 2 列）推进不足，后续键 > prev 产生多余空格
     （``中文`` 被渲染为 ``中 文``）。
 
-    方向4（性能）：一次排序 + 段级累积——连续同 style 字符先累积到
-    ``run_text``（行宽有界 ≤80 列，str += 段长可接受），最后一次性构造
-    Line（免逐字符 ``Line.append`` 的段合并检查）。列间隙以空格段补齐。
+    ★ 2026-10-23 性能（画布热路径）：
+      - 条目归一化内联（免每字符 ``_entry3`` 函数调用 + 重复取同一个键）：
+        修复前每个字符被取两次（首键 + 内层循环）；
+      - 同 style/link 连续段以 list 累积 + 一次 ``"".join`` 追加（免
+        ``buf += ch`` 的 O(n²) 重复字符串分配）；
+      - style/link 先做身份比较（``is``）再值比较——样式对象在画布内大量
+        复用，身份命中可省 dataclass ``__eq__``。
+    段级宽度推导（相邻键差 1 且字符 ASCII）与零宽/宽字符语义保持不变。
     """
     if isinstance(row, Line):
         return row
@@ -490,21 +637,27 @@ def _canvas_row_to_line(row) -> Line:
         if col < prev:
             i += 1
             continue
-        ch, style, link = _entry3(row[col])
         if col > prev:
             line.append(" " * (col - prev))
             prev = col  # 空格段宽 = 空格数
-        # ★ 批量 append（方向4 性能）：累积同 style 连续字符段，段级一次性
-        #   Line.append（免逐字符 append 的段合并检查 + StyledRun 重建——
-        #   基准 ~2x 提速）。段长受行宽约束（≤终端列数），str += 拼接可接受。
-        # ★ 性能（2026-08-05）：连续段内非末尾字符用**相邻键差**推导宽度——
-        #   画布写入不变量 ``col += wcswidth_simple(ch)`` 保证连续键差 = 前序
-        #   字符宽度；差 1 必然 ASCII 宽 1（宽字符差 2、gap 差 >2 均不可能是 1）
-        #   → 免 ``wcswidth_simple`` 调用（聊天文本以 ASCII 为主，内层热路径
-        #   大量连续 ASCII 字符）。差 >=2（宽字符/gap）或段末尾（无下一键可
-        #   推导）回退 ``wcswidth_simple``（单字符路径：ASCII O(1) / 缓存 O(1)）。
-        j = i
-        buf = ""
+        entry = row[col]
+        if len(entry) >= 3:
+            ch, style, link = entry[0], entry[1], entry[2]
+        else:
+            ch, style = entry[0], entry[1]
+            link = None
+        parts = [ch]
+        j = i + 1
+        # ★ 段级宽度推导（方向4 性能）：连续段内非末尾字符用**相邻键差**推导
+        #   宽度——画布写入不变量 ``col += wcswidth_simple(ch)`` 保证连续键差 =
+        #   前序字符宽度；差 1 必然 ASCII 宽 1（宽字符差 2、gap 差 >2 均不可能
+        #   是 1）→ 免 ``wcswidth_simple`` 调用。差 >=2（宽字符/gap）或段末尾
+        #   （无下一键可推导）回退 ``wcswidth_simple``。
+        if j < n and keys[j] == col + 1 and ch.isascii():
+            cw = 1
+        else:
+            cw = wcswidth_simple(ch)
+        prev = col + cw
         while j < n:
             c2 = keys[j]
             if c2 < prev:
@@ -513,26 +666,29 @@ def _canvas_row_to_line(row) -> Line:
                 continue
             if c2 != prev:
                 break
-            ch2, st2, lk2 = _entry3(row[c2])
-            if st2 != style or lk2 != link:
+            entry2 = row[c2]
+            if len(entry2) >= 3:
+                ch2, st2, lk2 = entry2[0], entry2[1], entry2[2]
+            else:
+                ch2, st2 = entry2[0], entry2[1]
+                lk2 = None
+            # 身份短路后再值比较（样式/link 对象在画布内大量复用）
+            if (st2 is not style and st2 != style) or (
+                lk2 is not link and lk2 != link
+            ):
                 break
-            buf += ch2
+            parts.append(ch2)
             # 相邻键差 1 仅在字符确为单列宽时可直接推导——非 ASCII 字符
             # （宽字符/CJK/emoji）即使被异常 host 以「每字符 +1 列」写入，
             # 也不能按 1 列推导（否则后续内容错位）。正常画布写入
             # （``_put_char``/``_line_as_dict``）的键差与宽度一致。
-            if (
-                j + 1 < n
-                and keys[j + 1] == c2 + 1
-                and ch2.isascii()
-            ):
+            if j + 1 < n and keys[j + 1] == c2 + 1 and ch2.isascii():
                 cw = 1  # 连续 ASCII 快路径（相邻键差 1）
             else:
                 cw = wcswidth_simple(ch2)
             prev = c2 + cw
             j += 1
-        if buf:
-            line.append(buf, style, link)
+        line.append("".join(parts), style, link)
         i = j
     return line
 
@@ -544,6 +700,7 @@ __all__ = [
     "_overlaps_wide_second_col",
     "_overwrites_wide_second_col",
     "_merge_line",
+    "_merge_line_dict",
     "_slice_run_text",
     "_slice_run_text_strict",
     "_slice_run_text_with_offset",

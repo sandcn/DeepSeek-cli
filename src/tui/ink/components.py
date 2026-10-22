@@ -52,6 +52,17 @@ from ._paint_border import (
 #   ``_paint_impl`` 在函数体内 ``from .registry import get_host``，容器绘制
 #   每帧执行上百次模块查找。``registry`` 仅依赖标准库（无循环导入）。
 from .registry import get_host
+# ★ 性能（2026-10-23）：helpers / truncate_line 提升为模块级导入——修复前
+#   TEXT 绘制与容器背景分支在函数体内 import（每个未命中换行缓存的 TEXT /
+#   每个容器每帧一次 import 语句），大组件树下是可感知的固定开销。
+#   helpers 依赖 output/_runs_utils/_style_utils，不反向依赖 components，无环。
+from .helpers import (
+    _parse_color,
+    apply_text_transform,
+    resolve_text_style,
+    truncate_line,
+    wrap_runs_by_width,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -165,11 +176,6 @@ def _paint_impl(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) ->
                 if _first is None or getattr(_first, "style", None) is None or _first.style.bg != inherit_bg.bg:
                     lines = [_apply_bg_to_line(ln, inherit_bg.bg) for ln in lines]
         else:
-            from .helpers import (
-                wrap_runs_by_width,
-                resolve_text_style,
-                apply_text_transform,
-            )
             styled = fiber.props.get("styled")
             if styled is not None:
                 # ★ P3-9（review 方向）：styled 非 None 时按 runs 直接换行，
@@ -203,7 +209,6 @@ def _paint_impl(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) ->
         if len(lines) > box.h:
             lines = lines[:box.h]
         if box.w > 0 and any(line.width > box.w for line in lines):
-            from .helpers import truncate_line
             lines = [
                 truncate_line(line, box.w) if line.width > box.w else line
                 for line in lines
@@ -290,7 +295,6 @@ def _paint_impl(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) ->
         _paint_border(fiber, canvas, border, clip)
     # Box 级 backgroundColor（完善 react ink v6）：填充整个 box 区域，
     # 子 TEXT 未指定自身背景色时继承（inherit_bg 传递）。
-    from .helpers import _parse_color
     bg_prop = fiber.props.get("backgroundColor")
     bg_style = None
     if bg_prop is not None:
@@ -393,9 +397,72 @@ def _to_line(row, width: int) -> Line:
     """
     line = _canvas_row_to_line(row)
     if line.width > width:
-        from .helpers import truncate_line
         return truncate_line(line, width)
     return line
+
+
+def _to_lines(
+    rows, width: int, start: int = 0,
+    prev_cache: dict | None = None, new_cache: dict | None = None,
+) -> list:
+    """批量画布行转 Line，并复用上一帧内容完全相同的行（2026-10-23）。
+
+    ★ 性能动机：画布行若为 ``dict``（边框/背景/自定义 host 增量合并的产物），
+    ``_canvas_row_to_line`` 每帧都要排序键 + 逐字符重建 Line——即使内容一字
+    未变。重建出的新 Line 又使行级 diff 的身份短路失效，未变化行退化为
+    run 内容比较。本函数以「行索引 + 行值相等 + 渲染宽度相同」为条件复用
+    上一帧的 Line：
+
+      - 内容相等（``prev_row == row`` 或同一 Line 对象）→ 两帧渲染结果
+        逐字符/样式相同，直接复用旧 Line（跨帧同一对象 →
+        ``first_diff_line`` O(1) 命中）；
+      - 宽度不同（resize / 布局变化）→ 必须重新转换并按新宽度截断；
+      - 缓存只记录**非 Line 行**（dict/None）：Line 行跨帧多为同一对象，
+        身份短路已足够；若每行都缓存，大文档下缓存规模会变成 O(文档行数)
+        （每帧数千元组），得不偿失。缓存每帧新建（调用方传入空
+        ``new_cache``），旧缓存自然丢弃 → 自动修剪，不会随历史帧无限增长。
+
+    为什么可以安全复用：``_canvas_row_to_line`` 是纯函数（输入行值 → 输出
+    Line），Line 在帧构建完成后只读（``Line.append`` 是唯一修改入口，
+    渲染管线不修改已产出的帧行）；``dict`` 行在本函数返回后不再被改写。
+
+    Args:
+        rows: 画布行序列（None / Line / dict）。
+        width: 文档宽度（超宽行截断）。
+        start: ``rows[0]`` 对应的文档行号（缓存键）。
+        prev_cache: 上一帧缓存（行号 → ``(row, width, line)``）。
+        new_cache: 本帧缓存输出（行号 → ``(row, width, line)``）。
+
+    Returns:
+        ``list[Line]``，与 ``rows`` 等长。
+    """
+    out: list = []
+    idx = start
+    for row in rows:
+        if isinstance(row, Line):
+            # Line 行不写入缓存（见 docstring）：直接复用当前对象——大文档
+            # （数千行 Text）下避免每行一次缓存字典查找。
+            out.append(row)
+            idx += 1
+            continue
+        prev = prev_cache.get(idx) if prev_cache is not None else None
+        if prev is not None and prev[1] == width:
+            prev_row = prev[0]
+            # 同对象或值相等（字典行/边框行每帧重建、内容未变）→ 复用上一帧
+            # Line；行级 diff 因此命中身份短路。
+            if prev_row is row or prev_row == row:
+                line = prev[2]
+                if new_cache is not None:
+                    new_cache[idx] = (row, width, line)
+                out.append(line)
+                idx += 1
+                continue
+        line = _to_line(row, width)
+        if new_cache is not None:
+            new_cache[idx] = (row, width, line)
+        out.append(line)
+        idx += 1
+    return out
 
 
 def _has_floating_layer(root: Fiber) -> bool:
@@ -649,7 +716,6 @@ def _merge_window_row(base_line, rowdata, win_x: int, win_w: int,
     if merged.width > width:
         # ★ 行宽不变量兜底（E-OVERFLOW-GUARD）：窗口贴右边界时有宽字符跨越
         #   终端右边界（终端不可见的半列）→ 截断，保证 diff/光标定位正确。
-        from .helpers import truncate_line
         merged = truncate_line(merged, width)
     return merged
 
@@ -819,6 +885,18 @@ def render_frame(root: Fiber, width: int, viewport_height: int = 0) -> Frame:
     #   TEXT 命中行直接放 Line 对象，免逐字符重绘）。
     canvas: list = [None] * max(1, total_h)
     _paint(root, canvas)
+    # ★ 跨帧 Line 复用缓存（2026-10-23 画布性能）：字典画布行（边框/背景/
+    #   自定义 host 合并产物）在内容与渲染宽度都未变时直接复用上一帧 Line——
+    #   既省掉排序 + 逐字符重建，又让行级 diff 命中身份短路（O(1)）。
+    #   ``line_cache`` 每帧新建（旧缓存由 prev 读取后自然丢弃）→ 自动修剪；
+    #   行值相等校验保证不会复用陈旧内容（resize 宽度变化亦在键内）。
+    prev_line_cache = root._canvas_line_cache
+    line_cache: dict = {}
+
+    def _finish(frame: Frame) -> Frame:
+        """收口：写回本帧 Line 缓存并执行浮窗合成。"""
+        root._canvas_line_cache = line_cache
+        return _overlay_floating(root, frame, width)
 
     # ★ committed-chat 前缀复用（大历史下渲染 O(live)）：静态提交行跨帧身份
     #   复用（``widgets.staticlines._paint`` 维护 ``_committed_prefix``），不再
@@ -844,7 +922,6 @@ def render_frame(root: Fiber, width: int, viewport_height: int = 0) -> Frame:
             #   reflow 修复后缓存重建 all_ok=True 恢复零开销路径）。
             prefix_ok = prefix_info[2] if len(prefix_info) > 2 else True
             if not prefix_ok:
-                from .helpers import truncate_line
                 # ★ 性能（超宽前缀截断缓存 + 增量扩展）：截断结果挂 committed
                 #   fiber 缓存——修复前**每帧**对全部前缀行重截断（大历史每帧
                 #   O(全前缀字符)：Line 重建 + 逐字符测宽），且重建列表每帧新
@@ -883,20 +960,21 @@ def render_frame(root: Fiber, width: int, viewport_height: int = 0) -> Frame:
                 #   tail`` 直接拼接把超长前缀行写入 Frame（破坏行宽不变量
                 #   E-OVERFLOW-GUARD）。fit = 前缀实际覆盖行数（≤画布行数）。
                 fit = min(len(prefix), max(0, len(canvas)))
-                tail = [_to_line(r, width) for r in canvas[fit:]]
+                tail = _to_lines(
+                    canvas[fit:], width, start=fit,
+                    prev_cache=prev_line_cache, new_cache=line_cache,
+                )
                 # ★ 稳定前缀（PERF-7）：prefix 为复用列表对象（``_committed_prefix``
                 # 缓存命中），标记 stable_prefix 使 ``first_diff_line`` 跳过前缀
                 # 区间（避免大文档每帧全量逐行 is 比较）。防御：fit 可能 <
                 # len(prefix)，stable_prefix_len 用实际覆盖 fit。
-                return _overlay_floating(
-                    root,
+                return _finish(
                     Frame(
                         prefix[:fit] + tail,
                         stable_prefix=prefix,
                         stable_prefix_offset=0,
                         stable_prefix_len=fit,
                     ),
-                    width,
                 )
             # 非顶部 / 前缀含超宽行：前缀行填入画布对应区域（_paint 命中缓存
             # 已跳过画布写入；超宽行已截断，正常行身份保持）。
@@ -910,31 +988,38 @@ def render_frame(root: Fiber, width: int, viewport_height: int = 0) -> Frame:
             #   （与旧实现「超出画布的前缀行丢弃」行为一致）。
             y0 = committed_box.y if committed_box is not None else 0
             fit = min(len(prefix), max(0, len(canvas) - y0))
-            header = [_to_line(r, width) for r in canvas[:y0]]
-            tail = [_to_line(r, width) for r in canvas[y0 + fit:]]
+            header = _to_lines(
+                canvas[:y0], width, start=0,
+                prev_cache=prev_line_cache, new_cache=line_cache,
+            )
+            tail = _to_lines(
+                canvas[y0 + fit:], width, start=y0 + fit,
+                prev_cache=prev_line_cache, new_cache=line_cache,
+            )
             # ★ 稳定前缀（PERF-7）：prefix 为复用列表对象（缓存命中），其
             #   ``[:fit]`` 部分在 Frame.lines 的 [y0, y0+fit) 区间——标记
             #   stable_prefix 使 ``first_diff_line`` 跳过该区间（前缀区间外
             #   的 header/tail 行仍逐行比较）。防御：fit 可能 < len(prefix)
             #   （reflow 布局陈旧），stable_prefix_len 用实际覆盖 fit。
-            return _overlay_floating(
-                root,
+            return _finish(
                 Frame(
                     header + prefix[:fit] + tail,
                     stable_prefix=prefix,
                     stable_prefix_offset=y0,
                     stable_prefix_len=fit,
                 ),
-                width,
             )
     # ★ 无 committed 前缀复用：画布不含浮窗（``_paint`` 一律跳过浮窗 host），
     #   仍需经合成层绘制窗口——2026-10-21 统一：浮窗**只**在合成层绘制，
     #   与树中位置无关（不依赖「浮窗是根的最后子节点」这一隐式契约），
     #   同时保证 ``Frame.base_lines`` 是干净的内容行（输出历史用）。
-    return _overlay_floating(
-        root,
-        Frame([_to_line(row, width) for row in canvas]),
-        width,
+    return _finish(
+        Frame(
+            _to_lines(
+                canvas, width, start=0,
+                prev_cache=prev_line_cache, new_cache=line_cache,
+            ),
+        ),
     )
 
 
