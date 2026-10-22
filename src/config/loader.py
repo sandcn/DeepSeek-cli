@@ -120,8 +120,8 @@ def check_config_bounds(key: str, value) -> None:
         raise ValueError(f"{key} 不能大于 {high}（当前: {value}）")
 
 
-def update_config(key: str, value) -> None:
-    """更新配置键并持久化到 RC 文件。
+def update_config(key: str, value, *, persist: bool = True) -> bool:
+    """更新配置键并按需持久化到 RC 文件。
 
     ★ P3（review 2026-08-22）：读改写序列加 ``_update_lock`` 防护——修复前
     无锁，多线程同时写 RC 文件存在整文件写坏风险（单条 write_text 原子但
@@ -130,6 +130,16 @@ def update_config(key: str, value) -> None:
     ★ 修复（2026-10）：写入前做数值边界校验（``check_config_bounds``）——
     所有调用方（CLI / TUI 配置界面 / 配置导入 / 内部命令）共用同一道闸，
     越界值抛 ``ValueError`` 且不落盘。
+
+    Args:
+        persist: False 时只更新进程内 RC（供 /theme 导航即时预览，避免每按
+            一次方向键就整文件落盘）；调用方在用户确认（Enter）时再用
+            ``persist=True`` 落盘。
+
+    Returns:
+        True — 内存更新成功且（persist 时）RC 文件写入成功；
+        False — 持久化写入失败（只读/磁盘满等）。
+        ``check_config_bounds`` 等前置校验异常仍按原语义抛出。
     """
     with _update_lock:
         check_config_bounds(key, value)
@@ -160,7 +170,8 @@ def update_config(key: str, value) -> None:
                 rc[key] = value
         else:
             rc[key] = value
-        if _write_rc_file(rc):
+        written = _write_rc_file(rc) if persist else True
+        if written:
             from . import _clear_value_cache
             _clear_value_cache()
             # multimodal 模型判定缓存联动失效：RC 配置 multimodal_models 变更后
@@ -170,6 +181,8 @@ def update_config(key: str, value) -> None:
                 clear_multimodal_cache()
             except Exception:
                 logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
+            return True
+        return False
 
 
 def get_base_url(provider=None):

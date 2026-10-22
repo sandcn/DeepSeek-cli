@@ -104,7 +104,7 @@ COMMANDS_HELP = (
     f"  {TEAL}/plugin{RESET}   查看当前已加载的插件（独立界面）\n"
     f"  {TEAL}/load{RESET}     加载保存的对话 /load <id>\n"
     f"  {TEAL}/sessions{RESET} 列出所有保存的对话\n"
-    f"  {TEAL}/theme{RESET}    切换配色主题: /theme <dark|light|high-contrast>\n"
+    f"  {TEAL}/theme{RESET}    切换配色主题（无参数打开选择器）: /theme <名称>\n"
     f"  {DIM}  exit 退出{RESET}"
     # ── 快捷键说明（2026-08-05 增加操作；readline 编辑键 + 会话操作键） ──
     f"\n{DIM}  \u2500 快捷键{RESET}\n"

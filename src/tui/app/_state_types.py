@@ -938,10 +938,10 @@ class ThemeViewState(ListViewState):
     """主题选择器视图状态（/theme 打开，ThemeView 消费）。
 
     Attributes:
-        entries: 主题名列表。
-        original: 打开时的主题名（Esc 取消时恢复）。
-        applied_seq: 预览应用计数（组件递增，命令线程比对）。
-        applied: 待应用主题名（组件写，命令线程读取并写 RC）。
+        entries: 主题条目列表（``name`` / ``desc`` / ``active``）。
+        original: 打开时的主题名（Esc 取消 / 超时关闭时恢复）。
+        applied_seq / applied: 早期跨线程应用协议兼容字段；当前 ThemeView
+            直接调用 apply_theme（内存预览 + Enter 落盘），命令线程不再消费。
     """
 
     entries: list = field(default_factory=list)

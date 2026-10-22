@@ -53,10 +53,15 @@ def _cmd_theme(ctx):
         # 直接参数切换：/theme dark
         for name, desc in themes:
             if arg == name:
-                ctx.ui_adapter.set_theme(name)
-                if ctx.config_port is not None:
-                    ctx.config_port.set("theme", name)
-                _out.write(f"{GREEN}  + 已切换到主题「{name}」({desc}){RESET}", level="raw", source="cmd")
+                # set_theme 已负责校验 + 写 RC + 失效 palette 缓存；修复前再经
+                # config_port.set 写第二遍（冗余整文件写，且第二次异常会在主题
+                # 已切换后报错）。
+                # 兼容旧适配器/测试桩（set_theme 返回 None）——只有显式 False
+                # 才视为写入失败。
+                if ctx.ui_adapter.set_theme(name) is not False:
+                    _out.write(f"{GREEN}  + 已切换到主题「{name}」({desc}){RESET}", level="raw", source="cmd")
+                else:
+                    _out.write(f"{YELLOW}  ! 主题切换失败（配置写入失败）: {name}{RESET}", level="raw", source="cmd")
                 return True
         _out.write(f"{YELLOW}  ! 未知主题: {arg}{RESET}", level="raw", source="cmd")
         _out.write(f"  {DIM}  可用主题: {', '.join(t[0] for t in themes)}{RESET}", level="raw", source="cmd")
@@ -74,29 +79,69 @@ def _cmd_theme(ctx):
     return True
 
 
+def _restore_original_theme(adapter, state) -> bool:
+    """超时关闭时恢复打开前主题（best-effort；仅供 /theme on_timeout 使用）。
+
+    Returns:
+        True — 已是原主题或恢复写入成功；False — 无 adapter / 无原主题 /
+        恢复失败。异常不外抛（超时清理路径不能因恢复失败卡住）。
+    """
+    original = str(getattr(state, "original", "") or "")
+    if adapter is None or not original:
+        return False
+    try:
+        current = str(adapter.get_active_theme() or "")
+        if current == original:
+            return True
+        try:
+            result = adapter.set_theme(
+                original, persist=False, allow_unregistered=True,
+            )
+        except TypeError:
+            # 兼容旧适配器/测试桩（不接受 persist / allow_unregistered）。
+            try:
+                result = adapter.set_theme(original, persist=False)
+            except TypeError:
+                result = adapter.set_theme(original)
+        # 兼容旧适配器/测试桩（set_theme 返回 None）——只有显式 False 才算失败。
+        return result is not False
+    except Exception:
+        _logger.debug("open theme: 超时恢复原主题失败", exc_info=True)
+        return False
+
+
 def _open_theme_ui(ctx) -> bool:
     """打开全屏主题选择器视图（有 ChatUI 时）。返回是否已打开处理。"""
     from ..adapters.ui_runtime import get_theme_view_state_cls
     from ._view_opener import open_fullscreen_view
 
     adapter = getattr(ctx, "ui_adapter", None)
+    names: list = []
+    current = ""
+    if adapter is not None:
+        try:
+            names = list(adapter.get_theme_names_with_desc())
+        except Exception:
+            names = []
+        try:
+            current = str(adapter.get_active_theme() or "")
+        except Exception:
+            current = ""
+    # 无主题数据时不打开空白全屏视图——回退到命令文本列表，至少可用/可诊断。
+    if not names:
+        return False
+
+    # 当前主题可能已被 Profile/Patch 禁用（不在可用列表）——补一个只读入口，
+    # 让选择器仍能显示“当前/原主题”，而不是把第一项误当成当前主题。
+    if current and current not in {n for n, _d in names}:
+        names.insert(0, (current, "当前主题（未注册或已禁用）"))
 
     def setup(model, state):
-        names: list = []
-        current = ""
-        if adapter is not None:
-            try:
-                names = list(adapter.get_theme_names_with_desc())
-            except Exception:
-                names = []
-            try:
-                current = str(adapter.get_active_theme() or "")
-            except Exception:
-                current = ""
         state.original = current
         state.entries = [
             {"name": n, "desc": d, "active": n == current} for n, d in names
         ]
+        state.selected = 0
         for i, e in enumerate(state.entries):
             if e["name"] == current:
                 state.selected = i
@@ -105,6 +150,7 @@ def _open_theme_ui(ctx) -> bool:
     return open_fullscreen_view(
         ctx, view_id="theme", state_attr="theme_view",
         state_cls=get_theme_view_state_cls(), setup=setup,
+        on_timeout=lambda state: _restore_original_theme(adapter, state),
         close_hint="主题选择器已关闭", timeout_hint="主题选择器超时关闭",
     )
 

@@ -47,6 +47,7 @@ def open_fullscreen_view(
     setup=None,
     bg_setup=None,
     on_tick=None,
+    on_timeout=None,
     timeout: float = DEFAULT_TIMEOUT,
     close_hint: str = "界面已关闭",
     timeout_hint: str = "界面超时关闭",
@@ -64,6 +65,9 @@ def open_fullscreen_view(
             显示加载占位，完成后调用 ``refresh()`` 请求重绘（动态更新界面）。
         on_tick: ``on_tick(state) -> bool`` 回调——每轮轮询调用；返回 True 请求
             关闭视图（置终态后 break）。用于处理组件回传（如应用选中项）。
+        on_timeout: ``on_timeout(state)`` 回调——deadline 超时终态写入后、
+            清理前调用（best-effort）。用于撤销组件的临时预览，如 /theme
+            超时关闭时恢复打开前主题；回调异常仅记日志，不影响关闭流程。
         timeout: 超时秒数（默认 600）。
         close_hint: 正常关闭时的文本提示。
         timeout_hint: 超时关闭时的文本提示。
@@ -121,6 +125,13 @@ def open_fullscreen_view(
                 state.try_set_final("timeout")
                 break
             _time.sleep(_POLL_INTERVAL)
+        if getattr(state, "action", "") == "timeout" and on_timeout is not None:
+            # 超时关闭前的补偿回调：/theme 的预览已经写入配置，超时不是
+            # 用户确认，需恢复打开前主题；其他视图不传该回调，零行为变化。
+            try:
+                on_timeout(state)
+            except Exception:
+                _logger.debug("open_fullscreen_view on_timeout 异常", exc_info=True)
         if getattr(state, "action", "") == "timeout":
             _out.write(f"  ! {timeout_hint}", level="raw", source="cmd")
         else:

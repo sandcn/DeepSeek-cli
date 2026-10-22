@@ -232,30 +232,42 @@ class CommandUiAdapter:
             _logger.debug("get_active_theme 读 config 异常", exc_info=True)
         return "dark"
 
-    def set_theme(self, name: str) -> None:
+    def set_theme(
+        self, name: str, *, persist: bool = True,
+        allow_unregistered: bool = False,
+    ) -> bool:
         """设置活动主题：校验名 ∈ 主题集 → 写 config → 失效调色板缓存。
 
-        未知名忽略（不抛异常）；config 写入失败仅记日志（不阻断返回）。
-        调色板缓存失效使组件下次渲染按新主题取色（Step 4.3 全量生效）。
+        Args:
+            persist: False 时只更新内存配置（/theme 导航预览），不落盘。
+            allow_unregistered: 允许写回注册表之外的名称。仅用于恢复配置里
+                原本就是已禁用/已移除的主题（如 /theme 的 Esc / 超时回滚）。
+
+        Returns:
+            True — 配置更新成功（persist 时为持久化成功）；
+            False — 未知名 / 配置持久化失败。
+
+        未知名忽略（不抛异常）；调色板缓存失效使组件下次渲染按新主题
+        取色（Step 4.3 全量生效）。
         """
         names = [n for n, _d in self.get_theme_names_with_desc()]
-        if name not in names:
+        if name not in names and not allow_unregistered:
             _logger.debug("set_theme(%s): 未知主题，忽略", name)
-            return
+            return False
+        written = True
         try:
             from ...config.loader import update_config
-            update_config("theme", name)
+            written = update_config("theme", name, persist=persist) is not False
         except Exception:
+            written = False
+            _logger.debug("set_theme(%s): config 更新失败", name, exc_info=True)
+        if written:
             try:
-                from ...config.proxy import config
-                config.set("theme", name)
+                from ..adapters.ui_runtime import invalidate_palette_cache
+                invalidate_palette_cache()
             except Exception:
-                _logger.debug("set_theme(%s): config 持久化失败", name, exc_info=True)
-        try:
-            from ..adapters.ui_runtime import invalidate_palette_cache
-            invalidate_palette_cache()
-        except Exception:
-            _logger.debug("set_theme(%s): 调色板缓存失效异常", name, exc_info=True)
+                _logger.debug("set_theme(%s): 调色板缓存失效异常", name, exc_info=True)
+        return written
 
     def render_diff_to_ansi(self, path: str, old_content: str, new_content: str) -> str:
         """将文件差异渲染为带 ANSI 颜色的纯文本字符串。"""

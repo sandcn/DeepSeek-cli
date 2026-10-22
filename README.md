@@ -464,7 +464,7 @@ python chat.py clawbot --re-login   # 强制重新扫码登录
 | `/load <ID>` | — | 加载保存的对话 |
 | `/sessions` | — | 列出所有保存的对话 |
 | `/export [路径]` | — | 导出当前对话为 Markdown（含 SubAgent 聊天信息） |
-| `/theme <名称>` | — | 切换配色主题（dark / light / high-contrast / nord / dracula / gruvbox / tokyo-night / catppuccin） |
+| `/theme [名称]` | — | 无参数打开**主题选择器**（全屏界面：↑↓/jk 即时预览 · Enter 确认 · Esc 恢复原主题 · `/` 搜索 · `f` 过滤 · `n/N/p` 匹配定位 · PgUp/PgDn 滚动 · `?` 帮助）；带名称直接切换（dark / light / high-contrast / nord / dracula / gruvbox / tokyo-night / catppuccin） |
 | `/changes` | — | **文件变更审查器**（全屏界面，**F11** 快捷打开/关闭：打开后按一次 **F11 或 Esc** 即关闭；**流式输出期间可直接打开并实时刷新**，回滚动作等生成结束后可用）：左栏文件列表按 `t` 切目录树、`m` 切消息维度、`s` 轮换排序（路径/次数/最近/索引）、`T` 循环类型过滤；右栏按 `d` 在差异 / **历史时间线**（该文件逐次修改 + diff）间切换、`i` 统计面板、`r` 回滚预览；`x` 回滚该文件 · `u` 撤销回滚 · `X` 回滚全部 · `R` 回滚到消息索引 · `y` 复制路径 · `c` 复制差异 · `w`/`W` 导出变更报告（md/json）· `/` 搜索 · `f` 过滤 · `?` 帮助 · Esc/F11 关闭（可加文件名过滤） |
 | `/logs` | — | **会话日志 / 投影浏览器**（全屏界面，**F12** 快捷打开）：左栏事件流（`#seq 图标 类型 时间 摘要`）+ 右栏按 `v` 循环四模式——事件详情（data 展开）/ 消息投影（`derive_messages` 模型历史）/ 投影状态（`turnBoundary` 等投影单元 snapshot）/ 一致性校验（`SessionLog.verify`「模型可见即已记录」）；`F` 跟随最新（随会话日志增长**实时刷新**）/ `r` 刷新 / `/` 搜索 · `n`/`N`/`p` 定位 · `f` 过滤 · `?` 帮助 · Esc 关闭 |
 | `exit` | — | 退出程序 |
