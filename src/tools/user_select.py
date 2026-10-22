@@ -213,6 +213,10 @@ class UserSelectFunc(Func):
                             "type": "string",
                             "description": "选择界面的标题，必填，建议简明扼要"
                         },
+                        "header": {
+                            "type": "string",
+                            "description": "极短标签（≤12 字符），显示为弹窗标题 chip 与多问题 tab 标签，如「认证方式」「优先级」；缺省时用 title 截断"
+                        },
                         "options": {
                             "type": "array",
                             "items": {"type": "string"},
@@ -241,16 +245,21 @@ class UserSelectFunc(Func):
             }
         }
 
-    def __init__(self, title, options, multi_select=False, default_options=None, option_descriptions=None):
+    def __init__(self, title, options, multi_select=False, default_options=None,
+                 option_descriptions=None, header=""):
         """构造 user_select 工具实例。
 
         ★ 2026-10-22（用户需求）：**已删除** ``timeout`` 参数——超时不再由
         调用方指定，统一为「界面 1 分钟无操作」（``IDLE_TIMEOUT_SECONDS``）。
         模型侧历史调用若仍携带 ``timeout``，``Func.from_args`` 会作为多余
         参数忽略（debug 日志），不影响构造与执行。
+        ★ 2026-10-22（用户需求：TUI 与 Claude 对齐）：新增可选 ``header``
+        ——极短标签（≤12 字符），渲染为标题 chip 与多问题 tab 标签；空串
+        时渲染层回退 title 截断（旧调用零回归）。
         """
         super().__init__()  # 调用父类初始化，设置agent为None
         self.title = title
+        self.header = str(header or "")
         self.options = options
         self.multi_select = multi_select
         self.default_options = default_options or []
@@ -356,6 +365,7 @@ class UserSelectFunc(Func):
                 visible=True,
                 seq=prev_seq + 1,
                 title=self.title or "选择",
+                header=self.header,
                 options=list(self.options),
                 option_descriptions=list(self.option_descriptions),
                 multi_select=self.multi_select,
@@ -488,7 +498,8 @@ class UserSelectFunc(Func):
 
     async def display(self):
         """异步显示选择界面并返回结果"""
-        Func._publish_tool_text(f"\n{GREEN}> 用户选择: {self.title}{RESET}")
+        _label = f"{self.header} · {self.title}" if self.header and self.header != self.title else self.title
+        Func._publish_tool_text(f"\n{GREEN}> 用户选择: {_label}{RESET}")
 
         # 显示选项预览
         def _opt_desc(i: int) -> str:

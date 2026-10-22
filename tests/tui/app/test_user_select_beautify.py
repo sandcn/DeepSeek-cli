@@ -2,6 +2,8 @@
 
 覆盖：
   - 标题元信息（位置 / 多选已选数 / 超时倒计时 / 已完成）；
+  - Claude 对齐布局（header chip + 独立问题行 / ❯ 指针 / 说明在选项下方 /
+    取消分栏表头与整行分割线 / 多选 [x] [ ] 标记）；
   - 数字键快选（单选立即确认、多选切换勾选并移动光标、输入模式放行）；
   - Home/End/PgUp/PgDn 导航（仅模态弹窗 consumeAll 启用）；
   - 分栏说明每行显示各自说明 + 选中项完整说明块；
@@ -227,7 +229,7 @@ def test_home_end_and_page_navigation_modal() -> None:
 # ══════════════════════════════════════════════════════════
 
 
-def test_split_rows_show_each_description_and_selected_block() -> None:
+def test_descriptions_below_each_option_and_selected_expanded() -> None:
     long_desc = "很长的说明文本" * 12
     st = _state(
         "Q", ["A", "B", "C"],
@@ -466,15 +468,67 @@ def test_tab_summaries_for_confirmed_cancel_timeout() -> None:
     assert "⏱ 超时" in text
 
 
-def test_split_header_rendered() -> None:
+def test_claude_layout_chip_pointer_and_description_below() -> None:
+    """Claude 对齐布局：header chip + ❯ 指针 + 说明缩进在选项下方。"""
     st = _state(
-        "Q", ["A", "B"], allow_custom=True,
+        "问题正文", ["A", "B"], allow_custom=True,
         option_descriptions=["说明甲", "说明乙"],
     )
+    st.header = "短标签"
     text = _render([st], width=80)
-    assert "选项" in text
-    assert "说明" in text
-    assert "│" in text
+    assert "短标签" in text
+    assert "问题正文" in text
+    assert "\u276f" in text  # ❯ 指针
+    # 分栏表头/竖线已移除。
+    assert "选项 \u2502" not in text
+    assert "\u2502" not in text
+    lines = [line for line in text.splitlines() if line.strip()]
+    idx_a = next(i for i, line in enumerate(lines) if "1. A" in line)
+    assert "说明甲" in lines[idx_a + 1]
+    idx_b = next(i for i, line in enumerate(lines) if "2. B" in line)
+    assert "说明乙" in lines[idx_b + 1]
+
+
+def test_header_chip_and_question_on_separate_lines() -> None:
+    st = _state("完整问题文本", ["A"], allow_custom=False)
+    st.header = "认证方式"
+    text = _render([st], width=80)
+    lines = [line for line in text.splitlines() if line.strip()]
+    chip_line = next(line for line in lines if "认证方式" in line)
+    assert "完整问题文本" not in chip_line
+    assert any("完整问题文本" in line for line in lines)
+    # 无整行 ─ 分割线（Claude 风格）。
+    assert "\u2500" not in text
+
+
+def test_multiline_title_and_description_folded_one_line() -> None:
+    """多行 title/说明折叠为单行（不破坏行数预算与行宽不变量）。"""
+    st = _state(
+        "第一行\n第二行", ["A"], allow_custom=False,
+        option_descriptions=["说明一\n说明二"],
+    )
+    text = _render([st], width=40)
+    assert "第一行 第二行" in text
+    assert "说明一 说明二" in text
+    _assert_width(text, 40)
+
+
+def test_header_same_as_title_not_duplicated() -> None:
+    """header 与 title 相同时（模型重复传参）不渲染两行相同文本。"""
+    st = _state("同一个标题", ["A"], allow_custom=False)
+    st.header = "同一个标题"
+    text = _render([st], width=80)
+    assert text.count("同一个标题") == 1
+
+
+def test_multiselect_checkbox_marks() -> None:
+    st = _state("Q", ["A", "B"], multi_select=True, allow_custom=False)
+    model, element, root, press, snapshot = _mount_popup([st])
+    text = snapshot()
+    assert "[ ]" in text
+    assert press("char", " ") is True
+    text = snapshot()
+    assert "[x]" in text
 
 
 def test_submit_page_scroll_and_digit_jump(monkeypatch) -> None:
@@ -513,6 +567,8 @@ def test_new_features_width_invariant(monkeypatch) -> None:
         multi_select=True, allow_custom=True,
         option_descriptions=["很长的说明文本" * 8] * 30,
     )
+    # header 超长（>12 显示宽）在渲染层截断，不得撑破窄屏行宽。
+    st.header = "很长的短标签超过十二个字符"
     for width in (30, 40, 60, 80, 120):
         _assert_width(_render([st], width=width), width)
 

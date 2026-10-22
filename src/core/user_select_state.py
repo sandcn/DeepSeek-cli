@@ -40,7 +40,11 @@ class UserSelectState:
     Attributes:
         visible: 弹窗是否显示。
         seq: 弹窗会话序号（每次打开递增，供组件重挂载）。
-        title: 弹窗标题。
+        title: 弹窗标题（问题文本）。
+        header: 极短标签（≤12 显示宽；Claude AskUserQuestion 风格 chip，
+            用于单问题标题 chip 与多问题 tab 标签）；空串时回退 title
+            （渲染层截断）。★ 2026-10-22（用户需求：user_select TUI 与
+            Claude 对齐）：新增可选字段，旧构造/旧测试默认空串零回归。
         options: 选项字符串列表。
         option_descriptions: 与 options 等长的说明列表。
         multi_select: 是否多选。
@@ -71,6 +75,8 @@ class UserSelectState:
     visible: bool = False
     seq: int = 0
     title: str = ""
+    #: 极短标签（chip / tab 标签；空串回退 title）。
+    header: str = ""
     options: list = field(default_factory=list)
     option_descriptions: list = field(default_factory=list)
     multi_select: bool = False

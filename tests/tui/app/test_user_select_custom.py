@@ -205,6 +205,26 @@ def test_tool_schema_has_no_timeout_param_and_ignores_legacy_timeout() -> None:
     assert func.title == "Q"
 
 
+def test_tool_schema_has_header_param_and_state_carries_it() -> None:
+    """★ 2026-10-22（TUI 与 Claude 对齐）：可选 ``header`` 短标签。"""
+    from src.tools.user_select import UserSelectFunc
+
+    props = UserSelectFunc.to_tool_schema()["function"]["parameters"]["properties"]
+    assert "header" in props
+    assert "12" in props["header"]["description"]
+    func = UserSelectFunc.from_args(
+        {"title": "Q", "options": ["A"], "header": "认证方式"},
+    )
+    assert func.header == "认证方式"
+    # 缺省 header 为空串（渲染层回退 title 截断）。
+    func2 = UserSelectFunc.from_args({"title": "Q", "options": ["A"]})
+    assert func2.header == ""
+
+
+def test_state_header_defaults_empty() -> None:
+    assert UserSelectState().header == ""
+
+
 def test_any_key_resets_idle_deadline_for_all_pending_questions() -> None:
     """★ 2026-10-22（共享计时）：任一 tab 的操作刷新全部未提交问题的倒计时。"""
     st1 = _state("Q1", options=["A", "B"], seq=1, idle_timeout=60.0,
@@ -407,7 +427,7 @@ def test_arrow_in_input_mode_does_not_switch_tab() -> None:
     assert s2.answered is False
 
 
-def test_split_description_mode_custom_row() -> None:
+def test_custom_row_has_description_below() -> None:
     st = _state(option_descriptions=["说明一", "说明二"])
     model = SimpleNamespace(
         user_selects=[st], user_select=st, bottom_view="user_select",

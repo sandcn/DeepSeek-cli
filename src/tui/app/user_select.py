@@ -46,14 +46,14 @@ user_select 工具调用各自 append 一个 ``UserSelectState`` 到
     （Enter 确认）。多行内容在输入行以 ``⏎`` 折叠显示，提交/返回 JSON
     保留原始换行。
   - ★ 2026-10-21（用户需求：美化 TUI + 优化操作体验）：
-    * 视觉分区：标签栏（多问题）/ 标题 + 细分割线 + 选项列表 + 主/次两行
-      提示；标题右侧显示位置 ``(n/total)``、多选 ``已选 k/total``、超时
-      倒计时 ``⏱ Ns``（≤10s 变黄）；选中行整行背景高亮。
+    * 视觉分区：标签栏（多问题）/ 标题区 + 选项列表 + 主/次两行提示；
+      标题右侧显示位置 ``(n/total)``、多选 ``已选 k/total``、超时倒计时
+      ``⏱ Ns``（≤10s 变黄）；选中行整行背景高亮。
     * 选项带 ``1.`` 序号，数字键 ``1-9`` 快选：单选立即确认（多问题自动
       推进），多选切换勾选（Enter 再确认）；自定义输入模式数字放行给
       TextInput。
-    * 分栏说明：右栏显示每个选项自己的说明（选中亮色/其余 dim），说明
-      超出右栏宽度时在列表下方完整显示（最多 3 行）。
+    * 选项说明：每个选项自己的说明缩进显示在该选项下方（选中亮色/其余
+      dim）；说明超出单行宽度时在列表下方完整展开（最多 2 行）。
     * 导航增强：Home/End 首末、PgUp/PgDn 翻页（共享控件仅在模态弹窗
       ``consumeAll=True`` 时启用，命令补全等调用零回归）。
     * 多选未勾选时按 Enter 仍提交空列表（返回协议不变），提示行明确
@@ -63,10 +63,20 @@ user_select 工具调用各自 append 一个 ``UserSelectState`` 到
       滚动，数字键 ``1-9`` 跳回对应问题修改。
     * 长列表指示：列表上方显示 ``▲ 上方 N 项 · ▼ 下方 M 项``（仅隐藏时）。
     * tab 摘要：已回答 tab 显示 ``1 ✓ Python``；取消 ``✗ 取消``、超时
-      ``⏱ 超时``；未回答仍 ``○ 标题``。
+      ``⏱ 超时``；未回答显示 ``1 标题``。
     * 多选批量键：``a`` 全选/全不选、``c`` 清空。
     * 输入模式快捷键：``Ctrl+U`` 清空、``Ctrl+W`` 删词。
-    * 分栏模式新增 dim 表头 ``选项 │ 说明``。
+  - ★ 2026-10-22（用户需求：user_select TUI 与 Claude 对齐）：
+    * 标题区：``header`` 非空时显示短标签 chip（反面高亮）+ 独立问题行，
+      无整行 ``─`` 分割线；``header`` 为空时单行问题文本，避免重复。
+    * 选项行：``❯ 1. 标签``（选中指针 + 序号），选中整行背景高亮；
+      说明缩进显示在选项下方（Claude 选项 label+description 布局）。
+    * 多选标记：``[x]``/``[ ]``（替代 ●/○）。
+    * tab 栏：短标签 chip 风格（当前 tab 反色 + 加粗），保留 ``✓/✗/⏱`` 摘要。
+    * 提示行：主提示 ``↑/↓ 选择 · Enter 确认 · Esc 取消``（多选 ``Space 勾选``），
+      次要快捷键压暗为第二行。
+    * 保留全部既有增强（数字键、Submit 页、自动推进、空闲计时、a/c、
+      Home/End/PgUp/PgDn、Ctrl+G vim、Ctrl+U/Ctrl+W）。
   单问题（无并发）时行为与旧版完全一致（不渲染 tab 栏/Submit 页，Enter
   直接提交，零额外行）。
 
@@ -85,9 +95,9 @@ user_select 工具调用各自 append 一个 ``UserSelectState`` 到
 ``SelectInput``（单选）/``MultiSelect``（多选）表达——导航（↑↓/j/k/g/G）、
 Enter 确认、Esc 取消、空格勾选由控件消费，协议（first-write-wins、us 状态
 写回）经控件回调（onSelect/onSubmit/onCancel/onHighlight）承载；自定义行
-渲染经 ``renderItem``（单选 ▶/整行背景高亮、多选 ●/○ 勾选、分栏说明）
-完全保留既有视觉；``consumeAll=True`` 弹窗模式（其他按键消费阻断输入框，
-Ctrl+C 放行可中断工具执行）。
+渲染经 ``renderItem``（单选 ``❯`` 指针/整行背景高亮、多选 ``[x]/[ ]`` 勾选、
+选项下方说明行）完全保留既有视觉；``consumeAll=True`` 弹窗模式（其他按键
+消费阻断输入框，Ctrl+C 放行可中断工具执行）。
 
 ★ 2026-08-18（用户需求：editmsg 与 user_select 不能用同一份代码）：
 /editmsg 消息选择已拆分为**独立协议**（EditMsgSelectState +
@@ -124,8 +134,8 @@ import time
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from src.tui._input_layout import _wrap_by_width
-from src.tui.app.input_area import _desc_column_width, _truncate_width
-from src.tui.app._theme import _S_DIM, _S_SEP
+from src.tui.app.input_area import _truncate_width
+from src.tui.app._theme import _S_DIM
 from src.tui.ink import TEXT, h, Column, Row, StyledRun
 from src.tui.ink.helpers import truncate_runs_ellipsis
 from src.tui.ink.hooks import use_effect, use_ref, use_state, use_input, useMouseInput
@@ -140,6 +150,10 @@ __all__ = ["UserSelectPopup"]
 
 #: 弹窗标题色（亮青加粗，对齐 _S_ACCENT_BOLD）
 _S_TITLE = Style(fg=45, bold=True)
+#: 标题 chip（Claude AskUserQuestion 风格：短标签反色块）
+_S_TITLE_CHIP = Style(fg=45, bg=238, bold=True)
+#: 问题正文（Claude 风格：标题 chip 之下的独立问题行）
+_S_QUESTION = Style(fg=252, bold=True)
 #: 说明列 / 提示行静态色（浅蓝 110——弹窗不呼吸）
 _S_DESC = Style(fg=110)
 #: 未选中项说明（dim 灰）
@@ -148,8 +162,6 @@ _S_DESC_DIM = Style(fg=244)
 _S_META = Style(fg=244)
 #: 倒计时剩余 ≤10s 的警示色
 _S_META_WARN = Style(fg=214, bold=True)
-#: 分区细分隔线
-_S_SEP_LINE = Style(fg=238)
 #: 主提示行（亮色）
 _S_HINT = Style(fg=252)
 #: 选中行序号（亮青 + 背景）
@@ -160,17 +172,24 @@ _S_SEL_TEXT = Style(fg=252, bg=237)
 _S_SEL_PAD = Style(bg=237)
 #: 未选中序号（暗灰）
 _S_NUM = Style(fg=240)
+#: 未选中选项正文（Claude 风格：未选中 dim，选中整行高亮）
+_S_ITEM_IDLE = Style(fg=246)
 #: 多选已勾选标记（绿色加粗）
 _S_MARK_CHECKED = Style(fg=40, bold=True)
 #: 多选未勾选标记（dim 灰）
 _S_MARK_UNCHECKED = Style(fg=244)
-#: 自定义输入伪选项提示色
-_S_CUSTOM = Style(fg=110)
+#: 自定义输入伪选项提示色（Claude 风格：作为最后一项 dim 行）
+_S_CUSTOM = Style(fg=244)
 #: 轻度警示（多选未勾选等）
 _S_WARN = Style(fg=214)
-#: 多选勾选标记（几何符号单宽，wcswidth_simple 宽度 1——安全对齐）
-_CHECKED = "\u25cf "
-_UNCHECKED = "\u25cb "
+#: 选中指针（Claude 风格 ❯）
+_CURSOR = "\u276f "
+_CURSOR_PAD = "  "
+#: 多选勾选标记（Claude 风格 ASCII 方框，固定 4 列宽——安全对齐）
+_CHECKED = "[x] "
+_UNCHECKED = "[ ] "
+#: 说明行缩进步数（对齐 label 文本起点：指针 2 + 序号列 + 标记列）
+_DESC_INDENT = 2
 
 #: 自定义输入伪选项（2026-10-21 用户需求：支持输入选项外内容并返回）
 _CUSTOM_LABEL = "\u270e 其他（自定义输入…）"
@@ -182,8 +201,8 @@ _CUSTOM_INPUT_MAX_WIDTH = 200
 #: 自定义输入多行内容的单行显示标记（提交/返回保留原始换行）
 _NEWLINE_MARK = "\u23ce"
 
-#: 并发 tab 栏样式（2026-08-19）：当前焦点问题（亮青加粗）
-_S_TAB_ACTIVE = Style(fg=45, bold=True)
+#: 并发 tab 栏样式（Claude 风格 chip）：当前焦点问题（反色 + 亮青加粗）
+_S_TAB_ACTIVE = Style(fg=45, bg=238, bold=True)
 #: 未完成非焦点问题（dim 灰）
 _S_TAB_INACTIVE = Style(fg=244)
 #: 已回答（可重答）非焦点问题（[×]，中灰——区别于已提交终态）
@@ -224,8 +243,12 @@ def _popup_item_rows() -> int:
 
 
 def _submit_rows_limit() -> int:
-    """Submit 页可见问题行数（标题 1 + 两条分割线 + 两条提示固定占 5 行）。"""
-    return max(1, _popup_item_rows() - 5)
+    """Submit 页可见问题行数（标题 1 行 + 两条提示固定占 3 行）。
+
+    ★ 2026-10-22（TUI 与 Claude 对齐）：Submit 页不再渲染分割线，固定行数
+    由 5 降为 3。
+    """
+    return max(1, _popup_item_rows() - 3)
 
 
 def _truncate_display(text: str, max_w: int) -> str:
@@ -280,38 +303,44 @@ def _checked_indices(us, total: int) -> list:
 
 
 def _option_prefix(
-    i: int, total: int, multi: bool, checked: list, cur: int,
+    i: int, total: int, multi: bool, checked: list,
 ) -> tuple[str, str]:
-    """选项行前缀：``序号. `` + ``标记 ``（标记：单选 ▶／空格，多选 ●/○）。"""
+    """选项行前缀：``序号. `` + ``标记 ``（标记：多选 [x]/[ ]；单选空）。"""
     num = f"{i + 1:>{_num_width(total)}}. "
     if multi:
         mark = _CHECKED if i in checked else _UNCHECKED
     else:
-        mark = "\u25b6 " if i == cur else "  "
+        mark = ""
     return num, mark
 
 
 def _option_runs(
-    num_text: str, mark_text: str, label: str, *,
-    num_style: Style, mark_style: Style,
+    cursor_text: str, num_text: str, mark_text: str, label: str, *,
+    cursor_style: Style, num_style: Style, mark_style: Style,
     text_style: Style | None, target_w: int, pad_style: Style | None,
 ) -> list:
-    """构建选项行 styled runs（序号 + 标记 + 文本 + 可选补白）。
+    """构建选项行 styled runs（指针 + 序号 + 标记 + 文本 + 可选补白）。
 
-    每个 run 的样式分开表达（序号/标记/正文可以有不同颜色）；``target_w``
-    为整行显示宽度预算，超长文本按显示宽度截断（不拆 CJK），选中行可用
-    ``pad_style`` 把背景铺满整行（整行高亮）。
+    每个 run 的样式分开表达（指针/序号/标记/正文可以不同颜色）；
+    ``target_w`` 为整行显示宽度预算，超长文本按显示宽度截断（不拆 CJK），
+    选中行可用 ``pad_style`` 把背景铺满整行（Claude 风格整行高亮）。
     """
     target_w = max(0, int(target_w))
-    prefix_w = wcswidth_simple(num_text) + wcswidth_simple(mark_text)
+    prefix_w = (
+        wcswidth_simple(cursor_text)
+        + wcswidth_simple(num_text)
+        + wcswidth_simple(mark_text)
+    )
     if prefix_w > target_w:
         # 极端窄终端：前缀自身已超预算——合并截断为单个 run（不溢出）。
-        prefix = _truncate_width(num_text + mark_text, target_w)
+        prefix = _truncate_width(cursor_text + num_text + mark_text, target_w)
         return [StyledRun(prefix, num_style)] if prefix else []
     runs: list = [
+        StyledRun(cursor_text, cursor_style),
         StyledRun(num_text, num_style),
-        StyledRun(mark_text, mark_style),
     ]
+    if mark_text:
+        runs.append(StyledRun(mark_text, mark_style))
     used = prefix_w
     if label:
         budget = max(0, target_w - used)
@@ -325,55 +354,71 @@ def _option_runs(
     return runs
 
 
-def _build_custom_row(is_sel: bool, opt_w: int, total: int) -> object:
-    """自定义输入伪选项行（普通模式，无序号、无勾选标记）。
+def _one_line(text: str) -> str:
+    """把任意文本折叠为单行（换行/回车 → 空格；防行数预算被破坏）。"""
+    return str(text or "").replace("\r", " ").replace("\n", " ")
+
+
+def _option_desc_row(
+    text: str, *, indent: int, target_w: int, style: Style,
+    key: str,
+) -> object:
+    """选项说明行（Claude 风格：缩进显示在选项下方，单行截断）。"""
+    indent = max(0, int(indent))
+    budget = max(1, int(target_w) - indent)
+    body = _truncate_width(_one_line(text), budget)
+    children = " " * min(indent, max(0, int(target_w))) + body
+    return h(TEXT, {
+        "children": children,
+        "style": style,
+        "height": 1,
+        "key": key,
+        "textWrap": "truncate-end",
+    })
+
+
+def _option_indent(num_w: int, multi: bool) -> int:
+    """说明行缩进（对齐 label 文本起点：指针 2 + ``序号. `` 列 + 多选标记列）。"""
+    return _DESC_INDENT + int(num_w) + 2 + (len(_UNCHECKED) if multi else 0)
+
+
+def _build_custom_row(
+    is_sel: bool, opt_w: int, total: int, multi: bool = False,
+) -> object:
+    """自定义输入伪选项（Claude 风格：dim 行 + 缩进用途说明）。
 
     Args:
         is_sel: 是否当前高亮。
         opt_w: 选项行宽度预算。
         total: 选项总数（用于序号列宽对齐）。
+        multi: 是否多选（缩进对齐勾选标记列）。
     """
     num_w = _num_width(total)
     num = " " * (num_w + 2)
-    mark = "  "
+    mark = " " * (len(_UNCHECKED) if multi else 0)
+    cursor = _CURSOR if is_sel else _CURSOR_PAD
     runs = _option_runs(
-        num, mark, _CUSTOM_LABEL,
+        cursor, num, mark, _CUSTOM_LABEL,
+        cursor_style=_S_SEL_ACCENT if is_sel else _S_NUM,
         num_style=_S_SEL_ACCENT if is_sel else _S_NUM,
         mark_style=_S_CUSTOM,
         text_style=_S_SEL_TEXT if is_sel else _S_CUSTOM,
         target_w=max(1, opt_w),
         pad_style=_S_SEL_PAD if is_sel else None,
     )
-    return h(TEXT, {
-        "styled": runs, "height": 1, "key": "row-custom",
-        "textWrap": "truncate-end",
-    })
-
-
-def _build_custom_split_row(
-    is_sel: bool, opt_w: int, desc_w: int, total: int,
-) -> object:
-    """自定义输入伪选项行（分栏说明模式：左栏选项 + │ + 右栏用途说明）。"""
-    num_w = _num_width(total)
-    num = " " * (num_w + 2)
-    mark = "  "
-    left_runs = _option_runs(
-        num, mark, _CUSTOM_LABEL,
-        num_style=_S_SEL_ACCENT if is_sel else _S_NUM,
-        mark_style=_S_CUSTOM,
-        text_style=_S_SEL_TEXT if is_sel else _S_CUSTOM,
-        target_w=max(1, opt_w),
-        pad_style=_S_SEL_PAD if is_sel else _S_DIM,
+    desc = _option_desc_row(
+        "输入不在选项中的答案",
+        indent=_option_indent(num_w, multi),
+        target_w=opt_w,
+        style=_S_DESC if is_sel else _S_DESC_DIM,
+        key="row-custom-desc",
     )
-    desc_txt = _truncate_width("输入不在选项中的答案", desc_w)
-    return h(Row, {"height": 1}, [
-        h(TEXT, {"styled": left_runs, "height": 1}),
-        h(TEXT, {"children": "\u2502", "style": _S_SEP, "height": 1}),
+    return h(Column, None, [
         h(TEXT, {
-            "children": desc_txt,
-            "style": _S_DESC if is_sel else _S_DESC_DIM,
-            "height": 1,
+            "styled": runs, "height": 1, "key": "row-custom",
+            "textWrap": "truncate-end",
         }),
+        desc,
     ])
 
 
@@ -401,18 +446,41 @@ def _build_custom_input_row(
     ])
 
 
+def _header_chip_label(us) -> str:
+    """标题 chip 文本（``header``，≤12 显示宽；空串时返回空）。
+
+    ★ 2026-10-22（用户需求：TUI 与 Claude 对齐）：Claude AskUserQuestion
+    的 ``header`` 是极短标签（≤12 字符），用于标题 chip 与多问题 tab；
+    未提供时渲染层回退 title（此处返回空，由调用方决定回退方式）。
+    """
+    raw = str(getattr(us, "header", "") or "")
+    raw = raw.replace("\r", " ").replace("\n", " ").strip()
+    return _truncate_width(raw, 12) if raw else ""
+
+
 def _build_header(
     us, cur: int, total: int, multi: bool, checked_count: int,
     done: bool, width: int,
-) -> object:
-    """标题行：``▍ 模式图标 标题`` + 右侧元信息（位置/已选/倒计时）。
+) -> list:
+    """Claude 风格标题区（chip + 问题文本独立行）+ 右侧元信息。
 
-    窄屏时优先保留标题：先按剩余宽度截断标题，仍放不下则丢弃右侧元信息；
-    极窄终端（宽度不足以容纳前缀）只渲染截断后的前缀——保证行宽 ≤ width。
+    布局（对齐 Claude Code AskUserQuestion）：
+      - ``header`` 非空：第一行 ``▍ 认证方式`` 反色 chip（右侧元信息），
+        第二行问题文本；
+      - ``header`` 为空：只渲染一行问题文本（右侧元信息）——避免 chip 与
+        问题文本重复。
+
+    窄屏时优先保留内容：先截断问题文本，仍放不下则丢弃右侧元信息；
+    极窄终端只渲染截断后的单行——保证每行宽度 ≤ width。
+
+    Returns:
+        1-2 行元素列表（调用方 extend 到 rows）。
     """
-    title = getattr(us, "title", "") or "选择"
-    mode_icon = "\u2611" if multi else "\u25b6"
-    prefix = f" \u258d {mode_icon} "
+    title = _one_line(getattr(us, "title", "") or "选择")
+    chip = _header_chip_label(us)
+    # header 与 title 相同（模型重复传参）时不渲染第二行问题文本——避免
+    # chip 与问题文本逐字重复。
+    duplicate = bool(chip) and chip == str(title).strip()
     now = time.monotonic()
     warn = False
     if done:
@@ -431,51 +499,62 @@ def _build_header(
         meta = " · ".join(pieces)
         meta_style = _S_META_WARN if warn else _S_META
     width = int(width) if width and width > 0 else 80
+    meta_w = wcswidth_simple(meta)
+
+    rows: list = []
+    # ── 第一行：chip（header）或问题文本 ──
+    use_chip = bool(chip) and not duplicate
+    prefix = f" {chip} " if use_chip else " "
+    prefix_style = _S_TITLE_CHIP if use_chip else _S_TITLE
     prefix_w = wcswidth_simple(prefix)
     if width <= prefix_w:
-        prefix = _truncate_width(prefix, width)
-        return h(TEXT, {
-            "children": prefix, "style": _S_TITLE, "height": 1,
+        rows.append(h(TEXT, {
+            "children": _truncate_width(prefix, width),
+            "style": prefix_style, "height": 1,
             "key": "us-title", "textWrap": "truncate-end",
-        })
-    meta_w = wcswidth_simple(meta)
-    title_budget = width - prefix_w - meta_w - 1
-    if meta and title_budget < 4:
-        meta = ""
-        meta_w = 0
-        title_budget = width - prefix_w
-    title_show = _truncate_width(title, max(0, title_budget))
-    left_w = prefix_w + wcswidth_simple(title_show)
-    runs = [StyledRun(prefix, _S_TITLE), StyledRun(title_show, _S_TITLE)]
-    if meta:
-        gap = width - left_w - meta_w
-        if gap > 0:
-            runs.append(StyledRun(" " * gap, _S_DIM))
-            runs.append(StyledRun(meta, meta_style))
+        }))
     else:
-        # 无元信息时标题可以有更多空间：重新按整行宽度截断
-        title_show = _truncate_width(title, max(0, width - prefix_w))
-        runs = [StyledRun(prefix, _S_TITLE), StyledRun(title_show, _S_TITLE)]
-    return h(TEXT, {
-        "styled": truncate_runs_ellipsis(runs, width),
-        "height": 1,
-        "key": "us-title",
-        "textWrap": "truncate-end",
-    })
-
-
-def _build_separator(width: int, key: str = "us-sep") -> object:
-    """分区细分隔线（``─`` 铺满可用宽度，极窄/无宽度时零宽）。"""
-    w = max(0, int(width) if width else 0)
-    if w <= 0:
-        return h(TEXT, {"children": "", "height": 1, "key": key})
-    return h(TEXT, {
-        "children": "\u2500" * w,
-        "style": _S_SEP_LINE,
-        "height": 1,
-        "key": key,
-        "textWrap": "truncate-end",
-    })
+        if not use_chip:
+            # 无 chip：第一行直接显示问题文本（元信息右对齐）
+            body_budget = width - prefix_w - meta_w - 1
+            if meta and body_budget < 4:
+                meta = ""
+                meta_w = 0
+                body_budget = width - prefix_w
+            body_show = _truncate_width(title, max(0, body_budget))
+            runs = [StyledRun(prefix, prefix_style), StyledRun(body_show, _S_TITLE)]
+            if meta:
+                used = prefix_w + wcswidth_simple(body_show)
+                gap = width - used - meta_w
+                if gap > 0:
+                    runs.append(StyledRun(" " * gap, _S_DIM))
+                    runs.append(StyledRun(meta, meta_style))
+            rows.append(h(TEXT, {
+                "styled": truncate_runs_ellipsis(runs, width),
+                "height": 1, "key": "us-title", "textWrap": "truncate-end",
+            }))
+        else:
+            body_budget = width - prefix_w - meta_w - 1
+            if meta and body_budget < 4:
+                meta = ""
+                meta_w = 0
+            runs = [StyledRun(prefix, prefix_style)]
+            if meta:
+                gap = width - prefix_w - meta_w
+                if gap > 0:
+                    runs.append(StyledRun(" " * gap, _S_DIM))
+                    runs.append(StyledRun(meta, meta_style))
+            rows.append(h(TEXT, {
+                "styled": truncate_runs_ellipsis(runs, width),
+                "height": 1, "key": "us-title", "textWrap": "truncate-end",
+            }))
+            # ── 第二行：问题文本（独立行，Claude 风格）──
+            rows.append(h(TEXT, {
+                "children": _truncate_width(f" {title}", width),
+                "style": _S_QUESTION, "height": 1,
+                "key": "us-question", "textWrap": "truncate-end",
+            }))
+    return rows
 
 
 def _build_scroll_indicator(above: int, below: int, width: int) -> object | None:
@@ -496,25 +575,6 @@ def _build_scroll_indicator(above: int, below: int, width: int) -> object | None
         "key": "us-scroll-indicator",
         "textWrap": "truncate-end",
     })
-
-
-def _build_split_header(opt_w: int, desc_w: int) -> object:
-    """分栏模式表头（dim）：``选项 │ 说明``（左栏补齐到 ``opt_w``）。"""
-    left_text = _truncate_width(" 选项", max(1, int(opt_w)))
-    pad = max(0, int(opt_w) - wcswidth_simple(left_text))
-    return h(Row, {"height": 1}, [
-        h(TEXT, {
-            "children": left_text + " " * pad,
-            "style": _S_DESC_DIM,
-            "height": 1,
-        }),
-        h(TEXT, {"children": "\u2502", "style": _S_SEP, "height": 1}),
-        h(TEXT, {
-            "children": _truncate_width(" 说明", max(1, int(desc_w))),
-            "style": _S_DESC_DIM,
-            "height": 1,
-        }),
-    ])
 
 
 def _build_tab_bar(states: list, active: int, width: int) -> object:
@@ -540,8 +600,8 @@ def _build_tab_bar(states: list, active: int, width: int) -> object:
         getattr(s, "answered", False) or getattr(s, "done", False)
         for s in states
     )
-    submit_label = "[\u2713 提交]" if all_answered else "[提交]"
-    submit_w = wcswidth_simple(submit_label) + 2
+    submit_label = "\u2713 提交" if all_answered else "提交"
+    submit_w = wcswidth_simple(submit_label) + 4  # 两侧空格 + 间距
     avail_w = max(1, int(width) if width and width > 0 else 80)
     # 预算恒等式：Σlabel + gap*n + submit_w <= width（每个 label 经
     # ``_truncate_width`` 限制在 budget 内）——窄终端/多问题不溢出。
@@ -551,10 +611,10 @@ def _build_tab_bar(states: list, active: int, width: int) -> object:
     gap = 2
     for candidate in (2, 1, 0):
         budget = (avail_w - submit_w - candidate * n) // n
-        if budget >= 3:
+        if budget >= 5:
             gap = candidate
             break
-    if budget < 3:
+    if budget < 5:
         pos = f"{min(active + 1, n)}/{n}" if active < n else f"\u2713 {n}/{n}"
         compact = _truncate_width(f"{pos}  {submit_label}", avail_w)
         style = _S_TAB_ACTIVE if active <= n else _S_TAB_INACTIVE
@@ -564,7 +624,6 @@ def _build_tab_bar(states: list, active: int, width: int) -> object:
                 "key": "tab-compact",
             }),
         ])
-    gap_w = gap * n  # 问题间（含 Submit 前）间距
     children: list = []
     for i, s in enumerate(states):
         marked = getattr(s, "answered", False) or getattr(s, "done", False)
@@ -585,9 +644,12 @@ def _build_tab_bar(states: list, active: int, width: int) -> object:
                 if getattr(s, "custom", ""):
                     inner += " \u270e"
         else:
-            mark = "\u25cb"
-            inner = getattr(s, "title", "") or "选择"
-        label = _truncate_width(f"{i + 1} {mark} {inner}", budget)
+            mark = ""
+            inner = _header_chip_label(s) or _one_line(
+                getattr(s, "title", "") or "选择"
+            )
+        raw = f"{i + 1} {mark} {inner}" if mark else f"{i + 1} {inner}"
+        label = _truncate_width(f" {raw} ", max(2, budget))
         if i == active:
             style = _S_TAB_ACTIVE
         elif getattr(s, "done", False):
@@ -609,7 +671,7 @@ def _build_tab_bar(states: list, active: int, width: int) -> object:
     else:
         submit_style = _S_TAB_INACTIVE
     children.append(h(TEXT, {
-        "children": submit_label, "style": submit_style, "height": 1,
+        "children": f" {submit_label} ", "style": submit_style, "height": 1,
         "key": "tab-submit",
     }))
     return h(Row, {"height": 1}, children)
@@ -619,10 +681,12 @@ def _build_regular_row(
     us, options: list, multi: bool, i: int, cur: int, checked: list,
     opt_w: int,
 ) -> object:
-    """普通模式单个选项行构建（序号 + 单选高亮/多选勾选，单行）。
+    """单个选项行（Claude 风格：``❯ 1. 标签`` + 缩进说明行）。
 
-    序号（``1.``）与数字键快选呼应；选中行整行背景高亮（含补白）。选项
-    超长截断到 ``opt_w``（CJK 安全，防超宽行破坏行级 diff 宽度不变量）。
+    序号（``1.``）与数字键快选呼应；选中行整行背景高亮（含补白），
+    指针 ``❯`` 唯一标识当前光标；多选在序号前显示 ``[x]``/``[ ]``。
+    选项/说明超长均按显示宽度截断（CJK 安全，防超宽行破坏行级 diff
+    宽度不变量）。
 
     Args:
         us: UserSelectState（当前 tab）。
@@ -634,93 +698,49 @@ def _build_regular_row(
         opt_w: 选项行宽度预算。
 
     Returns:
-        TEXT（该选项的单行）。
+        Column（选项行 + 可选的说明行，最多 2 行）。
     """
     is_sel = i == cur
-    num, mark = _option_prefix(i, len(options), multi, checked, cur)
+    num, mark = _option_prefix(i, len(options), multi, checked)
     if multi:
         mark_style = _S_SEL_ACCENT if is_sel else (
             _S_MARK_CHECKED if i in checked else _S_MARK_UNCHECKED
         )
     else:
-        mark_style = _S_SEL_ACCENT if is_sel else _S_NUM
+        mark_style = _S_NUM
     runs = _option_runs(
-        num, mark, str(options[i]),
+        _CURSOR if is_sel else _CURSOR_PAD, num, mark, str(options[i]),
+        cursor_style=_S_SEL_ACCENT if is_sel else _S_NUM,
         num_style=_S_SEL_ACCENT if is_sel else _S_NUM,
         mark_style=mark_style,
-        text_style=_S_SEL_TEXT if is_sel else None,
+        text_style=_S_SEL_TEXT if is_sel else _S_ITEM_IDLE,
         target_w=max(1, opt_w),
         pad_style=_S_SEL_PAD if is_sel else None,
     )
-    return h(TEXT, {
+    rows: list = [h(TEXT, {
         "styled": runs, "height": 1, "key": f"row-{i}",
         "textWrap": "truncate-end",
-    })
-
-
-def _build_split_row(
-    us, options: list, multi: bool, cur: int, checked: list,
-    opt_w: int, desc_w: int, row_i: int, total: int,
-) -> object:
-    """分栏说明模式单行构建（左栏选项 + │ + 右栏该选项自己的说明）。
-
-    与旧版「右栏只显示当前选中项说明」不同：每一行右栏显示**该选项
-    自己的说明**（单行截断，选中行亮色、其余 dim），列表下方再完整显示
-    选中项说明（由调用方构建，见 ``_selected_desc_lines``）。选项超长
-    受左栏宽度约束（右栏至少保留 ``_desc_column_width`` 基准宽）。
-
-    Args:
-        us: UserSelectState（当前 tab）。
-        options: 选项字符串列表。
-        multi: 是否多选。
-        cur: 当前高亮索引（已钳制）。
-        checked: 多选勾选索引列表。
-        opt_w: 左栏宽。
-        desc_w: 右栏宽。
-        row_i: 选项行号（0-based）。
-        total: 选项总数。
-
-    Returns:
-        Row 元素（左栏 + │ + 右栏说明）。
-    """
+    })]
     descs = us.option_descriptions or []
-    is_sel = row_i == cur
-    num, mark = _option_prefix(row_i, total, multi, checked, cur)
-    if multi:
-        mark_style = _S_SEL_ACCENT if is_sel else (
-            _S_MARK_CHECKED if row_i in checked else _S_MARK_UNCHECKED
-        )
-    else:
-        mark_style = _S_SEL_ACCENT if is_sel else _S_NUM
-    left_runs = _option_runs(
-        num, mark, str(options[row_i]),
-        num_style=_S_SEL_ACCENT if is_sel else _S_NUM,
-        mark_style=mark_style,
-        text_style=_S_SEL_TEXT if is_sel else None,
-        target_w=max(1, opt_w),
-        pad_style=_S_SEL_PAD if is_sel else _S_DIM,
-    )
-    desc = descs[row_i] if row_i < len(descs) else ""
-    desc_txt = _truncate_width(str(desc or ""), max(1, desc_w))
-    return h(Row, {"height": 1}, [
-        h(TEXT, {"styled": left_runs, "height": 1}),
-        h(TEXT, {"children": "\u2502", "style": _S_SEP, "height": 1}),
-        h(TEXT, {
-            "children": desc_txt,
-            "style": _S_DESC if is_sel else _S_DESC_DIM,
-            "height": 1,
-            "textWrap": "truncate-end",
-        }),
-    ])
+    desc = str(descs[i] or "") if i < len(descs) else ""
+    if desc:
+        rows.append(_option_desc_row(
+            desc,
+            indent=_option_indent(_num_width(len(options)), multi),
+            target_w=opt_w,
+            style=_S_DESC if is_sel else _S_DESC_DIM,
+            key=f"row-{i}-desc",
+        ))
+    return h(Column, None, rows)
 
 
 def _selected_desc_lines(
-    us, cur: int, total: int, width: int, desc_w: int,
+    us, cur: int, total: int, width: int, desc_w: int = 0,
 ) -> list:
-    """选中项完整说明的换行行（最多 3 行；无需额外显示时返回空列表）。
+    """选中项完整说明的换行行（最多 2 行；无需额外显示时返回空列表）。
 
-    右栏只显示单行摘要；说明超过右栏宽度（或本身含换行）时，在列表
-    下方完整显示（避免右栏截断丢失信息）。
+    选项下方已显示单行说明；说明超过单行宽度（或本身含换行）时，在
+    列表下方以 ``▸`` 块完整展开（避免截断丢失信息）。
     """
     if cur < 0 or cur >= total:
         return []
@@ -730,10 +750,11 @@ def _selected_desc_lines(
     desc = str(descs[cur] or "")
     if not desc:
         return []
-    if "\n" not in desc and wcswidth_simple(desc) <= max(1, desc_w):
+    wrap_w = max(1, int(width) - 2)
+    if "\n" not in desc and wcswidth_simple(desc) <= wrap_w:
         return []
-    lines = _wrap_by_width(desc, max(1, int(width) - 2))
-    return lines[:3]
+    lines = _wrap_by_width(desc, wrap_w)
+    return lines[:2]
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1245,17 +1266,18 @@ def _build_submit_page(
     )
     rows: list = []
     rows.append(h(TEXT, {
-        "children": " \u258d \u2713 提交全部答案",
+        "children": " \u2713 提交全部答案",
         "style": _S_TITLE,
         "textWrap": "truncate-end",
         "key": "us-submit-title",
     }))
-    rows.append(_build_separator(width_i, key="us-submit-sep"))
     for i in range(start, end):
         s = states[i]
         answered = getattr(s, "answered", False)
         done = getattr(s, "done", False)
-        title_txt = getattr(s, "title", "") or "选择"
+        title_txt = _header_chip_label(s) or _one_line(
+            getattr(s, "title", "") or "选择"
+        )
         action = str(getattr(s, "action", "") or "")
         if answered or done:
             if action == "cancel":
@@ -1295,7 +1317,6 @@ def _build_submit_page(
             "height": 1,
             "key": f"us-submit-row-{i}",
         }))
-    rows.append(_build_separator(width_i, key="us-submit-sep2"))
     rows.append(h(TEXT, {
         "children": _truncate_width(
             " Enter 提交全部 · Esc 返回修改 · 1-9 跳题 · Tab/←→ 切换",
@@ -1353,16 +1374,16 @@ def _build_hints(
         if allow_custom:
             primary += " · \u270e 其他=自定义"
         secondary = (
-            " \u2191\u2193/jk 移动 · 1-9 勾选 · a 全选 · c 清空"
+            " ↑↓/jk 移动 · 1-9 勾选 · a 全选 · c 清空"
             " · g/G/Home/End · PgUp/PgDn"
         )
         if multi_mode:
             secondary = " Tab/\u2190\u2192 切换 ·" + secondary
         return primary, secondary
-    primary = " Enter 确认 · Esc 取消"
+    primary = " \u2191/\u2193 选择 · Enter 确认 · Esc 取消"
     if allow_custom:
         primary += " · \u270e 其他=自定义"
-    secondary = " \u2191\u2193/jk 移动 · g/G/Home/End 首末 · PgUp/PgDn 翻页 · 1-9 快选"
+    secondary = " ↑↓/jk 移动 · g/G/Home/End 首末 · PgUp/PgDn 翻页 · 1-9 快选"
     if multi_mode:
         secondary = " Tab/\u2190\u2192 切换 ·" + secondary
     return primary, secondary
@@ -1381,12 +1402,15 @@ def UserSelectPopup(props) -> object:
 
     ★ 2026-10-21（继续优化）：Submit 页分页滚动 + 数字键 1-9 跳题；长列表
     显示上方/下方隐藏项数；tab 显示回答摘要；多选 `a` 全选/`c` 清空；
-    输入模式 `Ctrl+U` 清空 / `Ctrl+W` 删词；分栏模式显示 `选项 │ 说明` 表头。
+    输入模式 `Ctrl+U` 清空 / `Ctrl+W` 删词。
+    ★ 2026-10-22（用户需求：TUI 与 Claude 对齐）：标题区 chip + 独立问题行，
+    选项 ``❯ 序号. 标签`` + 说明缩进在选项下方，多选 ``[x]/[ ]``，tab 短标签
+    chip，主提示 ``↑/↓ 选择 · Enter 确认 · Esc 取消``。
 
     Props:
         model: AppModel 实例（读 ``model.user_selects`` 并发队列；空时回退
             ``model.user_select`` 单例——兼容旧调用/测试）。
-        width: 终端宽度（分栏说明模式需要）。
+        width: 终端宽度（所有行按此截断，保证行宽不超终端）。
 
     Returns:
         Column（弹窗行）或空 TEXT（不可见时零高度）。
@@ -1854,30 +1878,15 @@ def UserSelectPopup(props) -> object:
     else:
         cur = max(0, min(selected, total_items - 1))
     descs = us.option_descriptions or []
-    # 分栏说明模式：option_descriptions 非空时左栏选项 + 右栏说明。
-    split = bool(descs) and width and width > 0
     checked_idx = _checked_indices(us, total)
     checked_count = len(checked_idx)
 
-    # ── 分栏宽度（先算好：说明块行数预算与控件渲染共用） ──
-    if split:
-        max_opt_w = max((wcswidth_simple(o) for o in options), default=0)
-        if allow_custom:
-            max_opt_w = max(max_opt_w, wcswidth_simple(_CUSTOM_LABEL))
-        base_desc_w = _desc_column_width(width)
-        # 左栏须容纳「序号 + 标记 + 最长选项（含自定义伪选项）」完整文本：
-        # 前缀宽度 = 序号列（num_w + 2）+ 标记列（2）。
-        auto_opt_w = max_opt_w + _num_width(total) + 5
-        opt_w = max(1, min(max(1, width - base_desc_w - 1), auto_opt_w))
-        desc_w = max(1, width - opt_w - 1)
-    else:
-        opt_w = max(1, width - 4) if width and width > 0 else 40
-        desc_w = 0
+    # ── Claude 风格：选项 + 说明同列（说明缩进显示在选项下方） ──
+    width_i = int(width) if width and width > 0 else 80
+    opt_w = max(1, width_i)
 
-    # 选中项完整说明块（分栏模式且说明超出右栏宽度时，列表下方完整显示）
-    desc_block_lines = (
-        _selected_desc_lines(us, cur, total, width, desc_w) if split else []
-    )
+    # 选中项完整说明块（说明超出单行宽度 / 含换行时，列表下方完整展开）
+    desc_block_lines = _selected_desc_lines(us, cur, total, width_i)
 
     # 主/次两行提示（先算：决定可见项行预算）
     hint_primary, hint_secondary = _build_hints(
@@ -1887,11 +1896,11 @@ def UserSelectPopup(props) -> object:
         checked_count=checked_count,
     )
 
-    # ── 顶部：标题 + 分区线（tab 栏已在 Submit 页分支之前渲染） ──
-    rows.append(_build_header(
-        us, cur, total, multi, checked_count, done, width,
-    ))
-    rows.append(_build_separator(width))
+    # ── 顶部：Claude 风格标题区（chip + 问题文本；无整行分割线） ──
+    header_rows = _build_header(
+        us, cur, total, multi, checked_count, done, width_i,
+    )
+    rows.extend(header_rows)
 
     # ── 选项控件（SelectInput/MultiSelect 标准控件） ──
     # done（已提交终态）：只读结果行；answered（可重答）与未回答：渲染控件。
@@ -1916,22 +1925,27 @@ def UserSelectPopup(props) -> object:
         #   伪选项（仅工具路径 allow_custom=True；命令选择路径不追加）。
         if allow_custom:
             items.append({"label": _CUSTOM_LABEL, "value": _CUSTOM_VALUE})
-        # 行预算：头部固定行（标题 + 分割线 + tab 栏 + 分栏表头 + 说明块 +
-        # 两行提示 + 输入行）先从可用高度扣除，剩余给选项列表（每项一行）。
-        # 长列表需要滚动指示时再扣 1 行（矮终端下限 1 行，可滚动导航）。
-        base_fixed_rows = 2 + (1 if multi_mode else 0) + len(desc_block_lines) + 1
-        if split:
-            base_fixed_rows += 1  # 分栏表头
+        # 行预算（Claude 风格每项最多 2 行：选项行 + 说明行）：
+        # 标题区、tab 栏、说明块、提示行、输入行先从可用高度扣除，剩余给
+        # 选项列表；长列表需要滚动指示时再扣 1 行（矮终端下限 1 行）。
+        base_fixed_rows = len(header_rows) + (1 if multi_mode else 0) + 1
+        base_fixed_rows += len(desc_block_lines)
         if hint_secondary:
             base_fixed_rows += 1
         if custom_editing_ref.current:
             base_fixed_rows += 1
+        # 每项占用的最大行数（有说明 → 2；自定义伪选项固定 2 行）
+        per_item_rows = 2 if descs else 1
+        if allow_custom:
+            per_item_rows = max(per_item_rows, 2)
         base_limit = max(1, _popup_item_rows() - base_fixed_rows)
-        need_indicator = total_items > base_limit
+        need_indicator = (
+            total_items * per_item_rows > base_limit
+        )
         fixed_rows = base_fixed_rows + (1 if need_indicator else 0)
         limit_base = max(1, _popup_item_rows() - fixed_rows)
         control_focus = not custom_editing_ref.current
-        limit = max(1, min(total_items, limit_base))
+        limit = max(1, min(total_items, limit_base // max(1, per_item_rows)))
         # 可见窗口（控件 onWindowChange 上报；首帧用跟随光标估算兜底）。
         win_off, win_count = list_window
         if win_count <= 0:
@@ -1944,39 +1958,21 @@ def UserSelectPopup(props) -> object:
                 win_count = visible
         above = max(0, int(win_off))
         below = max(0, total_items - int(win_off) - int(win_count))
-        # ★ 2026-10-21（继续优化）：分栏表头 + 长列表隐藏项指示（均占 1 行，
-        #   已在上方行预算中扣除）。
-        if split:
-            rows.append(_build_split_header(opt_w, desc_w))
+        # ★ 2026-10-21（继续优化）：长列表隐藏项指示（占 1 行，已在预算扣除）。
         if need_indicator:
-            indicator = _build_scroll_indicator(above, below, width)
+            indicator = _build_scroll_indicator(above, below, width_i)
             if indicator is not None:
                 rows.append(indicator)
-        if split:
-            def _split_renderer(item, idx, is_sel, is_checked=None):
-                # 分栏说明模式单行：控件对每个 item 调用一次 renderItem——
-                # 只构建 item 索引对应的那一行（修复前循环渲染整个选项
-                # 列表，每个 item 重复 total 次 → 弹窗选项重复多份）。
-                # ★ 2026-10-21：右栏显示该选项自己的说明；列表末尾伪选项
-                #   行单独渲染。
-                if idx >= total:
-                    return _build_custom_split_row(
-                        is_sel, opt_w, desc_w, total,
-                    )
-                checked_now = _checked_indices(us, total)
-                return _build_split_row(
-                    us, options, multi, cur, checked_now,
-                    opt_w, desc_w, idx, total,
-                )
-        else:
-            def _regular_renderer(item, idx, is_sel, is_checked=None):
-                # ★ 2026-10-21：列表末尾伪选项行单独渲染（无勾选标记）。
-                if idx >= total:
-                    return _build_custom_row(is_sel, opt_w, total)
-                checked_now = _checked_indices(us, total)
-                return _build_regular_row(
-                    us, options, multi, idx, cur, checked_now, opt_w,
-                )
+
+        def _regular_renderer(item, idx, is_sel, is_checked=None):
+            # ★ 2026-10-21：列表末尾伪选项行单独渲染（无勾选标记）。
+            # ★ 2026-10-22：Claude 风格——说明缩进显示在选项下方。
+            if idx >= total:
+                return _build_custom_row(is_sel, opt_w, total, multi)
+            checked_now = _checked_indices(us, total)
+            return _build_regular_row(
+                us, options, multi, idx, cur, checked_now, opt_w,
+            )
 
         # 多选勾选态：控件内部与 ``us.checked`` 双向同步（控件受控 values
         # 由 us.checked 派生——数字键切换勾选后控件高亮即时回显）。
@@ -2005,7 +2001,7 @@ def UserSelectPopup(props) -> object:
                 "onCancel": _on_cancel,
                 "onHighlight": _on_highlight,
                 "onWindowChange": _on_window_change,
-                "renderItem": _regular_renderer if not split else _split_renderer,
+                "renderItem": _regular_renderer,
                 "consumeAll": True,
                 "focus": control_focus,
             })
@@ -2019,13 +2015,13 @@ def UserSelectPopup(props) -> object:
                 "onCancel": _on_cancel,
                 "onHighlight": _on_highlight,
                 "onWindowChange": _on_window_change,
-                "renderItem": _regular_renderer if not split else _split_renderer,
+                "renderItem": _regular_renderer,
                 "consumeAll": True,
                 "focus": control_focus,
             })
         rows.append(control)
 
-        # ── 选中项完整说明块（分栏模式） ──
+        # ── 选中项完整说明块（说明超宽时在列表下方展开） ──
         for i, line in enumerate(desc_block_lines):
             prefix = "  \u25b8 " if i == 0 else "    "
             rows.append(h(TEXT, {
