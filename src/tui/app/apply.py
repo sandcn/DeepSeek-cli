@@ -589,12 +589,21 @@ def _append_tool_replay(model, msg, anon_ids: list | None = None) -> None:
     （见 ``_append_assistant_replay``）；成功位按消息携带的失败标记还原
     （``is_error``/``status``）——修复前无条件 ``True``，历史回放中原失败的
     工具被渲染为 ✔（信息失真）。消息无该字段时保持 True（无法还原）。
+
+    ★ 2026-10-23（用户需求：bash 工具卡不能显示 JSON）：tool 消息 content
+    是工具返回给大模型的原始结果（bash 为 ``{"stdout","stderr",
+    "returncode"}`` JSON），回放经 ``format_tool_message_content`` 转为与
+    实时工具卡一致的输出文本；``read`` 的聊天卡隐藏判定仍使用原始 content。
     """
     from src.tui.pipeline.message_display import _content_str
+    from src.tui.pipeline.tool_output_display import format_tool_message_content
     tool_call_id = msg.get("tool_call_id") or ""
     if not tool_call_id and anon_ids:
         tool_call_id = anon_ids.pop(0)
-    content = _content_str(msg.get("content", ""))
+    # ★ 原始 content 仍用于结构判定（read 隐藏规则）；工具卡正文再经
+    #   ``format_tool_message_content`` 把 bash / bash_opt 等结构化 JSON
+    #   转为与实时执行一致的 stdout/stderr / output / 选择结果文本。
+    raw_content = _content_str(msg.get("content", ""))
     # ★ 用户需求：read 聊天区工具卡只显示标题行（隐藏读到的文件内容）——
     #   历史回放的工具消息内容为工具返回值（成功读取 = ``文件: <path>\n<内容>``），
     #   命中该形态即标记聊天卡隐藏该内容行；内容行仍保留在工具块数据中
@@ -602,14 +611,19 @@ def _append_tool_replay(model, msg, anon_ids: list | None = None) -> None:
     chat_hidden = False
     _box = getattr(model, "tool_boxes", {}).get(tool_call_id)
     _tool_name = ""
+    _tool_detail = ""
     if _box is not None:
         _extra = getattr(_box, "extra", None) or {}
         _tool_name = _extra.get("tool_name") or ""
+        _tool_detail = str(_extra.get("tool_detail") or "")
         if (
             _extra.get("tool_name") == "read"
-            and content.lstrip().startswith("文件: ")
+            and raw_content.lstrip().startswith("文件: ")
         ):
             chat_hidden = True
+    content = format_tool_message_content(
+        _tool_name, raw_content, detail=_tool_detail,
+    )
     if content.strip():
         # ★ markdown 输出工具（web_search / web_fetch）：历史回放同样经流式
         #   markdown 渲染为工具卡正文（与实时执行路径一致——工具类声明
