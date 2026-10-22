@@ -1,10 +1,12 @@
 """App — 根组件：flexbox column 布局消息区 + 底部区。
 
 组件树结构（非全屏流动模型）：
-  - 消息区（flexGrow=1）：顶部标题栏 + Static 聊天历史 + 实时解析行——
-    「占据剩余高度」意图（非全屏流动模型高度由内容驱动，无固定视口时
-    grow 为空操作；未来引入高度约束即生效）。
-  - 底部区：状态栏 + 输入区（固定内容高度）。
+  - 消息区（上屏 Box，flexGrow=1）：顶部标题栏 + Static 聊天历史 +
+    实时解析行——**无边框 Box 包裹**，`width="100%"`（宽度跟随终端宽度），
+    高度随内容自动增长（非全屏流动模型高度由内容驱动；flexGrow 为未来
+    引入视口高度约束预留，届时自动撑满可用高度）。
+  - 底部区（下屏 Box）：状态栏 + 输入区（固定内容高度）——同样**无边框
+    Box 包裹**，`width="100%"`（宽度跟随终端宽度）。
   - Static 包裹聊天历史（静态内容，首差异行之前永不重写）
 
 轨迹视图（2026-08-19，Ctrl+H 开关；2026-08-17 迁移到**模态全屏视图通用
@@ -21,7 +23,7 @@ Claude Code 视觉对齐：顶部标题栏（TopHeader）为文档首行，其�
 
 from __future__ import annotations
 
-from src.tui.ink import h, APP, Column
+from src.tui.ink import h, APP, Box
 from .chat_view import ChatView, _ParseLine
 from .header import TopHeader
 from .status_bar import StatusBar
@@ -101,8 +103,11 @@ def App(props) -> object:
     #   （flexGrow=1，聊天历史/实时解析行/工具状态头/subagent 面板）与底部区
     #   （状态栏 + 输入区）分组。非全屏流动模型下 grow 为空操作（高度内容
     #   驱动），结构清晰、语义明确；未来引入高度约束（视口 pin）即生效。
-    # ★ 阶段2（标准布局容器重构）：消息区/底部区 BOX → Column（语义化门面，
-    #   Column 即 BOX + flexDirection=column，输出与重构前等价）。
+    # ★ 2026-10-23（用户需求：上屏/下屏都用无边框 Box 包着，上屏 Box
+    #   高度随内容自动扩张、宽度跟随终端宽度）：消息区/底部区改用标准
+    #   ``Box`` 组件（React Ink 门面，默认 flexDirection=column）显式包裹——
+    #   两个 Box 均 width="100%" + border=0；上屏 Box 保留 flexGrow=1
+    #   （内容驱动模型下高度随内容增长，未来视口约束生效即撑满）。
     message_area = [
         # Claude Code 视觉对齐：顶部渐变标题栏（文档首行；committed-chat 因
         # 此落到 y>=1，走非顶部前缀路径——render_frame 已正确回退全量）
@@ -146,12 +151,29 @@ def App(props) -> object:
     else:
         bottom_area = _normal_bottom_area(model, width)
     root_children = [
-        h(Column, {"flexGrow": 1}, message_area),
-        # ★ 底部框锚点（2026-10-21 用户需求：浮窗不得覆盖底部框）：整个底部
-        #   区（状态栏 + 输入区，或模态底部视图）打标记——浮窗
+        # ★ 上屏 Box（2026-10-23 用户需求）：消息区用**无边框 Box** 包裹——
+        #   flexDirection=column（默认纵向堆叠）、flexGrow=1（高度随内容
+        #   自动扩张；内容驱动模型下不占额外高度，未来引入视口高度约束即
+        #   撑满）、width="100%"（宽度跟随终端宽度）、border=0（无边框）。
+        h(Box, {
+            "flexDirection": "column",
+            "flexGrow": 1,
+            "width": "100%",
+            "border": 0,
+        }, message_area),
+        # ★ 下屏 Box（2026-10-23 用户需求）：底部区同样用**无边框 Box** 包裹
+        #   ——width="100%"（宽度跟随终端宽度）、border=0（无边框）。
+        #   ★ 底部框锚点（2026-10-21 用户需求：浮窗不得覆盖底部框）：整个
+        #   底部区（状态栏 + 输入区，或模态底部视图）打标记——浮窗
         #   ``bottom="bottom_area"`` 锚定其上方一行，向上展开，绝不遮挡底部
-        #   框的任何一行。
-        h(Column, {"dataFloatAnchor": "bottom_area"}, bottom_area),
+        #   框的任何一行。标记必须留在下屏 Box 上（浮窗按它的 layout_box
+        #   顶行定位）。
+        h(Box, {
+            "flexDirection": "column",
+            "width": "100%",
+            "border": 0,
+            "dataFloatAnchor": "bottom_area",
+        }, bottom_area),
     ]
     # ★ 通用浮动窗口（2026-10-21 用户需求）：绝对定位层追加为根的最后
     #   子节点——不占文档高度（_measure 分离 absolute），绘制顺序在正常
