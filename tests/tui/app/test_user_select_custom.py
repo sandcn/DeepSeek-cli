@@ -3,7 +3,7 @@
 覆盖：
   - ``UserSelectState`` 新增字段默认值 / 终态 custom 写入；
   - 空闲超时（2026-10-22 用户需求：删除 ``timeout`` 参数，改成「不操作界面
-    三分钟后才算超时」）——每次按键/鼠标操作重置 3 分钟倒计时、共享计时、
+    一分钟后才算超时」）——每次按键/鼠标操作重置 1 分钟倒计时、共享计时、
     已提交问题不刷新、固定 deadline 调用方不受影响；外部编辑器期间暂停；
   - 弹窗「✎ 其他（自定义输入…）」伪选项的完整交互（单选/多选/多问题）；
   - 输入模式 Esc/Tab 退出语义、空文本不提交、伪选项空格不可勾选；
@@ -146,17 +146,35 @@ def test_poll_deadline_zero_deadline_never_expires() -> None:
     assert paused == 0.0 and expired is False
 
 
-def test_idle_deadline_expires_only_after_three_minutes_idle() -> None:
-    """★ 2026-10-22：连续 3 分钟无操作才超时；期间一次操作即续期。"""
+def test_idle_deadline_expires_only_after_one_minute_idle() -> None:
+    """★ 2026-10-22：连续 1 分钟无操作才超时；期间一次操作即续期。"""
     st = UserSelectState(
-        visible=True, options=["A"], idle_timeout=180.0, deadline=180.0,
+        visible=True, options=["A"], idle_timeout=60.0, deadline=60.0,
     )
-    assert _poll_deadline(st, 0.0, 179.9) == (0.0, False)
-    # 100s 时发生一次界面操作 → deadline 顺延到 280s。
-    assert st.touch_activity(100.0) is True
-    assert st.deadline == 280.0
-    assert _poll_deadline(st, 0.0, 279.9) == (0.0, False)
-    assert _poll_deadline(st, 0.0, 280.0) == (0.0, True)
+    assert _poll_deadline(st, 0.0, 59.9) == (0.0, False)
+    # 30s 时发生一次界面操作 → deadline 顺延到 90s。
+    assert st.touch_activity(30.0) is True
+    assert st.deadline == 90.0
+    assert _poll_deadline(st, 0.0, 89.9) == (0.0, False)
+    assert _poll_deadline(st, 0.0, 90.0) == (0.0, True)
+
+
+def test_idle_timeout_constant_and_display_text() -> None:
+    """★ 2026-10-22（用户需求）：空闲窗口 = 60s，展示文案「1 分钟」。"""
+    from src.tools.user_select import _idle_timeout_text
+    from src.core.user_select_state import IDLE_TIMEOUT_SECONDS
+
+    assert IDLE_TIMEOUT_SECONDS == 60.0
+    assert _idle_timeout_text() == "1 分钟"
+
+
+def test_tool_schema_mentions_one_minute_idle_timeout() -> None:
+    """工具 schema（模型可见提词）与常量一致：1 分钟无操作超时。"""
+    from src.tools.user_select import UserSelectFunc
+
+    description = UserSelectFunc.to_tool_schema()["function"]["description"]
+    assert "1 分钟没有任何操作" in description
+    assert "3 分钟" not in description
 
 
 def test_touch_activity_ignores_zero_idle_and_done_state() -> None:
@@ -166,7 +184,7 @@ def test_touch_activity_ignores_zero_idle_and_done_state() -> None:
     assert fixed.deadline == 100.0
 
     finished = UserSelectState(
-        visible=True, options=["A"], idle_timeout=180.0, deadline=100.0,
+        visible=True, options=["A"], idle_timeout=60.0, deadline=100.0,
     )
     finished.try_set_final("confirmed", ["A"])
     assert finished.touch_activity(10.0) is False
@@ -189,11 +207,11 @@ def test_tool_schema_has_no_timeout_param_and_ignores_legacy_timeout() -> None:
 
 def test_any_key_resets_idle_deadline_for_all_pending_questions() -> None:
     """★ 2026-10-22（共享计时）：任一 tab 的操作刷新全部未提交问题的倒计时。"""
-    st1 = _state("Q1", options=["A", "B"], seq=1, idle_timeout=180.0,
+    st1 = _state("Q1", options=["A", "B"], seq=1, idle_timeout=60.0,
                  deadline=time.monotonic() - 10)
-    st2 = _state("Q2", options=["C", "D"], seq=2, idle_timeout=180.0,
+    st2 = _state("Q2", options=["C", "D"], seq=2, idle_timeout=60.0,
                  deadline=time.monotonic() - 10)
-    done = _state("Q3", options=["E"], seq=3, idle_timeout=180.0,
+    done = _state("Q3", options=["E"], seq=3, idle_timeout=60.0,
                   deadline=time.monotonic() - 10)
     done.try_set_final("confirmed", ["E"])
     model, element, root, press = _mount_popup([st1, st2, done])
@@ -201,8 +219,8 @@ def test_any_key_resets_idle_deadline_for_all_pending_questions() -> None:
 
     assert press("arrow_down") is True
     now = time.monotonic()
-    assert st1.deadline >= now + 180 - 5
-    assert st2.deadline >= now + 180 - 5  # 其它 tab 一并刷新
+    assert st1.deadline >= now + 60 - 5
+    assert st2.deadline >= now + 60 - 5  # 其它 tab 一并刷新
     assert done.deadline == stale  # 已提交问题不再刷新
 
 
@@ -217,7 +235,7 @@ def test_fixed_deadline_state_is_not_reset_by_input() -> None:
 
 def test_mouse_activity_also_resets_idle_deadline() -> None:
     """★ 2026-10-22：鼠标操作（滚轮等）同样算「操作界面」。"""
-    st = _state(idle_timeout=180.0, deadline=time.monotonic() - 5)
+    st = _state(idle_timeout=60.0, deadline=time.monotonic() - 5)
     model, element, root, press = _mount_popup([st])
     before = st.deadline
     press("mouse")

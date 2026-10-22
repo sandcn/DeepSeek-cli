@@ -34,11 +34,11 @@ user_select 工具调用各自 append 一个 ``UserSelectState`` 到
     模式（TextInput 接管字符/退格/方向键），Enter 提交自由输入、Esc 返回
     选项。自由输入结果并入 ``result``，并经 ``custom`` 字段返回（见工具层
     JSON）。
-  - ★ 2026-10-22（用户需求：删除 ``timeout`` 参数，改成「不操作界面三分钟
+  - ★ 2026-10-22（用户需求：删除 ``timeout`` 参数，改成「不操作界面一分钟
     后才算超时」）：弹窗每收到一次按键/滚动，就把各未提交问题的倒计时重置
-    为 3 分钟（``_touch_idle_states`` → ``UserSelectState.touch_activity``；
+    为 1 分钟（``_touch_idle_states`` → ``UserSelectState.touch_activity``；
     共享计时：任一 tab 上的操作刷新全部问题）。因此持续操作永不超时，
-    界面空闲 3 分钟才由工具协程判定超时并回退 ``default_options``。外部
+    界面空闲 1 分钟才由工具协程判定超时并回退 ``default_options``。外部
     编辑器（Ctrl+G vim）独占终端期间 ``us.typing=True`` 暂停计时（返回后
     补回），避免长文编辑被超时打断。
   - ★ 2026-10-21（用户需求：Ctrl+G 用 vim 输入）：输入模式内按 Ctrl+G
@@ -764,15 +764,15 @@ def _fallback_empty_options(states: list) -> None:
 
 
 def _touch_idle_states(states: list, now: "float | None" = None) -> None:
-    """空闲计时：界面每发生一次操作，重置各问题的「3 分钟无操作」倒计时。
+    """空闲计时：界面每发生一次操作，重置各问题的「1 分钟无操作」倒计时。
 
     ★ 2026-10-22（用户需求：删除 user_select 的 ``timeout`` 参数，改成
-    「不操作界面三分钟后才算超时」）：工具路径构造的 state 带
-    ``idle_timeout``（``IDLE_TIMEOUT_SECONDS`` = 180s）——本函数对**每个**
+    「不操作界面一分钟后才算超时」）：工具路径构造的 state 带
+    ``idle_timeout``（``IDLE_TIMEOUT_SECONDS`` = 60s）——本函数对**每个**
     未提交（未 done）的此类 state 调用 ``touch_activity``，把 deadline
     顺延为 ``now + idle_timeout``。并发多问题时采用**共享计时**（用户确认
     的方案）：任一 tab 上的一次操作都会重置全部未提交问题——界面整体
-    空闲 3 分钟才算超时。
+    空闲 1 分钟才算超时。
 
     ``idle_timeout`` 为 0 的固定 deadline 调用方（命令系统选择
     ``CommandUiAdapter`` 的 60s 计时）不受影响——``touch_activity`` 返回
@@ -1377,7 +1377,7 @@ def UserSelectPopup(props) -> object:
     Enter 提交 / Esc 返回；输入模式内 Ctrl+G 调用外部编辑器（``EDITOR``，
     默认 vim，多行以 ``⏎`` 折叠显示、返回保留换行）。
     ★ 2026-10-22：``us.typing`` 仅在外部编辑器运行期间为 True（暂停空闲
-    计时）；弹窗内正常打字/导航由每次按键重置 3 分钟空闲倒计时。
+    计时）；弹窗内正常打字/导航由每次按键重置 1 分钟空闲倒计时。
 
     ★ 2026-10-21（继续优化）：Submit 页分页滚动 + 数字键 1-9 跳题；长列表
     显示上方/下方隐藏项数；tab 显示回答摘要；多选 `a` 全选/`c` 清空；
@@ -1534,8 +1534,8 @@ def UserSelectPopup(props) -> object:
     use_modal_scope(visible, fullscreen=False)
 
     # ── 空闲计时（2026-10-22 用户需求：删除 ``timeout`` 参数，改成「不操作
-    #   界面三分钟后才算超时」）──
-    # 弹窗每收到一次按键/鼠标操作，就把各未提交问题的倒计时重置为 3 分钟
+    #   界面一分钟后才算超时」）──
+    # 弹窗每收到一次按键/鼠标操作，就把各未提交问题的倒计时重置为 1 分钟
     # （共享计时：任一 tab 上的操作都刷新全部，见 ``_touch_idle_states``）。
     # handler 恒返回 False（不消费事件），只刷新计时——父组件 use_input 先于
     # 子控件被 router 调用（前序收集），本次按键随后仍由后续 handler / 控件
@@ -1551,7 +1551,7 @@ def UserSelectPopup(props) -> object:
     # 列表末尾伪装项「✎ 其他（自定义输入…）」Enter 进入编辑模式：
     #   - 弹窗选项控件失焦（focus=False），TextInput 接管字符/退格/方向键；
     #   - 父 handler 只消费 Esc（退出输入）与 Tab（切换问题并退出输入）；
-    #   - ★ 2026-10-22：输入期间每次按键都重置 3 分钟空闲倒计时（不再整段
+    #   - ★ 2026-10-22：输入期间每次按键都重置 1 分钟空闲倒计时（不再整段
     #     暂停超时）；只有外部编辑器（vim）运行期间 ``us.typing=True``
     #     暂停计时，返回后补回。
     def _checked_values() -> list:
@@ -1637,9 +1637,9 @@ def UserSelectPopup(props) -> object:
     def _enter_custom() -> None:
         """进入自定义输入编辑模式（空缓冲；高亮伪选项行）。
 
-        ★ 2026-10-22（用户需求：删除 timeout 参数，改成「不操作界面三分钟
+        ★ 2026-10-22（用户需求：删除 timeout 参数，改成「不操作界面一分钟
         后才算超时」）：进入输入模式**不再**置 ``us.typing``——正常打字属于
-        界面操作，每次按键经 ``_touch_idle_states`` 重置 3 分钟倒计时；
+        界面操作，每次按键经 ``_touch_idle_states`` 重置 1 分钟倒计时；
         ``typing`` 仅用于外部编辑器（Ctrl+G vim）独占终端期间暂停计时。
         """
         if us is None or not allow_custom:
@@ -1696,10 +1696,10 @@ def UserSelectPopup(props) -> object:
         编辑器返回文本后回填到输入行（仍保持输入模式，Enter 确认）；
         取消/失败（None）保持原文本并显示错误提示。
 
-        ★ 2026-10-22（用户需求：删除 timeout 参数，改成「不操作界面三分钟
+        ★ 2026-10-22（用户需求：删除 timeout 参数，改成「不操作界面一分钟
         后才算超时」）：外部编辑器独占终端，弹窗在此期间收不到任何按键——
         把 ``us.typing`` 置 True 让工具轮询暂停空闲计时，返回后（finally）
-        复位并把编辑耗时补回倒计时，避免长时间编辑被 3 分钟空闲超时打断。
+        复位并把编辑耗时补回倒计时，避免长时间编辑被 1 分钟空闲超时打断。
         """
         if us is None or not custom_editing_ref.current:
             return

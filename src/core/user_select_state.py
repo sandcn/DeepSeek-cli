@@ -9,8 +9,8 @@
 终态写入，``mark_answered`` 支持提交前重答。
 
 ★ 2026-10-22（用户需求：删除 user_select 的 ``timeout`` 参数，改为「不操作
-界面三分钟后才算超时」）：新增 ``idle_timeout`` 字段与 ``touch_activity()``
-——工具路径以 ``IDLE_TIMEOUT_SECONDS``（180s）作为空闲窗口，弹窗每收到一次
+界面一分钟后才算超时」）：新增 ``idle_timeout`` 字段与 ``touch_activity()``
+——工具路径以 ``IDLE_TIMEOUT_SECONDS``（60s）作为空闲窗口，弹窗每收到一次
 界面操作就重置 ``deadline``；固定 deadline 的调用方 ``idle_timeout`` 为 0，
 行为不变。
 """
@@ -23,14 +23,14 @@ from dataclasses import dataclass, field
 
 __all__ = ["IDLE_TIMEOUT_SECONDS", "UserSelectState"]
 
-#: 空闲超时窗口（秒）：user_select 弹窗 **3 分钟没有任何操作**（按键/滚动）
+#: 空闲超时窗口（秒）：user_select 弹窗 **1 分钟没有任何操作**（按键/滚动）
 #: 才判定超时（回退 default_options）。
 #: ★ 2026-10-22（用户需求：删除 user_select 的 timeout 参数，改为「不操作
-#:   界面三分钟后才算超时」）：工具路径构造 state 时写入 ``idle_timeout``，
+#:   界面一分钟后才算超时」）：工具路径构造 state 时写入 ``idle_timeout``，
 #:   弹窗每收到一次输入就经 ``touch_activity`` 把 ``deadline`` 重置为
 #:   ``now + idle_timeout``；命令系统选择（CommandUiAdapter）等固定 deadline
 #:   调用方 ``idle_timeout`` 保持 0，计时语义不变。
-IDLE_TIMEOUT_SECONDS = 180.0
+IDLE_TIMEOUT_SECONDS = 60.0
 
 
 @dataclass
@@ -61,7 +61,7 @@ class UserSelectState:
         typing: 外部编辑器（Ctrl+G，默认 vim）当前是否正在运行（跨线程
             标志；组件写、工具轮询读）——为 True 时暂停空闲超时，编辑器
             返回后把运行时长补回 ``deadline``。★ 2026-10-22：超时改为
-            「界面 3 分钟没有操作才超时」后，弹窗内正常打字/浏览由每次
+            「界面 1 分钟没有操作才超时」后，弹窗内正常打字/浏览由每次
             按键（``touch_activity``）重置倒计时；只有外部编辑器独占终端、
             界面收不到按键时才需要本标志暂停计时。
         custom: 本次回答的自由输入文本（空串 = 未使用自定义输入）。

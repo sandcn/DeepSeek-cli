@@ -502,7 +502,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **19 个内�
 | `read_image` | ri | IO | ✅ | 读取图像文件内容（DSH 对齐：路径参数 `file_path`；全部 Pillow 可解码格式，无扩展名按内容识别；自动 EXIF 方向 + 8-bit sRGB 规范化；大图自动降采样到 2048×2048 总像素预算 / 4 MiB 目标并给出原尺寸坐标倍数；图片持久化到内容寻址附件库并返回附件引用）；**仅当模型档案「多模态读图」=true 时加载**（`/models` 设置，默认 false；false 时工具不进入工具集且执行被拒绝）。本项目保留分块读取与图像操作（灰度/旋转/翻转/缩放）扩展。发送前客户端会自动瘦身（折叠旧图+压缩大图+编码缓存），缓解多图场景每轮重传导致的请求卡顿 |
 | `web_search` | ws | 网络 | ❌ | DeepSeek 官方原生联网搜索（Anthropic 兼容 Messages API + web_search_20250305），返回来源列表（标题/URL/摘要） |
 | `web_fetch` | — | 网络 | ✅ | 获取指定 URL 的网页全文（自动提取正文，SSRF 防护，仅 http/https） |
-| `user_select` | us | 交互 | ❌ | 向用户显示交互式选择界面（单选/多选/**3 分钟无操作超时**回退/非交互回退，选项可带说明；支持并发提问——多个问题可同一轮同时弹出、以 tab 形式一起回答）。超时按空闲计时：每次按键/滚动重置 3 分钟倒计时，持续操作永不超时（外部编辑器 Ctrl+G 期间暂停计时）。TUI：标题右侧显示位置/多选已选数/倒计时，选项带序号并支持 `1-9` 快选（单选立即确认、多选切换勾选）、`Home/End`/`PgUp/PgDn` 导航；分栏说明右栏显示每个选项自己的说明、选中项完整说明在列表下方展开；主/次两行快捷键提示；长列表显示 `▲ 上方 N 项 / ▼ 下方 M 项`；多选支持 `a` 全选/全不选、`c` 清空；自定义输入支持 `Ctrl+U` 清空/`Ctrl+W` 删词；Submit 页支持分页滚动与 `1-9` 跳题 |
+| `user_select` | us | 交互 | ❌ | 向用户显示交互式选择界面（单选/多选/**1 分钟无操作超时**回退/非交互回退，选项可带说明；支持并发提问——多个问题可同一轮同时弹出、以 tab 形式一起回答）。超时按空闲计时：每次按键/滚动重置 1 分钟倒计时，持续操作永不超时（外部编辑器 Ctrl+G 期间暂停计时）。TUI：标题右侧显示位置/多选已选数/倒计时，选项带序号并支持 `1-9` 快选（单选立即确认、多选切换勾选）、`Home/End`/`PgUp/PgDn` 导航；分栏说明右栏显示每个选项自己的说明、选中项完整说明在列表下方展开；主/次两行快捷键提示；长列表显示 `▲ 上方 N 项 / ▼ 下方 M 项`；多选支持 `a` 全选/全不选、`c` 清空；自定义输入支持 `Ctrl+U` 清空/`Ctrl+W` 删词；Submit 页支持分页滚动与 `1-9` 跳题 |
 | `subagent` | sa | Agent | ❌ | 并行派发子 Agent 执行独立任务（支持类型：map/review/plan/execute）；直接后台执行，立即返回 `{"task_id": "sa-xxx"}` JSON，完成后结果自动插入对话（或由 subagent_opt 管理）。后台 subagent 仅主 Agent 可派发 |
 | `subagent_opt` | so | Agent | ❌ | 按 task_id 操作后台 subagent 任务（subagent 直接后台启动）：read（读取当前状态与已产生的结果，立即返回）/ wait（等待完成取结果，timeout 秒，默认 300/0 无限）/ kill（取消后台 subagent 任务）/ wait_all（等待**所有**后台 subagent 任务完成，返回每个任务结果的 JSON 数组，无需 task_id）。仅主 Agent 可用 |
 | `skill` | sk | 技能 | ✅ | 加载技能（skill）的完整指令（技能目录随系统提示词注入，任务与技能匹配或点名技能时调用） |
@@ -515,7 +515,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **19 个内�
 | **代码搜索** | grep, glob | 正则搜索源码、通配符查找文件 |
 | **命令执行** | bash, bash_opt | 安全沙盒中执行 shell 命令；按 task_id 操作后台 bash 任务（bash 后台任务注册在 bash 专用表 `_background_tasks`），含读取/等待/终止/终端输入、窗口截图（screenshot / windows / window，含整屏与多显示器截取、按控件区域截图、置顶与几何记忆）、控件清单（elements，Windows 优先 UI Automation）、图像/文字定位（locate）、等待窗口（wait_window，默认等到可见可操作）、剪贴板（clipboard）、动作序列（sequence）与 GUI 窗口输入注入（move/hover/click/drag/scroll/key/type，支持相对移动与长按、按控件名/自动化 ID 定位、语义坐标、界面变化等待与前后截图比对，点击/按键保证最小按下时长以免被逐帧采样的游戏吞掉） |
 | **网络访问** | web_search, web_fetch | 网页搜索（DeepSeek 官方原生搜索）与网页全文获取 |
-| **用户交互** | user_select | 交互式选择弹窗（单选/多选/3 分钟无操作超时回退；支持并发提问，多问题 tab 一起显示；标题元信息/序号数字键快选/分栏说明与表头/Home-End-PgUp-PgDn 导航/两行提示/长列表上下指示/多选 a 全选 c 清空/输入 Ctrl+U Ctrl+W/Submit 分页与 1-9 跳题） |
+| **用户交互** | user_select | 交互式选择弹窗（单选/多选/1 分钟无操作超时回退；支持并发提问，多问题 tab 一起显示；标题元信息/序号数字键快选/分栏说明与表头/Home-End-PgUp-PgDn 导航/两行提示/长列表上下指示/多选 a 全选 c 清空/输入 Ctrl+U Ctrl+W/Submit 分页与 1-9 跳题） |
 | **Agent 调度** | subagent, subagent_opt | 并发派发原子 Agent 执行独立任务；按 task_id 操作后台 subagent 任务（subagent 后台任务注册在独立表 `_subagent_tasks`，与 bash 后台任务分表隔离） |
 | **技能** | skill | 加载可用技能（skill）的完整指令 |
 
