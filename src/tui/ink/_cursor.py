@@ -100,6 +100,11 @@ def position_cursor(renderer, width: int, fiber) -> bool:
     已真正放置」——调用方据此决定是否显示光标（``place_cursor`` 未发生 =
     光标位置未知，应保持隐藏，避免停在旧位置）。
 
+    ★ 2026-10-22（用户需求：空输入同样显示光标）：空输入**照常定位并显示**
+    ——光标准确反映输入位置（prompt 之后）；此时 block 光标会盖住
+    placeholder 首字符，属预期视觉（placeholder 仅提示文本，输入首字符后
+    自然可见）。
+
     Returns:
         True — 已调用 ``renderer.place_cursor`` 完成定位；
         False — 未定位（fiber 无布局盒：布局未完成/节点已失效）。

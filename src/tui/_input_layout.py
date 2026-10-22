@@ -310,6 +310,17 @@ def _compute_input_layout(text: str, max_input: int) -> tuple[int, list[list[str
         seg_wrapped = _wrap_by_width(segment, max_input) or [""]
         wrapped_by_logical.append(seg_wrapped)
         total_rows += len(seg_wrapped)
+    # ★ 2026-10-22（用户需求：输入字符到行尾时光标在下一行显示）：最后一段
+    #   恰好填满一行时补一个空段——插入点位于满宽行末列之后，下一字符会落到
+    #   下一行行首；渲染端据此多显示一行空行承载光标（``_cursor_visual_from_layout``
+    #   把该边界归到下一段，见函数内注释），避免 block 光标压在本行最后一个
+    #   字符上。
+    if wrapped_by_logical:
+        last_segs = wrapped_by_logical[-1]
+        last_seg = last_segs[-1] if last_segs else ""
+        if last_seg and wcswidth_simple(last_seg) >= max_input:
+            wrapped_by_logical[-1] = last_segs + [""]
+            total_rows += 1
     return max(1, total_rows), wrapped_by_logical
 
 
@@ -349,7 +360,13 @@ def _cursor_visual_from_layout(
                 cum2 = 0
                 visual_line_in_logical = 0
                 for i, seg in enumerate(segs):
-                    if expanded_in_line <= cum2 + len(seg):
+                    # ★ 2026-10-22（用户需求：输入字符到行尾时光标在下一行显示）：
+                    #   边界归属**下一段**（严格小于才留在本段）——光标位于满宽
+                    #   行末列之后时插入点属于下一行行首（下一字符落在下一行），
+                    #   显示在本段末列会让 block 光标压住最后一个字符。文本末尾
+                    #   满宽时下一段由 ``_compute_input_layout`` 补出的空段承担
+                    #   （上面循环结束走 else 分支，col=0）。
+                    if expanded_in_line < cum2 + len(seg):
                         visual_line_in_logical = i
                         prefix = seg[:expanded_in_line - cum2]
                         col_in_line = wcswidth_simple(prefix)

@@ -115,6 +115,15 @@ class InkRenderer(_RendererContentMixin):
         #   place_cursor 列上限不钳制）。set_width 由 session 渲染帧传播
         #   （与 set_height 同模式，宽度变化时同步）。
         self._width: int = 0
+        # ★ 2026-10-22（启动期渲染错位修复）：本会话写过的最高物理行
+        #   （0-based）。「文档上方空行区」在屏幕上可能保留两类内容：
+        #   ① 首帧之前用户终端里已有的历史输出（**不得清除**）；② 本会话
+        #   更早帧绘制过的 UI（偏移变化后必须清除，否则残留上一版 banner/
+        #   边框）。两者在可见区内无法用 prev 帧区分，故用本字段界定会话
+        #   写入范围——清理时只清 ``q >= _painted_top`` 的物理行。首帧全量
+        #   写入按 ``max(0, _buf_h - n)`` 初始化（底部锚定时 = 文档起始物理
+        #   行），``reset(full=True)`` 清屏路径重置为 0。
+        self._painted_top: int = 0
         # ★ 物理缓冲行数（用户需求「除 resize 外均增量」）：
         #   - ``_write_full``（首帧/reset(full=True) 后） = doc_h（无末尾空行，
         #     最后一行不写 \n）；★ 无末尾空行模型（2026-08-15）；
@@ -689,6 +698,8 @@ class InkRenderer(_RendererContentMixin):
             self._cursor_row = 1
             self._buf_h = 0
             self._top_aligned = True
+            # ★ 2026-10-22：已清屏——屏幕干净，重置会话写入范围允许清理整屏。
+            self._painted_top = 0
             self._start_row = None
             # 本路径已清屏；避免 _write_full 二次清屏（幂等但多一次 ED 序列）。
             self._clear_before_full = False
@@ -985,6 +996,18 @@ class InkRenderer(_RendererContentMixin):
             drift1 = buf_h1 - new_h   # 增长后漂移
         prev = cast(Frame, self._prev)
         rewrites: list[tuple[int, int]] = []
+        # ★ 2026-10-22（启动期渲染错位修复）：偏移变化时文档可能上移到更靠上
+        #   的物理行——同步扩大会话写入范围（清理"上方空行区"只清会话写过/
+        #   映射到的行，不误清用户终端里首帧之前的历史输出）。
+        self._painted_top = min(self._painted_top, max(0, drift1))
+        # ★ 2026-10-22（启动期渲染错位修复）：本帧新旧偏移不同时，物理行与
+        #   文档行的映射整体位移——``old_idx < 0``（旧布局同样覆盖不到）的
+        #   物理行无法用 prev 帧判断内容，但屏幕上可能残留**更早帧**绘制的
+        #   UI（如启动首帧回退底部锚定后、文档增长使偏移从 8 变 6，顶部
+        #   0..5 行残留上一版 banner/边框）。偏移变化时对会话写入范围内的
+        #   这类行保守清空；偏移不变时保持原判定（该区域上次已清过，避免
+        #   每帧重复清行）。
+        drift_changed = drift0 != drift1
         for q in range(buf_top0, buf_h0):
             old_idx = q - drift0
             doc_idx = q - drift1
@@ -992,13 +1015,32 @@ class InkRenderer(_RendererContentMixin):
             if doc_idx < 0:
                 # 文档上方空行区（增长时文档进入屏幕内）：物理行须为空。
                 # ★ BUG-76 同源：漂移时 old_idx 越界（残留自更早帧）→ 保守清除。
-                if old_line is not None or old_idx >= prev_h:
+                # ★ 2026-10-22：偏移变化时 old_idx < 0 的未知行同样清除
+                #   （仅限会话写入范围，用户历史行保持原样）。
+                if (
+                    old_line is not None
+                    or old_idx >= prev_h
+                    or (
+                        drift_changed
+                        and old_idx < 0
+                        and q >= self._painted_top
+                    )
+                ):
                     rewrites.append((q, -1))
                 continue
             if doc_idx >= new_h:
                 # 残留（越界；无末尾空行模型下 doc_idx == new_h 已越界）：
                 # 物理行须为空。★ BUG-76 同源。
-                if old_line is not None or old_idx >= prev_h:
+                # ★ 2026-10-22：偏移变化时 old_idx < 0 的未知行同样清除。
+                if (
+                    old_line is not None
+                    or old_idx >= prev_h
+                    or (
+                        drift_changed
+                        and old_idx < 0
+                        and q >= self._painted_top
+                    )
+                ):
                     rewrites.append((q, -1))
                 continue
             new_line = frame.lines[doc_idx]
@@ -1180,6 +1222,14 @@ class InkRenderer(_RendererContentMixin):
             drift = buf_h - new_h
         # 待重写项：(物理行, 新文档行)；doc_idx==-1 表示清除残留/空行。
         rewrites: list[tuple[int, int]] = []
+        # ★ 2026-10-22（启动期渲染错位修复）：偏移变化时文档可能上移到更靠上
+        #   的物理行——同步扩大会话写入范围（同 ``_grow_drifted``，避免误清
+        #   用户终端里首帧之前的历史输出）。
+        self._painted_top = min(self._painted_top, max(0, drift))
+        # ★ 2026-10-22（启动期渲染错位修复）：偏移变化时映射整体位移——见
+        #   ``_grow_drifted`` 同名变量注释（物理行旧内容无法由 prev 帧判定时
+        #   保守清空，消除上一版 UI 残留在文档上方空行区）。
+        drift_changed = old_drift != drift
         for q in range(buf_top, buf_h):
             doc_idx = q - drift
             old_idx = q - old_drift
@@ -1190,14 +1240,33 @@ class InkRenderer(_RendererContentMixin):
                 #   （``old_idx >= prev_h``——物理缓冲漂移，旧内容残留自更早
                 #   帧）时无法用 ``old_line is None`` 判断空——须保守清除，
                 #   否则缩短进入屏幕内后旧行残留在可见区顶部。
-                if old_line is not None or old_idx >= prev_h:
+                # ★ 2026-10-22：偏移变化时 old_idx < 0 的未知行同样清除
+                #   （仅限会话写入范围）。
+                if (
+                    old_line is not None
+                    or old_idx >= prev_h
+                    or (
+                        drift_changed
+                        and old_idx < 0
+                        and q >= self._painted_top
+                    )
+                ):
                     rewrites.append((q, -1))
                 continue
             if doc_idx >= new_h:
                 # 残留（越界；无末尾空行模型下 doc_idx == new_h 已越界）：
                 # 物理行须为空。★ BUG-76 同源：漂移时 old_idx 越界（物理行
                 # 内容残留自更早帧）→ 保守清除，防缩短后旧行残留。
-                if old_line is not None or old_idx >= prev_h:
+                # ★ 2026-10-22：偏移变化时 old_idx < 0 的未知行同样清除。
+                if (
+                    old_line is not None
+                    or old_idx >= prev_h
+                    or (
+                        drift_changed
+                        and old_idx < 0
+                        and q >= self._painted_top
+                    )
+                ):
                     rewrites.append((q, -1))
                 continue
             new_line = frame.lines[doc_idx]
@@ -1281,6 +1350,8 @@ class InkRenderer(_RendererContentMixin):
                 except (OSError, ValueError):
                     _logger.debug("空帧全量清屏写入异常", exc_info=True)
                 self._start_row = None
+                # ★ 2026-10-22：已清屏——重置会话写入范围（屏幕干净）。
+                self._painted_top = 0
             self._buf_h = 0
             self._top_aligned = True
             self._cursor_row = self._bottom_row(frame.height)
@@ -1332,9 +1403,16 @@ class InkRenderer(_RendererContentMixin):
             else:
                 self._buf_h = max(self._height, n)
             self._top_aligned = False
+            # ★ 2026-10-22（启动期渲染错位修复）：记录本会话写入范围顶部
+            #   （0-based）——文档起始物理行 = ``_buf_h - n``（底部锚定贴底时
+            #   为 height-n；起始行锚定未滚动时为 start_row-1）。清屏路径
+            #   （resize）屏幕已干净，重置为 0，允许清理整屏残留。
+            self._painted_top = 0 if clear_first else max(0, self._buf_h - n)
         else:
             self._buf_h = n
             self._top_aligned = True
+            # height=0（文档坐标模型）：无屏幕约束，整个文档都属会话区域。
+            self._painted_top = 0
         self._cursor_row = self._bottom_row(n)
         self._stream.write(buf.getvalue())
         self._stream.flush()
@@ -1500,6 +1578,9 @@ class InkRenderer(_RendererContentMixin):
         # ★ 无末尾空行模型（2026-08-15）：软重置后物理缓冲 = 0（无虚拟空行）。
         self._buf_h = 0
         self._top_aligned = True
+        # ★ 2026-10-22：clear_screen 已清屏——重置会话写入范围（屏幕干净，
+        #   下一帧可安全清理整屏）。
+        self._painted_top = 0
         # ★ 2026-10-06：clear_screen 归位光标到 (1,1)、坐标系重置——起始行
         #   锚定失效（下一帧文档自屏幕第 1 行重建，既有「顶部对齐 + buf_h=0」
         #   软重置语义即此）。
@@ -1594,6 +1675,9 @@ class InkRenderer(_RendererContentMixin):
             self._cursor_row = 0
             self._buf_h = 0
             self._top_aligned = True
+            # ★ 2026-10-22：下一次全量写入先清屏（``_clear_before_full``）——
+            #   屏幕将变干净，重置会话写入范围。
+            self._painted_top = 0
             # ★ 2026-10-06：起始行锚定仅服务「会话启动首帧」——resize 全量
             #   重写退回底部锚定（屏幕布局已变，旧起始行不再适用）。
             self._start_row = None
@@ -1606,6 +1690,8 @@ class InkRenderer(_RendererContentMixin):
             # ★ 无末尾空行模型（2026-08-15）：软重置后物理缓冲 = 0（无虚拟空行）。
             self._buf_h = 0
             self._top_aligned = True
+            # ★ 2026-10-22：软重置**不清屏**，保留会话写入范围（保守：不把
+            #   首屏之前用户历史纳入可清理区域）。
             # ★ 2026-10-06：软重置（resume/清屏复用）退回既有锚定语义——
             #   起始行锚定仅在「会话启动首帧 + 未发生复位」期间有效。
             self._start_row = None
