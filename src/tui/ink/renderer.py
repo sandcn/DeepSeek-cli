@@ -1044,8 +1044,12 @@ class InkRenderer(_RendererContentMixin):
                     rewrites.append((q, -1))
                 continue
             new_line = frame.lines[doc_idx]
+            # ★ 性能/语义统一（2026-10-23）：比较走 ``_lines_equal``（身份 /
+            #   同 runs 列表 / run 数 / 已缓存宽度 O(1) 快速拒绝），修复前直接
+            #   ``old_line.runs != new_line.runs``——漂移重写每帧对可见行逐 run
+            #   比较，宽字符/重建行场景漏掉宽度快速拒绝。
             if old_line is not new_line and (
-                old_line is None or old_line.runs != new_line.runs
+                old_line is None or not _fd._lines_equal(old_line, new_line)
             ):
                 rewrites.append((q, doc_idx))
         current_row = self._cursor_row
@@ -1270,8 +1274,12 @@ class InkRenderer(_RendererContentMixin):
                     rewrites.append((q, -1))
                 continue
             new_line = frame.lines[doc_idx]
+            # ★ 性能/语义统一（2026-10-23）：比较走 ``_lines_equal``（身份 /
+            #   同 runs 列表 / run 数 / 已缓存宽度 O(1) 快速拒绝），修复前直接
+            #   ``old_line.runs != new_line.runs``——漂移重写每帧对可见行逐 run
+            #   比较，宽字符/重建行场景漏掉宽度快速拒绝。
             if old_line is not new_line and (
-                old_line is None or old_line.runs != new_line.runs
+                old_line is None or not _fd._lines_equal(old_line, new_line)
             ):
                 rewrites.append((q, doc_idx))
         if not rewrites:

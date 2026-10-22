@@ -136,6 +136,45 @@ def _entry3(entry) -> tuple:
     return entry[0], entry[1], None
 
 
+def _fill_single_width_run(
+    d: dict, row, col: int, text: str, st, link: str | None,
+) -> int:
+    """把「单宽字符 run」写入列键字典（含行首零宽暂存合并），返回下一列键。
+
+    ★ 修复（2026-10-23 画布内容丢失）：零宽字符（ZWSP / VS16 / 组合标记 /
+    ZWJ）位于**独立 run** 且处于行首时，``_put_char`` 把它暂存在当前列键且
+    **不推进列号**；下一个 run 走单宽快路径时直接 ``d[col] = ...`` 会覆盖该
+    键 → 零宽字符静默丢失（如 ``Line(["\u200b"], ["bb"])`` 渲染成 ``bb``）。
+    本函数在写首字符前把暂存零宽并入（样式/链接以基字符为准，与
+    ``_put_char`` 同口径），修复后逐字往返与逐列合并结果一致。
+
+    Args:
+        d: 目标列键字典（切片或整行）。
+        row: 目标画布行（dict/None；仅 ``_merge_line_dict`` 传入，用于识别
+            既有行在起始列的零宽暂存；``_line_as_dict`` 传 None）。
+        col: 当前列键。
+        text: run 文本（调用方保证每个字符显示宽度恰为 1）。
+        st: 字符样式。
+        link: 字符超链接 URL。
+
+    Returns:
+        下一列键。
+    """
+    if not text:
+        return col
+    ent = d.get(col)
+    if ent is None and row is not None:
+        ent = row.get(col)
+    if ent is not None and wcswidth_simple(ent[0]) == 0:
+        d[col] = (ent[0] + text[0], st, link)
+        text = text[1:]
+        col += 1
+    for ch in text:
+        d[col] = (ch, st, link)
+        col += 1
+    return col
+
+
 def _line_as_dict(line: Line) -> dict:
     """将 Line 转为列键字典（``{display_col: (ch, style)}``，CJK 安全）。
 
@@ -158,13 +197,9 @@ def _line_as_dict(line: Line) -> dict:
         st = run.style
         lk = run.link
         if t.isascii() and t.isprintable():
-            for ch in t:
-                d[col] = (ch, st, lk)
-                col += 1
+            col = _fill_single_width_run(d, None, col, t, st, lk)
         elif _is_single_width_run(t, run.width):
-            for ch in t:
-                d[col] = (ch, st, lk)
-                col += 1
+            col = _fill_single_width_run(d, None, col, t, st, lk)
         else:
             for cluster in grapheme_clusters(t):
                 # ★ P1-1 修复：零宽字符合并到前键（见 _put_char）；
@@ -321,6 +356,10 @@ def _merge_line_dict(row, x: int, line: Line) -> dict:
     left_boundaries: list[int] = []
     wide_starts: list[int] = []
     col = x
+    # ★ 2026-10-23：目标行**前移**归一化——单宽快路径需要读取既有行在起始列
+    #   的「行首零宽暂存」键（见 ``_fill_single_width_run``）；修复前在切片
+    #   构建完成后才归一化，无法访问。
+    row = _ensure_row_dict(row)
     # ★ 性能（2026-08-05）：纯可打印 ASCII run 走批量快路径（宽度 == 字符数），
     #   免逐字符 ``wcswidth_simple`` 调用——画布合并热路径（TEXT 行合并、
     #   StaticLines 非 x==0 路径）以 ASCII 文本为主。
@@ -333,16 +372,12 @@ def _merge_line_dict(row, x: int, line: Line) -> dict:
             # 有左邻键（run 内其余字符必然有）。
             if (col - 1) not in slice_:
                 left_boundaries.append(col)
-            for ch in t:
-                slice_[col] = (ch, st, lk)
-                col += 1
+            col = _fill_single_width_run(slice_, row, col, t, st, lk)
         elif _is_single_width_run(t, run.width):
             # 单宽非 ASCII（边框字符等）：同样键连续、不产生宽字符冲突。
             if (col - 1) not in slice_:
                 left_boundaries.append(col)
-            for ch in t:
-                slice_[col] = (ch, st, lk)
-                col += 1
+            col = _fill_single_width_run(slice_, row, col, t, st, lk)
         else:
             for cluster in grapheme_clusters(t):
                 # ★ P1-1 修复：零宽字符合并到前键（见 _put_char）；
@@ -354,7 +389,6 @@ def _merge_line_dict(row, x: int, line: Line) -> dict:
                 if col - prev_col > 1:
                     # 宽字符（占 2 列，键只写首列）；零宽字符不推进 col。
                     wide_starts.append(prev_col)
-    row = _ensure_row_dict(row)
     # ★ P2（review）：空行（row={}）场景跳过宽字符扫描（常见合并热路径
     #   零额外开销）；非空行还需检测「新宽字符覆盖既有第二列键」
     #   （_overwrites_wide_second_col：修复前 disjoint 快路径批量 update 后
@@ -383,8 +417,11 @@ def _merge_line_dict(row, x: int, line: Line) -> dict:
                 if wcswidth_simple(row[c - 1][0]) == 2:
                     left_conflicts[c] = c - 1
         cleanup_wide = set()
-        for c in slice_:
-            if (c + 1) not in slice_ and c in row:
+        # ★ 2026-10-23 性能：只遍历**目标行键**（典型边框行 2 个）——修复前
+        #   遍历整个切片（120 列文本 ≈ 120 次字典查找 + 测宽），语义等价
+        #   （c 必须同时在 row 与 slice_ 中，且 c+1 不在切片内）。
+        for c in row:
+            if c in slice_ and (c + 1) not in slice_:
                 if wcswidth_simple(row[c][0]) == 2:
                     cleanup_wide.add(c)
         new_wide = set(wide_starts)
@@ -624,6 +661,8 @@ def _canvas_row_to_line(row) -> Line:
     if row is None:
         return Line()
     line = Line()
+    # ★ 2026-10-23 性能：热路径局部化（每行多次测宽，属性查找最小化）。
+    measure = wcswidth_simple
     prev = 0
     keys = sorted(row)
     n = len(keys)
@@ -656,7 +695,7 @@ def _canvas_row_to_line(row) -> Line:
         if j < n and keys[j] == col + 1 and ch.isascii():
             cw = 1
         else:
-            cw = wcswidth_simple(ch)
+            cw = measure(ch)
         prev = col + cw
         while j < n:
             c2 = keys[j]
@@ -685,7 +724,7 @@ def _canvas_row_to_line(row) -> Line:
             if j + 1 < n and keys[j + 1] == c2 + 1 and ch2.isascii():
                 cw = 1  # 连续 ASCII 快路径（相邻键差 1）
             else:
-                cw = wcswidth_simple(ch2)
+                cw = measure(ch2)
             prev = c2 + cw
             j += 1
         line.append("".join(parts), style, link)
@@ -697,6 +736,7 @@ __all__ = [
     "_line_as_dict",
     "_ensure_row_dict",
     "_entry3",
+    "_fill_single_width_run",
     "_overlaps_wide_second_col",
     "_overwrites_wide_second_col",
     "_merge_line",

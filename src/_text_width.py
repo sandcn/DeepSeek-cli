@@ -416,8 +416,16 @@ def cluster_width(cluster: str) -> int:
     if len(cluster) == 1:
         return char_width(cluster)
     cps = [ord(c) for c in cluster]
-    if any(cp == 0x200D for cp in cps):
-        return 2
+    # ★ 修复（2026-10-23 画布列键往返丢字）：ZWJ 只有**后跟 emoji 基字符**时
+    #   才构成组合 emoji（👨‍👩‍👦 宽 2）。孤立/尾随 ZWJ（如 ``"1\\u200d"``——
+    #   ``grapheme_clusters`` 在 ZWJ 后不是 emoji 基字符时按 UAX #29 在此断簇）
+    #   只是零宽格式符；修复前任何含 ZWJ 的簇都返回 2 → ``wcswidth_simple``
+    #   把 ``"1\\u200d"`` 计为 2 列：画布 ``_put_char`` 合并零宽时列不推进，而
+    #   ``_canvas_row_to_line`` 按 ``wcswidth_simple(条目)`` 推导列宽 → 列键
+    #   往返丢字符（``Line._w`` 同步虚高）。emoji ZWJ 序列语义保持不变。
+    for idx, cp in enumerate(cps):
+        if cp == 0x200D and idx + 1 < len(cps) and _is_emoji_base_cp(cps[idx + 1]):
+            return 2
     if any(cp == 0x20E3 for cp in cps):
         # keycap 组合（``1️⃣`` = 数字/#/* + VS16 + U+20E3）宽 2；U+20E3
         # 附着在非 keycap 基字符（如 ``…``）上时只是零宽组合符，宽度按

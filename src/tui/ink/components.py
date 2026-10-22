@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import logging
 
-from src.tui.core.style import Style
 from .fiber import Fiber
 from .layout import layout_tree, wrap_text_lines, _skip_function
 from .output import Frame, Line
@@ -47,6 +46,7 @@ from ._paint_border import (
     _paint_box_background,
     _merge_inherit_bg,
     _apply_bg_to_line,
+    _shared_style,
 )
 # ★ 性能（渲染热路径）：host 注册表查询提升为模块级导入——修复前
 #   ``_paint_impl`` 在函数体内 ``from .registry import get_host``，容器绘制
@@ -300,7 +300,11 @@ def _paint_impl(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) ->
     if bg_prop is not None:
         bg_color = _parse_color(bg_prop)
         if bg_color is not None:
-            bg_style = Style(bg=bg_color)
+            # ★ 2026-10-23：共享样式实例（同值跨帧同一对象）——画布行 base
+            #   快照比较/行级比较命中身份短路（见 _paint_border._shared_style）。
+            bg_style = _shared_style(
+                None, bg_color, False, False, False, False, False, False,
+            )
             _paint_box_background(box, canvas, bg_style, clip)
     child_bg = bg_style if bg_style is not None else inherit_bg
     # overflow 裁剪（完善 react ink v6）：容器有 overflow hidden 时压入

@@ -26,9 +26,55 @@ React Ink 标准组件：渲染静态行列表（``lines: list[Line]``）。对�
 from __future__ import annotations
 
 from ..element import h
+from ..helpers import truncate_line
 from ..output import Line
 
 __all__ = ["StaticLines"]
+
+#: ``box.x != 0`` 合并行缓存可缓存的 base 行键数上限——超过（背景铺满整行的
+#: 大 dict）时快照/比较成本与逐帧合并同阶，不缓存（避免每帧 O(宽度) 拷贝）。
+_MERGED_CACHE_MAX_BASE_KEYS = 32
+#: base 行不可缓存哨兵（大 dict 行：本行逐帧合并，缓存条目记 None）。
+_UNCACHEABLE_BASE = object()
+
+
+def _document_width(fiber) -> int:
+    """文档总宽度（根 fiber 布局盒宽度；未知返回 0）。
+
+    合并行缓存把「父容器边框/底色 + 本块内容」合成为 ``Line``（不再经
+    ``components._to_lines`` 的字典行 E-OVERFLOW-GUARD 截断），构建时按
+    文档宽度截断一次，保持「帧行宽 <= 文档宽度」不变量（正常布局不触发）。
+    """
+    node = fiber
+    while node.return_ is not None:
+        node = node.return_
+    box = node.layout_box
+    return int(box.w) if box is not None else 0
+
+
+def _base_snapshot(base):
+    """base 画布行快照（用于判定「除本块内容外该行未变」）。
+
+    ``_merge_line`` 会**原地改写** dict 行（``row.update(slice_)``）——必须
+    在合并前浅拷贝；None / Line（契约上合并后只读）直接引用。大 dict 行
+    （键数 > ``_MERGED_CACHE_MAX_BASE_KEYS``）返回不可缓存哨兵。
+    """
+    if base is None or isinstance(base, Line):
+        return base
+    if isinstance(base, dict) and len(base) <= _MERGED_CACHE_MAX_BASE_KEYS:
+        return dict(base)
+    return _UNCACHEABLE_BASE
+
+
+def _base_same(snapshot, base) -> bool:
+    """当前 base 行是否与缓存快照一致（一致才可复用上一帧合并结果）。"""
+    if snapshot is base:
+        return True
+    if snapshot is None or isinstance(snapshot, Line):
+        return False
+    if snapshot is _UNCACHEABLE_BASE:
+        return False
+    return isinstance(base, dict) and base == snapshot
 
 
 def _coerce_line(item) -> Line:
@@ -104,7 +150,27 @@ def _paint(fiber, canvas) -> None:
     #   时 paint 拿到空列表渲染空行；缓存后共享同一次解析结果。
     lines = _resolve_lines(fiber)
     n = len(lines)
-    if box.x == 0:
+    # ★ 2026-10-23（画布正确性）：``box.x == 0`` 的前缀复用要求 committed 行在
+    #   画布上「没有其他内容」。父容器底色（``_paint_box_background``）会先把
+    #   这些行填满空格样式，修复前前缀路径直接用缓存行替换画布 → 底色丢失
+    #   （StaticLines 位于带 backgroundColor 的容器内时）。检测覆盖区间内是否
+    #   有非空画布行：有则**本帧放弃前缀复用**（置 None），走下方合并路径把
+    #   内容按真实绘制顺序合并进 base 行；冲突持续期间前缀缓存保持 None
+    #   （不每帧重建），底色消失后自动恢复前缀快路径。
+    #   无冲突时 ``canvas[start:end].count(None)`` 为 C 级 O(行数)（1500 行
+    #   实测 ~2.7µs，见 tests/tui/ink/test_canvas_width_cache.py）。
+    prefix_conflict = False
+    if box.x == 0 and n > 0:
+        start = max(0, box.y)
+        end = min(len(canvas), box.y + n)
+        prefix_conflict = end > start and (
+            canvas[start:end].count(None) != (end - start)
+        )
+    if box.x == 0 and not prefix_conflict:
+        # x==0 走帧前缀复用（_committed_prefix）；清空合并行缓存
+        # （防切回缩进/带边框布局后复用陈旧行，也释放大历史的缓存内存）。
+        if fiber._merged_rows_cache is not None:
+            fiber._merged_rows_cache = None
         # ★ 增量快路径（大历史 O(1)/帧）：静态行跨帧身份复用——前缀缓存挂
         #   在 fiber（fiber 复用即命中，替换/重建自然失效）。
         #   方向1 步骤4（非顶部前缀缓存）：前缀键 ``(lines, n, box.y, box.w)``
@@ -155,17 +221,62 @@ def _paint(fiber, canvas) -> None:
             )
         fiber._committed_prefix = (key, prefix, all_ok)
         return
-    # box.x != 0（缩进/padded）：逐行合并（保留已有边框/内容——修复前
-    # ``canvas[row] = padded`` 整体替换：父容器边框（行内已写 cols x0/x1）
-    # 被 padded 空格覆盖，缩进框内 committed 行丢失左/右边框）。
-    # ★ P3（review）：直接从 ``_paint_canvas`` 导入 ``_merge_line``（绘制层面
-    #   工具）——修复前从 ``..components`` 导入（components 为绘制主模块，
-    #   跨层依赖；components 自身也是从 _paint_canvas 再导出该函数）。
-    from .._paint_canvas import _merge_line
+    if box.x == 0:
+        # base 层冲突（父容器底色/前置内容与本块行重叠）：放弃前缀复用
+        # （render_frame 走全量画布路径，合并结果保留 base 层）。
+        fiber._committed_prefix = None
+    # box.x != 0（缩进/padded）或 box.x == 0 但存在 base 层冲突：
+    # 逐行合并（保留已有边框/内容——修复前 ``canvas[row] = padded`` 整体替换：
+    # 父容器边框（行内已写 cols x0/x1）被 padded 空格覆盖，缩进框内 committed
+    # 行丢失左/右边框）。
+    # ★ P3（review）：直接从 ``_paint_canvas`` 导入绘制工具（不反向依赖
+    #   components 主模块）。
+    # ★ 性能（2026-10-23 画布）：跨帧**合并行缓存**——行内容对象同一且 base 行
+    #   （父边框/底色/兄弟内容）快照未变时直接复用上一帧合并后的 Line。
+    #   修复前每帧对每行整行重建列键 dict + 逐字符合并（1200 行实测 24ms/帧，
+    #   60Hz 下掉帧）。失效条件：lines 对象替换（cache[0] 身份）、(x, w) 变化
+    #   （resize / 缩进变化）、行内容对象替换、base 行内容变化；lines 原地
+    #   增长（增量提交）时旧行条目继续有效，仅新增行计算。
+    from .._paint_canvas import _canvas_row_to_line, _merge_line
+
+    cache = fiber._merged_rows_cache
+    entries: list = ()
+    if cache is not None and cache[0] is lines and cache[1] == (box.x, box.w):
+        entries = cache[2]
+    new_entries: list = []
+    limit = _document_width(fiber)
     for i, line in enumerate(lines):
         row = box.y + i
-        if 0 <= row < len(canvas):
-            canvas[row] = _merge_line(canvas[row], box.x, _coerce_line(line))
+        if row < 0 or row >= len(canvas):
+            new_entries.append(None)  # 保持条目与行索引对齐
+            continue
+        base = canvas[row]
+        coerced = _coerce_line(line)
+        cached = entries[i] if i < len(entries) else None
+        if (
+            cached is not None
+            and cached[0] is coerced
+            and _base_same(cached[1], base)
+        ):
+            canvas[row] = cached[2]
+            new_entries.append(cached)
+            continue
+        snapshot = _base_snapshot(base)
+        merged = _merge_line(base, box.x, coerced)
+        if not isinstance(merged, Line):
+            # 合并结果归一化为 Line（跨帧可复用的稳定对象；后续兄弟合并
+            #   对 Line 行走 clone/dict 路径，不原地改写 → 缓存安全）。
+            merged = _canvas_row_to_line(merged)
+        if limit > 0 and merged.width > limit:
+            # E-OVERFLOW-GUARD：Line 行不经 ``_to_lines`` 的字典行截断，
+            #   布局异常导致超宽时在此截断（正常布局不触发）。
+            merged = truncate_line(merged, limit)
+        canvas[row] = merged
+        new_entries.append(
+            None if snapshot is _UNCACHEABLE_BASE
+            else (coerced, snapshot, merged)
+        )
+    fiber._merged_rows_cache = (lines, (box.x, box.w), new_entries)
 
 
 def StaticLines(props: dict):

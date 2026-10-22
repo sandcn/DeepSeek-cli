@@ -354,6 +354,11 @@ class Fiber:
     #: 与 ``_committed_chat_cache`` 同语义：树结构跨帧稳定时免掉每帧对输入区
     #: 锚点、底部框锚点的多次全树 DFS（浮窗开启时原本每帧 4 次以上）。
     _float_anchor_cache: Any = None
+    #: 静态行「合并行缓存」（``box.x != 0`` 缩进/带边框容器路径）：
+    #: ``(lines, (box.x, box.w), entries)``——``widgets.staticlines`` 维护
+    #: （行对象同一且 base 行快照未变时复用上一帧合并后的 Line；见
+    #: ``staticlines._paint``）；``box.x == 0`` 路径清空（改用前缀缓存）。
+    _merged_rows_cache: Any = None
     #: 静态行帧前缀缓存 ``(key, prefix, all_ok)``——``widgets.staticlines``
     #: 维护（命中即跳过画布写入，增量提交仅追加新增行）；
     #: ``components.render_frame`` 读取（前缀复用 + 行宽守卫；顶部/非顶部
