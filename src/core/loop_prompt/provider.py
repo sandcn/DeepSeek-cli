@@ -177,6 +177,19 @@ def human_user_texts(messages: Sequence[dict]) -> list[str]:
     return out
 
 
+def first_human_user_text(messages: Sequence[dict]) -> str:
+    """返回当前会话中最早的一条人类用户消息（找不到时为空串）。
+
+    ``/loop <批次数>`` 在流式生成期间省略提词时，用这条消息作为循环提词
+    （2026-10-22 用户需求：接管当前正在流式输出的这一轮，第一条用户消息
+    就是命令的提词）。过滤规则与 :func:`human_user_texts` 完全一致——工具
+    结果、后台任务结果、内部注入消息（``【继续】`` / ``【自动继续】`` /
+    ``<skill_content>`` 等）都不算人类用户消息。
+    """
+    texts = human_user_texts(messages)
+    return texts[0] if texts else ""
+
+
 def last_assistant_text(messages: Sequence[dict]) -> str:
     """返回最后一次有内容的 assistant 回答（找不到时为空串）。
 
@@ -310,6 +323,7 @@ __all__ = [
     "LoopPromptLoadError",
     "build_loop_prompt_messages",
     "build_system_prompt",
+    "first_human_user_text",
     "human_user_texts",
     "is_human_user_text",
     "last_assistant_text",

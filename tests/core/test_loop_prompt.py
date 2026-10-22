@@ -14,12 +14,16 @@ from src.core.loop_prompt import (
     LoopPromptService,
     build_loop_prompt_messages,
     build_system_prompt,
+    first_human_user_text,
     human_user_texts,
     last_assistant_text,
     parse_loop_prompt_response,
 )
 from src.core.loop_prompt import provider as loop_provider
-from src.core.commands.plugins.loop_plugin import parse_loop_args
+from src.core.commands.plugins.loop_plugin import (
+    parse_loop_args,
+    parse_loop_takeover_command,
+)
 from src.config.schema import _clean_loop_prompt
 
 
@@ -45,6 +49,25 @@ def test_parse_loop_args(arg, expected):
     assert parse_loop_args(arg) == expected
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("/loop 3", 3),
+        ("/LOOP 2", 2),
+        ("/loop 03", 3),
+        ("/loop 3 ", 3),
+        ("/loop 0", None),
+        ("/loop -1", None),
+        ("/loop", None),
+        ("/loop 2 完成登录页", None),
+        ("/help 3", None),
+        ("/loop x", None),
+    ],
+)
+def test_parse_loop_takeover_command(text, expected):
+    assert parse_loop_takeover_command(text) == expected
+
+
 # ── 提示词输入 ───────────────────────────────────────────
 
 
@@ -63,6 +86,21 @@ def test_human_user_texts_filters_machine_messages():
         {"role": "user", "content": "再补测试"},
     ]
     assert human_user_texts(messages) == ["实现登录页", "再补测试"]
+    assert first_human_user_text(messages) == "实现登录页"
+
+
+def test_first_human_user_text_ignores_machine_messages():
+    messages = [
+        {"role": "system", "content": "系统"},
+        {"role": "user", "content": "<skill_content>技能正文"},
+        {"role": "user", "content": json.dumps({"task_id": "bg-1", "stdout": "ok"})},
+        {"role": "user", "content": "真正的最初任务"},
+        {"role": "assistant", "content": "好的"},
+        {"role": "user", "content": "第二条人类消息"},
+    ]
+    assert first_human_user_text(messages) == "真正的最初任务"
+    assert first_human_user_text([{"role": "system", "content": "系统"}]) == ""
+    assert first_human_user_text([]) == ""
 
 
 def test_last_assistant_text_skips_tool_call_only_messages():

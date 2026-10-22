@@ -202,6 +202,89 @@ async def test_multi_batch_resets_messages_and_prompt(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_takeover_single_batch_does_not_rerun_current_round(monkeypatch):
+    """流式接管：当前轮计为第 1 批第 1 次运行，不清空、不重跑。"""
+    ui, session, plugin, state = _make_env(
+        monkeypatch,
+        ['{"continue": false, "prompt": ""}'],
+        [],
+    )
+    session.messages = [
+        {"role": "system", "content": "系统"},
+        {"role": "user", "content": "最初任务"},
+        {"role": "assistant", "content": "当前轮回答"},
+    ]
+    state["_loop_takeover"] = {"count": 1, "prompt": ""}
+
+    await plugin.async_execute(SimpleNamespace(session=session, arg="1"))
+
+    assert session.prompts == []
+    assert session.cleared == 0
+    assert ui.opened == [(1, "最初任务", 1)]
+    text = "\n".join(ui.lines)
+    assert "接管当前流式轮（1 批）" in text
+    assert "第 1 次运行（接管当前轮，不重跑）" in text
+    assert "第 1/1 批完成（本批运行 1 次）" in text
+    assert "全部 1 批执行完毕" in text
+    assert "解析:" in text
+    assert "continue=false" in text
+    assert "第 1/1 批开始" not in text
+    assert state.get("_loop_mode") is False
+
+
+@pytest.mark.asyncio
+async def test_takeover_multi_batch_reuses_first_human_message(monkeypatch):
+    """接管后：第 1 批续跑；后续批次清空并复用接管提词。"""
+    ui, session, plugin, state = _make_env(
+        monkeypatch,
+        [
+            '{"continue": true, "prompt": "继续补充"}',
+            '{"continue": false, "prompt": ""}',
+            '{"continue": false, "prompt": ""}',
+        ],
+        ["二", "三"],
+    )
+    session.messages = [
+        {"role": "system", "content": "系统"},
+        {"role": "user", "content": "最初任务"},
+        {"role": "assistant", "content": "当前轮回答"},
+    ]
+    state["_loop_takeover"] = {"count": 2, "prompt": ""}
+
+    await plugin.async_execute(SimpleNamespace(session=session, arg="2"))
+
+    assert session.prompts == [
+        f"{LOOP_PROMPT_MARKER}继续补充",
+        "最初任务",
+    ]
+    assert session.cleared == 1
+    assert ui.opened == [(2, "最初任务", 1)]
+    text = "\n".join(ui.lines)
+    assert "第 1/2 批 · 第 1 次运行（接管当前轮，不重跑）" in text
+    assert "第 1/2 批完成（本批运行 2 次），剩余 1 批" in text
+    assert "第 2/2 批开始" in text
+    assert "全部 2 批执行完毕" in text
+    assert state.get("_loop_mode") is False
+
+
+@pytest.mark.asyncio
+async def test_takeover_without_human_message_cancels(monkeypatch):
+    """接管时没有人类用户消息：不产生空提词，取消并回收浮窗。"""
+    ui, session, plugin, state = _make_env(monkeypatch, [], [])
+    session.messages = [{"role": "system", "content": "系统"}]
+    state["_loop_takeover"] = {"count": 1, "prompt": ""}
+
+    await plugin.async_execute(SimpleNamespace(session=session, arg="1"))
+
+    assert session.prompts == []
+    assert session.cleared == 0
+    assert ui.closed == 1
+    assert state.get("_loop_mode") is False
+    text = "\n".join(ui.lines)
+    assert "取消接管：当前会话没有可用于接管的人类用户消息" in text
+
+
+@pytest.mark.asyncio
 async def test_requires_explicit_positive_batch_count(monkeypatch):
     """省略批次数：报错并提示用法，不执行任何一轮。"""
     ui, session, plugin, _state = _make_env(monkeypatch, [], [])

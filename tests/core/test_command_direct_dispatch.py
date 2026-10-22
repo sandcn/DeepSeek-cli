@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.app_loop._loop import InteractiveLoop
+from src.app_loop._loop import InteractiveLoop, _RETRY_SENTINEL
 from src.app_loop._session_setup import SessionState
 from src.tui._input_buffer import InputBufferEditor
 
@@ -39,12 +39,24 @@ class _FakeHistoryIO:
 class _FakeBottomBar:
     def __init__(self):
         self.models = []
+        self.status_enabled = 0
+        self.status_disabled = 0
+        self.tool_resets = 0
 
     def set_model_name(self, name):
         self.models.append(name)
 
     def ensure_cursor_in_lower(self):
         pass
+
+    def enable_status(self):
+        self.status_enabled += 1
+
+    def disable_status(self):
+        self.status_disabled += 1
+
+    def reset_tool_count(self):
+        self.tool_resets += 1
 
 
 class _FakeInput:
@@ -63,6 +75,9 @@ class _FakeUI:
         self.flushed = 0
         self.lines = []
         self.user_messages = []
+        self.opened = []
+        self.statuses = []
+        self.closed = 0
 
     def flush(self):
         self.flushed += 1
@@ -72,6 +87,15 @@ class _FakeUI:
 
     def on_user_message(self, text):
         self.user_messages.append(str(text))
+
+    def open_loop_floating_window(self, total, prompt, runs_per_round=1):
+        self.opened.append((total, prompt, runs_per_round))
+
+    def set_loop_status(self, **fields):
+        self.statuses.append(fields)
+
+    def close_loop_floating_window(self):
+        self.closed += 1
 
     def wait_for_user_input(self, monitor, prefill="", input_=None):
         return self._user_input
@@ -413,3 +437,187 @@ async def test_handle_round_echoes_queued_exit(monkeypatch):
     assert result.should_exit is True
     assert loop._ui.user_messages == ["exit"]
     assert loop._ui.flushed >= 1
+
+
+# ── /loop 流式接管（2026-10-22） ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_direct_submit_loop_takeover_during_generation(monkeypatch):
+    loop = _make_loop()
+    loop._loop = asyncio.get_running_loop()
+    session = _FakeSession()
+    session.messages = [{"role": "user", "content": "最初任务"}]
+    state = SessionState(model="test-model")
+    activated = []
+    monkeypatch.setattr(
+        loop, "_activate_loop_takeover_ui",
+        lambda count, sess: activated.append((count, sess)),
+    )
+    cb = loop._make_direct_submit_callback(session, state)
+
+    loop._generation_active = True
+    assert cb("/loop 3") is True
+    await asyncio.sleep(0)
+    assert activated and activated[0][0] == 3
+    assert loop._loop_state["_loop_takeover"]["count"] == 3
+    assert loop._loop_state["_loop_takeover"]["prompt"] == ""
+
+    # 带提词 / 非法批次数：不走接管（仍按原队列例外语义）
+    assert cb("/loop 3 完成登录页") is False
+    assert cb("/loop 0") is False
+
+    # 空闲：不接管
+    loop._generation_active = False
+    loop._loop_state.pop("_loop_takeover", None)
+    assert cb("/loop 2") is False
+    assert loop._loop_state.get("_loop_takeover") is None
+
+    # 已在循环中：不嵌套接管（仍按队列例外语义排队）
+    loop._loop_state["_loop_mode"] = True
+    loop._generation_active = True
+    assert cb("/loop 2") is False
+    assert "_loop_takeover" not in loop._loop_state
+
+
+def test_activate_loop_takeover_ui_opens_window_and_marks_mode():
+    loop = _make_loop()
+    session = _FakeSession()
+    session.messages = [{"role": "user", "content": "最初任务"}]
+    loop._loop_state["_loop_takeover"] = {"count": 2, "prompt": ""}
+
+    loop._activate_loop_takeover_ui(2, session)
+
+    assert loop._loop_state["_loop_mode"] is True
+    assert loop._loop_state["_loop_takeover"]["prompt"] == "最初任务"
+    assert loop._chat_ui.opened == [(2, "最初任务", 1)]
+    assert any("已接管当前流式轮（2 批）" in line for line in loop._chat_ui.lines)
+
+
+@pytest.mark.asyncio
+async def test_maybe_start_loop_takeover_hands_off_to_plugin(monkeypatch):
+    loop = _make_loop()
+    session = _FakeSession()
+    session.messages = [{"role": "user", "content": "最初任务"}]
+    state = SessionState(model="test-model")
+    loop._loop_state["_loop_takeover"] = {"count": 2, "prompt": ""}
+    seen = []
+
+    async def fake_handle(content, sess, st, *, reset_interrupt=True):
+        seen.append({
+            "content": content,
+            "reset_interrupt": reset_interrupt,
+            "takeover": dict(loop._loop_state.get("_loop_takeover") or {}),
+        })
+        loop._loop_state.pop("_loop_takeover", None)
+
+    monkeypatch.setattr(loop, "_handle_command_msg", fake_handle)
+
+    await loop._maybe_start_loop_takeover({"interrupted": False}, session, state)
+
+    assert seen == [{
+        "content": "/loop 2",
+        "reset_interrupt": False,
+        "takeover": {"count": 2, "prompt": "最初任务"},
+    }]
+    assert "_loop_takeover" not in loop._loop_state
+
+
+@pytest.mark.asyncio
+async def test_maybe_start_loop_takeover_cancels_on_queued_user_message():
+    loop = _make_loop()
+    session = _FakeSession()
+    session.messages = [{"role": "user", "content": "最初任务"}]
+    session.pending_messages = ["排队的用户消息"]
+    state = SessionState(model="test-model")
+    loop._loop_state["_loop_takeover"] = {"count": 2, "prompt": ""}
+
+    await loop._maybe_start_loop_takeover({"interrupted": False}, session, state)
+
+    assert loop._loop_state["_loop_mode"] is False
+    assert "_loop_takeover" not in loop._loop_state
+    assert any("取消接管：检测到用户输入" in line for line in loop._chat_ui.lines)
+
+
+@pytest.mark.asyncio
+async def test_maybe_start_loop_takeover_cancels_on_queued_message_queue():
+    loop = _make_loop()
+    session = _FakeSession()
+    session.messages = [{"role": "user", "content": "最初任务"}]
+    state = SessionState(model="test-model")
+    loop._loop_state["_loop_takeover"] = {"count": 2, "prompt": ""}
+    loop._message_queue = SimpleNamespace(qsize=lambda: 1)
+
+    await loop._maybe_start_loop_takeover({"interrupted": False}, session, state)
+
+    assert loop._loop_state["_loop_mode"] is False
+    assert "_loop_takeover" not in loop._loop_state
+    assert any("取消接管：检测到用户输入" in line for line in loop._chat_ui.lines)
+
+
+@pytest.mark.asyncio
+async def test_maybe_start_loop_takeover_cancels_on_interrupt():
+    loop = _make_loop()
+    session = _FakeSession()
+    session.messages = [{"role": "user", "content": "最初任务"}]
+    state = SessionState(model="test-model")
+    loop._loop_state["_loop_takeover"] = {"count": 2, "prompt": ""}
+    loop._loop_state["_loop_mode"] = True
+
+    await loop._maybe_start_loop_takeover({"interrupted": True}, session, state)
+
+    assert loop._loop_state["_loop_mode"] is False
+    assert "_loop_takeover" not in loop._loop_state
+    assert loop._chat_ui.closed == 1
+    assert any("取消接管：ESC 中断" in line for line in loop._chat_ui.lines)
+
+
+@pytest.mark.asyncio
+async def test_cli_msg_consumer_starts_takeover_after_retry(monkeypatch):
+    loop = _make_loop()
+    session = _FakeSession()
+    state = SessionState(model="test-model")
+    loop._loop_state["_loop_takeover"] = {"count": 1, "prompt": ""}
+    calls = []
+
+    async def fake_retry(sess):
+        return {"interrupted": False}
+
+    async def fake_takeover(result, sess, st):
+        calls.append(result)
+        loop._loop_state.pop("_loop_takeover", None)
+
+    monkeypatch.setattr("src.app_loop._loop._handle_retry_sentinel", fake_retry)
+    monkeypatch.setattr(loop, "_maybe_start_loop_takeover", fake_takeover)
+
+    await loop._cli_msg_consumer(
+        SimpleNamespace(content=_RETRY_SENTINEL), session, state, asyncio.Event(),
+    )
+
+    assert calls == [{"interrupted": False}]
+
+
+@pytest.mark.asyncio
+async def test_cli_msg_consumer_starts_takeover_after_regular_round(monkeypatch):
+    loop = _make_loop()
+    session = _FakeSession()
+    session.messages = [{"role": "user", "content": "最初任务"}]
+    state = SessionState(model="test-model")
+    loop._loop_state["_loop_takeover"] = {"count": 1, "prompt": ""}
+    calls = []
+
+    async def fake_regular(content, sess, st):
+        return {"interrupted": False}
+
+    async def fake_takeover(result, sess, st):
+        calls.append(result)
+        loop._loop_state.pop("_loop_takeover", None)
+
+    monkeypatch.setattr(loop, "_handle_regular_msg", fake_regular)
+    monkeypatch.setattr(loop, "_maybe_start_loop_takeover", fake_takeover)
+
+    await loop._cli_msg_consumer(
+        SimpleNamespace(content="hello"), session, state, asyncio.Event(),
+    )
+
+    assert calls == [{"interrupted": False}]

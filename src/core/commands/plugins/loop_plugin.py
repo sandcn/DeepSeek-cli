@@ -12,6 +12,11 @@
 - 生成时机在 ``Agent.run()`` 内、等待后台 bash/subagent **之前**（见
   ``LoopPromptService``）；生成失败重试一次，仍失败则结束整个 loop。
 - 用户输入 / ESC 中断立即终止整个 ``/loop``（不继续剩余批次）。
+- **流式生成中省略提词 = 接管当前轮**（2026-10-22 用户需求）：AI 正在
+  流式输出时输入 ``/loop <批次数>``（不带提词），命令立即直连并接管当前
+  正在生成的这一轮——当前轮直接计为第 1 批第 1 次运行（不重跑、不清空
+  当前对话），本轮结束后生成续跑提词继续；``/loop`` 的初始提词取**当前
+  会话中最早的一条人类用户消息**。空闲时省略提词仍报用法错误。
 - TUI：模式行「✎ 提词」、循环浮窗显示批次数 / 当前批次 / 批内运行次数 /
   本批与本次运行时长；每批开始、批内每次运行、本批完成、全部完成均有聊天区
   提示。
@@ -23,12 +28,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
 from .base import InteractiveCommandPlugin
 from ..base import CommandMeta, declare_command_plugin
-from ...loop_prompt import LOOP_PROMPT_MARKER
+from ...loop_prompt import LOOP_PROMPT_MARKER, first_human_user_text
 
 _logger = logging.getLogger(__name__)
 
@@ -53,6 +59,28 @@ def parse_loop_args(arg: str) -> tuple[int, str]:
     if count <= 0 or not prompt:
         return 0, prompt
     return count, prompt
+
+
+def parse_loop_takeover_command(text: str) -> int | None:
+    """识别「流式生成中省略提词的 ``/loop <批次数>``」并返回批次数。
+
+    只有**命令名 + 唯一一个正整数参数**才算接管请求；带提词（第二个 token
+    起非空）、批次数缺失 / 非数字 / ``<=0`` 都返回 ``None``（走原有命令
+    分发与用法提示）。该判定只在 AI 生成轮进行中由主循环使用。
+    """
+    parts = str(text or "").strip().split(maxsplit=1)
+    if len(parts) != 2:
+        return None
+    if parts[0].lstrip("/").lower() != "loop":
+        return None
+    arg = parts[1].strip()
+    if not arg or not arg.isdigit():
+        return None
+    try:
+        count = int(arg)
+    except (TypeError, ValueError):
+        return None
+    return count if count > 0 else None
 
 
 def _preview(text: str, limit: int = 80) -> str:
@@ -141,10 +169,11 @@ class LoopPlugin(InteractiveCommandPlugin):
             name="loop",
             description=(
                 "按批次循环执行提词：每批内 LLM 返回 continue=true 就继续"
-                "（不设次数上限），false 后批次数减一，0 结束"
+                "（不设次数上限），false 后批次数减一，0 结束；"
+                "流式生成中省略提词可接管当前轮"
             ),
             group="session",
-            usage="<批次数> <提词>",
+            usage="<批次数> <提词>（流式生成中可省略提词，接管当前轮）",
             queue_only=True,
         )
 
@@ -162,27 +191,68 @@ class LoopPlugin(InteractiveCommandPlugin):
             open_loop_window,
             set_loop_window_status,
         )
-        from ...interrupt_state import reset_interrupt_async
+        from ...interrupt_state import is_interrupted_async, reset_interrupt_async
         from ...stats import reset_token_speed
 
         chat_ui = loop._chat_ui
         loop_state = loop._loop_state
         force_exit = loop._force_exit
         session = ctx.session
+        service = getattr(session, "loop_prompt_service", None)
 
-        count, prompt = parse_loop_args(ctx.arg)
-        if count <= 0 or not prompt:
-            _write_line(chat_ui, f"  {YELLOW}用法: /loop <批次数> <提词>{RESET}")
-            _write_line(
-                chat_ui,
-                f"  {DIM}  批次数必须是正整数；每批内 continue=true 无限续跑，"
-                f"false 后批次数-1，0 结束（用户输入 / ESC 可随时终止）{RESET}",
-            )
-            _write_line(
-                chat_ui,
-                f"  {DIM}  各批开始时清空对话并重新使用最初的提词{RESET}",
-            )
-            return True
+        # ★ 流式接管（2026-10-22 用户需求）：主循环在 AI 生成期间直连本命令时，
+        #   会把接管请求放进 loop_state；此处消费它——当前流式轮已经结束，
+        #   直接计为第 1 批第 1 次运行（不重跑、不清空当前对话）。
+        takeover = loop_state.pop("_loop_takeover", None)
+        adopted = takeover is not None
+        if adopted:
+            try:
+                count = int(takeover.get("count") or 0)
+            except (TypeError, ValueError):
+                count = 0
+            prompt = str(takeover.get("prompt") or "").strip()
+            if not prompt:
+                prompt = first_human_user_text(session.messages)
+            if count <= 0 or not prompt:
+                reason = (
+                    "批次数无效" if count <= 0
+                    else "当前会话没有可用于接管的人类用户消息"
+                )
+                _write_line(chat_ui, f"  {YELLOW}+ 取消接管：{reason}{RESET}")
+                # 接管浮窗 / 模式由主循环在接收时打开，这里负责回收。
+                loop_state["_loop_mode"] = False
+                close_loop_window(chat_ui)
+                if chat_ui is not None:
+                    try:
+                        chat_ui.bottom_bar.disable_status()
+                        chat_ui.bottom_bar.reset_tool_count()
+                    except Exception:
+                        _logger.debug("取消接管时重置底部栏失败", exc_info=True)
+                try:
+                    reset_token_speed()
+                except Exception:
+                    _logger.debug("取消接管时重置 token 速度失败", exc_info=True)
+                if service is not None:
+                    try:
+                        service.end_loop()
+                    except Exception:
+                        _logger.debug("取消接管时清理提词服务失败", exc_info=True)
+                return True
+        else:
+            count, prompt = parse_loop_args(ctx.arg)
+            if count <= 0 or not prompt:
+                _write_line(chat_ui, f"  {YELLOW}用法: /loop <批次数> <提词>{RESET}")
+                _write_line(
+                    chat_ui,
+                    f"  {DIM}  批次数必须是正整数；每批内 continue=true 无限续跑，"
+                    f"false 后批次数-1，0 结束（用户输入 / ESC 可随时终止）{RESET}",
+                )
+                _write_line(
+                    chat_ui,
+                    f"  {DIM}  各批开始时清空对话并重新使用最初的提词；"
+                    f"流式生成中可省略提词以接管当前轮{RESET}",
+                )
+                return True
 
         # ── 清理前一轮可能的强制退出标记 ──────────────────────
         force_exit.clear()
@@ -192,7 +262,6 @@ class LoopPlugin(InteractiveCommandPlugin):
         total = count
         open_loop_window(chat_ui, total, prompt, runs_per_round=1)
 
-        service = getattr(session, "loop_prompt_service", None)
         if service is not None:
             try:
                 service.begin_loop()
@@ -203,11 +272,23 @@ class LoopPlugin(InteractiveCommandPlugin):
             loop_state["_loop_mode"] = True
             if chat_ui is not None:
                 chat_ui.bottom_bar.enable_status()
-            _write_line(
-                chat_ui,
-                f"  {GREEN}+ 开始循环（{count} 批）: "
-                f"\"{_preview(prompt, 60)}\"{RESET}",
-            )
+            if adopted:
+                _write_line(
+                    chat_ui,
+                    f"  {GREEN}+ 接管当前流式轮（{count} 批）: "
+                    f"\"{_preview(prompt, 60)}\"{RESET}",
+                )
+                _write_line(
+                    chat_ui,
+                    f"  {DIM}  当前轮计为第 1 批第 1 次运行（不重跑）；"
+                    f"本轮结束后生成续跑提词继续{RESET}",
+                )
+            else:
+                _write_line(
+                    chat_ui,
+                    f"  {GREEN}+ 开始循环（{count} 批）: "
+                    f"\"{_preview(prompt, 60)}\"{RESET}",
+                )
 
             remaining = count
             batch = 0
@@ -224,34 +305,115 @@ class LoopPlugin(InteractiveCommandPlugin):
 
                 batch += 1
                 remaining_after = remaining - 1
-                # ★ 每批开始：清空对话并重新使用用户最初的提词。
-                session.clear_messages()
                 current_prompt = prompt
                 batch_run = 0
-                _write_line(
-                    chat_ui,
-                    f"  {GREEN}+ 第 {batch}/{count} 批开始"
-                    f"（剩余 {remaining} 批）: \"{_preview(prompt, 60)}\"{RESET}",
-                )
-                set_loop_window_status(
-                    chat_ui,
-                    total=count,
-                    round=batch,
-                    run=0,
-                    runs_per_round=1,
-                    prompt=prompt,
-                    next_prompt="",
-                    generating=False,
-                    # ★ 新批锚点（2026-10-22 用户需求：浮窗显示当前批运行时间）
-                    #   ——批内每次运行不再传 round，本批计时不会被重置。
-                    new_batch=True,
-                )
-
                 last_round = None
                 last_displayed_round = 0
                 batch_completed = False
                 stop_all = False
-                while True:
+                adopted_batch = adopted and batch == 1
+
+                if adopted_batch:
+                    # ★ 接管批（2026-10-22 用户需求）：当前流式轮已经结束，
+                    #   直接计为第 1 批第 1 次运行——不清空对话、不重复跑。
+                    batch_run = 1
+                    total_runs = 1
+                    _write_line(
+                        chat_ui,
+                        f"  {DIM}  ─ 第 {batch}/{count} 批 · "
+                        f"第 1 次运行（接管当前轮，不重跑）─{RESET}",
+                    )
+                    set_loop_window_status(
+                        chat_ui,
+                        total=count,
+                        round=batch,
+                        run=1,
+                        runs_per_round=1,
+                        prompt=prompt,
+                        next_prompt="",
+                        generating=False,
+                        new_batch=True,
+                    )
+                    if service is None:
+                        _write_line(
+                            chat_ui,
+                            f"  {YELLOW}+ 续跑提词服务不可用，结束整个循环"
+                            f"（已完成 0 批 / 1 次运行）{RESET}",
+                        )
+                        stop_all = True
+                    elif _has_pending_input(loop):
+                        _write_line(
+                            chat_ui,
+                            f"  {YELLOW}+ 检测到用户输入，提前结束整个循环"
+                            f"（已完成 0 批 / 1 次运行）{RESET}",
+                        )
+                        stop_all = True
+                    else:
+                        decision, error = await self._takeover_decision(service)
+                        if decision is None:
+                            if await is_interrupted_async():
+                                _write_line(
+                                    chat_ui,
+                                    f"  {YELLOW}+ ESC 中断，提前结束整个循环"
+                                    f"（已完成 0 批 / 1 次运行）{RESET}",
+                                )
+                            else:
+                                _write_line(
+                                    chat_ui,
+                                    f"  {YELLOW}+ 提词生成失败：{error or '未知原因'}，"
+                                    f"结束整个循环（已完成 0 批 / 1 次运行）{RESET}",
+                                )
+                            last_round = (1, None, error)
+                            stop_all = True
+                        elif not decision.should_continue:
+                            last_round = (1, decision, "")
+                            batch_completed = True
+                        else:
+                            _write_loop_llm_output(
+                                chat_ui,
+                                round_index=1,
+                                decision=decision,
+                                error="",
+                            )
+                            last_displayed_round = 1
+                            service.take_result()
+                            next_prompt = f"{LOOP_PROMPT_MARKER}{decision.prompt}"
+                            set_loop_window_status(
+                                chat_ui,
+                                prompt=prompt,
+                                next_prompt=decision.prompt,
+                                generating=False,
+                            )
+                            _write_line(
+                                chat_ui,
+                                f"  {DIM}  ↳ 下次提词（第 2 次运行）: "
+                                f"{_preview(decision.prompt)}{RESET}",
+                            )
+                            current_prompt = next_prompt
+                else:
+                    # ★ 每批开始：清空对话并重新使用用户最初的提词。
+                    session.clear_messages()
+                    _write_line(
+                        chat_ui,
+                        f"  {GREEN}+ 第 {batch}/{count} 批开始"
+                        f"（剩余 {remaining} 批）: \"{_preview(prompt, 60)}\"{RESET}",
+                    )
+                    set_loop_window_status(
+                        chat_ui,
+                        total=count,
+                        round=batch,
+                        run=0,
+                        runs_per_round=1,
+                        prompt=prompt,
+                        next_prompt="",
+                        generating=False,
+                        # ★ 新批锚点（2026-10-22 用户需求：浮窗显示当前批运行时间）
+                        #   ——批内每次运行不再传 round，本批计时不会被重置。
+                        new_batch=True,
+                    )
+
+                # ── 批内运行（接管批从第 2 次运行开始；普通批从第 1 次开始）──
+                while not batch_completed and not stop_all:
                     # 批内用户输入：同样立即终止整个 /loop。
                     if total_runs > 0 and _has_pending_input(loop):
                         _write_line(
@@ -410,6 +572,39 @@ class LoopPlugin(InteractiveCommandPlugin):
         # ── 自动保存循环后的对话 ────────────────────────────
         await _save_loop_snapshot(session, chat_ui)
         return True
+
+    @staticmethod
+    async def _takeover_decision(service) -> tuple[Any, str]:
+        """为「接管当前流式轮」生成一次续跑提词。
+
+        当前轮在 AI 生成期间结束时，``/loop`` 才拿到执行权（不重跑当前轮）。
+        这里显式让 ``LoopPromptService`` 以 ``run_index=1`` 生成一次续跑
+        决策——等价于普通批第一次运行结束时由 Agent 钩子生成，但使用当前轮
+        **最终**消息状态，避免接管轮未 arm / 钩子已过导致空结果或陈旧结果。
+
+        Returns:
+            ``(decision, error)``；失败时 ``decision`` 为 ``None``。
+        """
+        try:
+            service.set_run_index(1)
+            service.arm()
+        except Exception as exc:  # noqa: BLE001 - 辅助服务失败不阻断错误上报
+            return None, f"初始化提词服务失败：{exc}"
+        try:
+            await service.on_agent_round_end()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            return None, f"生成续跑提词失败：{exc}"
+        finally:
+            try:
+                service.disarm()
+            except Exception:
+                _logger.debug("disarm /loop 提词服务失败", exc_info=True)
+        try:
+            return service.peek_result(), service.last_error
+        except Exception as exc:  # noqa: BLE001
+            return None, f"读取提词结果失败：{exc}"
 
     def execute(self, ctx: Any) -> bool:
         """同步版本 — 抛出异常，防止误调用。"""

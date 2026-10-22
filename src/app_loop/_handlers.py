@@ -13,9 +13,13 @@ from ..core.commands import handle_command
 _logger = logging.getLogger(__name__)
 
 
-async def _handle_retry_sentinel(session) -> None:
-    """处理 retry 哨兵"""
-    await session.retry()
+async def _handle_retry_sentinel(session) -> dict:
+    """处理 retry 哨兵，返回 ``run_round`` 同形的轮次结果。
+
+    ★ 2026-10-22：返回结果供主循环判断是否被 ESC 中断——流式期间提交的
+    ``/loop <批次数>`` 接管请求只在正常完成的重试轮后才能启动。
+    """
+    return await session.retry()
 
 
 async def _handle_model_cmd(

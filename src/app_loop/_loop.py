@@ -27,7 +27,7 @@ from ..core.commands import CommandContext
 from ..core.commands.plugins import get_interactive_registry
 from ..core.message_queue import MessageQueue
 from ..core.exceptions import is_fatal_exception
-from ..core.constants import RESET, YELLOW
+from ..core.constants import GREEN, RESET, YELLOW
 from ..tui._screen import TerminalWidthCache
 from ..api.escape_monitor import EscapeMonitor
 from ..api.interrupt_async import (
@@ -137,6 +137,9 @@ class InteractiveLoop:
         self._command_active_depth = 0
         self._direct_cmd_lock: asyncio.Lock | None = None
         self._direct_tasks: set[asyncio.Task] = set()
+        # ★ 消息队列引用（run() 中创建）：接管启动前检测是否已有新的用户
+        #   消息排队（有则取消接管，让正常对话先处理）。
+        self._message_queue = None
 
     @property
     def _ui(self) -> ChatUIConsumer:
@@ -262,6 +265,40 @@ class InteractiveLoop:
             #   /model 弹窗）执行期间也不拦截，避免与其交互视图并发。
             if not self._generation_active:
                 return False
+            # ★ 流式接管（2026-10-22 用户需求）：生成中用 ``/loop <批次数>``
+            #   省略提词 → 接管当前正在流式输出的这一轮。命令不进入消息队列：
+            #   立即登记接管请求并调度浮窗/提示；本轮结束后由消费者把当前轮
+            #   计为第 1 批第 1 次运行并继续循环。
+            if not self._loop_state.get("_loop_mode"):
+                try:
+                    from ..core.commands.plugins.loop_plugin import (
+                        parse_loop_takeover_command,
+                    )
+
+                    takeover_count = parse_loop_takeover_command(text)
+                except Exception:
+                    _logger.debug("解析 /loop 接管命令失败", exc_info=True)
+                    takeover_count = None
+                if takeover_count is not None:
+                    event_loop = self._loop
+                    if event_loop is None or event_loop.is_closed():
+                        return False
+                    self._loop_state["_loop_takeover"] = {
+                        "count": takeover_count,
+                        "prompt": "",
+                    }
+                    try:
+                        event_loop.call_soon_threadsafe(
+                            self._activate_loop_takeover_ui,
+                            takeover_count, session,
+                        )
+                    except RuntimeError:
+                        _logger.debug(
+                            "接管命令调度失败（事件循环已关闭）", exc_info=True,
+                        )
+                        self._loop_state.pop("_loop_takeover", None)
+                        return False
+                    return True
             if not self._should_direct_command(text):
                 return False
             loop = self._loop
@@ -277,6 +314,191 @@ class InteractiveLoop:
             return True
 
         return _on_direct_submit
+
+    # ── /loop 流式接管（2026-10-22 用户需求） ────────────────
+    #
+    # 生成期间提交的 ``/loop <批次数>``（无提词）不进入消息队列：render 线程
+    # 回调先登记 ``_loop_takeover`` 并调度本组方法；当前轮结束后由消费者把
+    # 它交给 ``LoopPlugin``。当前轮计为第 1 批第 1 次运行（不重跑、不清空），
+    # 循环提词取当前会话最早的一条人类用户消息。
+
+    @staticmethod
+    def _first_human_prompt(session) -> str:
+        """当前会话中最早的一条人类用户消息（无则空串）。"""
+        try:
+            from ..core.loop_prompt import first_human_user_text
+
+            return first_human_user_text(getattr(session, "messages", []) or [])
+        except Exception:
+            _logger.debug("读取接管提词失败", exc_info=True)
+            return ""
+
+    def _message_queue_pending(self) -> bool:
+        """消息队列中是否有待处理消息（兼容 property / 方法两种 qsize）。"""
+        queue = self._message_queue
+        if queue is None:
+            return False
+        try:
+            size = getattr(queue, "qsize", None)
+            value = size() if callable(size) else size
+            return int(value or 0) > 0
+        except Exception:
+            _logger.debug("接管前消息队列非空探测失败", exc_info=True)
+            return False
+
+    def _activate_loop_takeover_ui(self, count: int, session) -> None:
+        """接管请求被接收后立即打开循环浮窗并提示（事件循环线程）。"""
+        request = self._loop_state.get("_loop_takeover")
+        if not isinstance(request, dict):
+            return
+        try:
+            request_count = int(request.get("count") or 0)
+        except (TypeError, ValueError):
+            return
+        if request_count != int(count):
+            return
+        prompt = self._first_human_prompt(session)
+        request["prompt"] = prompt
+        # 接管轮属于循环：保持状态行活跃、跳过本轮结束的冻结 / 通知。
+        self._loop_state["_loop_mode"] = True
+        chat_ui = self._chat_ui
+        if chat_ui is None:
+            return
+        try:
+            from ._float_window import open_loop_window, set_loop_window_status
+
+            open_loop_window(
+                chat_ui, count, prompt or "（等待当前轮结束）",
+            )
+            set_loop_window_status(
+                chat_ui,
+                total=count,
+                round=1,
+                run=1,
+                runs_per_round=1,
+                prompt=prompt or "（等待当前轮结束）",
+                next_prompt="",
+                generating=False,
+                new_batch=True,
+            )
+        except Exception:
+            _logger.debug("打开 /loop 接管浮窗失败", exc_info=True)
+        try:
+            chat_ui.bottom_bar.enable_status()
+        except Exception:
+            _logger.debug("接管时启用状态行失败", exc_info=True)
+        try:
+            chat_ui.write_line(
+                f"  {GREEN}+ 已接管当前流式轮（{count} 批），"
+                f"等待本轮结束后生成续跑提词…{RESET}"
+            )
+        except Exception:
+            _logger.debug("接管提示写入失败", exc_info=True)
+
+    def _cancel_loop_takeover(self, session, reason: str) -> None:
+        """取消待执行的 /loop 接管：关闭浮窗、复位循环状态（幂等）。"""
+        request = self._loop_state.pop("_loop_takeover", None)
+        if request is None and not self._loop_state.get("_loop_mode"):
+            return
+        self._loop_state["_loop_mode"] = False
+        chat_ui = self._chat_ui
+        try:
+            from ._float_window import close_loop_window
+
+            close_loop_window(chat_ui)
+        except Exception:
+            _logger.debug("关闭 /loop 接管浮窗失败", exc_info=True)
+        if chat_ui is not None:
+            try:
+                chat_ui.bottom_bar.disable_status()
+                chat_ui.bottom_bar.reset_tool_count()
+            except Exception:
+                _logger.debug("取消接管时重置底部栏失败", exc_info=True)
+        try:
+            from ..core.stats import reset_token_speed
+
+            reset_token_speed()
+        except Exception:
+            _logger.debug("取消接管时重置 token 速度失败", exc_info=True)
+        service = getattr(session, "loop_prompt_service", None)
+        if service is not None:
+            try:
+                service.end_loop()
+            except Exception:
+                _logger.debug("取消接管时清理提词服务失败", exc_info=True)
+        if request is not None and chat_ui is not None:
+            try:
+                chat_ui.write_line(
+                    f"  {YELLOW}+ 取消接管：{reason}，继续正常对话{RESET}"
+                )
+            except Exception:
+                _logger.debug("取消接管提示写入失败", exc_info=True)
+
+    async def _maybe_start_loop_takeover(self, result, session, state: SessionState) -> None:
+        """生成轮结束后启动待执行的 /loop 接管（若无待处理请求则跳过）。
+
+        取消条件（2026-10-22 用户确认）：ESC 中断、程序退出、批次数无效、
+        检测到新的用户输入、当前会话没有人类用户消息可作提词。取消时保留
+        本轮输出、关闭浮窗并恢复普通对话；用户输入仍由主循环正常处理。
+        """
+        request = self._loop_state.pop("_loop_takeover", None)
+        if not isinstance(request, dict):
+            return
+        try:
+            count = int(request.get("count") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        reason = ""
+        if self._force_exit.is_set():
+            reason = "程序正在退出"
+        elif isinstance(result, dict) and result.get("interrupted", False):
+            reason = "ESC 中断"
+        elif count <= 0:
+            reason = "批次数无效"
+        else:
+            try:
+                from ..core.commands.plugins.loop_plugin import _has_pending_input
+
+                pending_input = bool(_has_pending_input(self))
+            except Exception:
+                _logger.debug("检测接管期间用户输入失败", exc_info=True)
+                pending_input = False
+            if pending_input or self._message_queue_pending():
+                reason = "检测到用户输入"
+            else:
+                # 轮内排队 / 熔断遗留的用户消息同样视为新输入。
+                try:
+                    pending_messages = session.pending_messages
+                except Exception:
+                    pending_messages = None
+                if pending_messages:
+                    reason = "检测到用户输入"
+
+        prompt = ""
+        if not reason:
+            prompt = self._first_human_prompt(session)
+            if not prompt:
+                reason = "当前会话没有可用于接管的人类用户消息"
+
+        if reason:
+            self._loop_state["_loop_takeover"] = request
+            self._cancel_loop_takeover(session, reason)
+            return
+
+        self._loop_state["_loop_takeover"] = {
+            "count": count,
+            "prompt": prompt,
+        }
+        try:
+            await self._handle_command_msg(
+                f"/loop {count}", session, state, reset_interrupt=False,
+            )
+        except Exception:
+            _logger.exception("接管 /loop 执行失败")
+            self._cancel_loop_takeover(session, "内部错误")
+            raise
+        finally:
+            self._loop_state.pop("_loop_takeover", None)
 
     def _schedule_direct_command(self, text: str, session, state: SessionState) -> None:
         """在事件循环线程中为直连命令创建后台任务（串行执行）。"""
@@ -497,8 +719,12 @@ class InteractiveLoop:
                 msg_done.set()
             return _RoundResult(should_exit=False)
 
-    async def _handle_regular_msg(self, content: str, session, state: SessionState) -> None:
-        """处理普通用户消息"""
+    async def _handle_regular_msg(self, content: str, session, state: SessionState) -> dict:
+        """处理普通用户消息；返回 ``session.run_round`` 的轮次结果。
+
+        ★ 2026-10-22：返回结果供 ``_cli_msg_consumer`` 判断本轮是否被 ESC
+        中断——流式期间提交的 ``/loop <批次数>`` 接管只在正常完成的轮后启动。
+        """
         reset_interrupt_async(input_instance=self._ui.input if self._chat_ui else None)
         # ★ 重置工具计数（新轮开始）
         if self._chat_ui is not None:
@@ -525,6 +751,7 @@ class InteractiveLoop:
         #   确保输入提示符出现在完整渲染内容之后，不重叠。
         if self._chat_ui is not None:
             await asyncio.to_thread(self._ui.flush)
+        return result
 
     async def _handle_command_msg(
         self,
@@ -609,10 +836,13 @@ class InteractiveLoop:
             # ── retry 哨兵（生成轮） ──
             if content is _RETRY_SENTINEL:
                 self._generation_active = True
+                result = None
                 try:
-                    await _handle_retry_sentinel(session)
+                    result = await _handle_retry_sentinel(session)
                 finally:
                     self._generation_active = False
+                # ★ 流式接管：重试轮正常完成后再启动 /loop。
+                await self._maybe_start_loop_takeover(result, session, state)
                 return
 
             # ── / 命令（队列例外命令：不开放 render 线程直连） ──
@@ -622,10 +852,13 @@ class InteractiveLoop:
 
             # ── 普通用户消息（AI 生成轮：只读命令可直连） ──
             self._generation_active = True
+            result = None
             try:
-                await self._handle_regular_msg(content, session, state)
+                result = await self._handle_regular_msg(content, session, state)
             finally:
                 self._generation_active = False
+            # ★ 流式接管：本轮结束后把当前轮计为 /loop 的第 1 批第 1 次运行。
+            await self._maybe_start_loop_takeover(result, session, state)
         except asyncio.CancelledError:
             _logger.info("CLI 消息消费者被取消")
             raise
@@ -644,6 +877,10 @@ class InteractiveLoop:
                     except Exception:
                         _logger.warning("非致命异常用户反馈写入失败", exc_info=True)
         finally:
+            # ★ 异常 / 取消路径：接管请求尚未交给 LoopPlugin 时回收浮窗与状态，
+            #   避免 `_loop_mode` / 浮窗残留影响后续对话。
+            if self._loop_state.get("_loop_takeover") is not None:
+                self._cancel_loop_takeover(session, "本轮异常结束")
             self._round_active = False
             if not msg_done.is_set():
                 msg_done.set()
@@ -864,6 +1101,7 @@ class InteractiveLoop:
 
         # ── 创建 MessageQueue + 消费者 ──
         queue = _create_message_queue()
+        self._message_queue = queue
         msg_done = asyncio.Event()
         self._msg_done_ref = msg_done
 
@@ -907,6 +1145,7 @@ class InteractiveLoop:
             raise
         finally:
             self._msg_done_ref = None
+            self._message_queue = None
             # ★ 取消未完成的直连命令任务（避免退出后仍有命令在写 UI）
             for task in list(self._direct_tasks):
                 task.cancel()
