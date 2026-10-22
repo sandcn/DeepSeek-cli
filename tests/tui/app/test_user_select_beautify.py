@@ -2,14 +2,14 @@
 
 覆盖：
   - 标题元信息（位置 / 多选已选数 / 超时倒计时 / 已完成）；
-  - Claude 对齐布局（header chip + 独立问题行 / ❯ 指针 / 说明在选项下方 /
-    取消分栏表头与整行分割线 / 多选 [x] [ ] 标记）；
+  - Claude 对齐布局（tab 栏 `← [x] 标题 ... √ 提交 →` / 问题页单行问题文本 /
+    `> ` 指针 / 说明在选项下方 / 多选 `[√]` `[ ]` / Submit 页 Review 风格）；
   - 数字键快选（单选立即确认、多选切换勾选并移动光标、输入模式放行）；
   - Home/End/PgUp/PgDn 导航（仅模态弹窗 consumeAll 启用）；
   - 分栏说明每行显示各自说明 + 选中项完整说明块；
-  - Submit 页未回答项显示默认值、已完成结果行；
+  - Submit 页未回答项显示默认值、已完成结果行、提交/取消两项；
   - 窄屏/大量并发问题下每行显示宽度 <= 终端宽（不换行溢出）；
-  - 既有文案契约（`✎ 其他=自定义`、`输入不在选项中的答案`、`A⏎B`）。
+  - 既有文案契约（`其他=自定义`、`Ctrl+G vim 编辑`、`A⏎B`）。
 """
 
 from __future__ import annotations
@@ -132,7 +132,8 @@ def test_done_header_and_result_row() -> None:
     st.try_set_final("confirmed", ["A"])
     text = _render([st], width=80)
     assert "✓ 已确认" in text
-    assert "✓ 已选择: A" in text
+    # ★ 2026-10-22（Claude 对齐）：已提交结果行改为 ``→ 答案``。
+    assert "→ A" in text
 
 
 # ══════════════════════════════════════════════════════════
@@ -180,7 +181,7 @@ def test_number_key_multi_toggles_and_moves_cursor() -> None:
 def test_number_key_in_custom_input_is_text() -> None:
     st = _state("Q", ["A"], allow_custom=True)
     model, element, root, press, snapshot = _mount_popup([st])
-    # 导航到「✎ 其他」并进入输入模式。
+    # 导航到「其他（自定义输入…）」并进入输入模式。
     assert press("arrow_down") is True
     assert press("enter") is True
     # ★ 2026-10-22：输入模式不再暂停计时（typing 仅外部编辑器期间为 True）。
@@ -244,7 +245,9 @@ def test_descriptions_below_each_option_and_selected_expanded() -> None:
     assert text.count("说明甲") >= 1 and text.count("说明乙") >= 1
     # 选中的长说明在列表下方完整展开（▸ 块）。
     assert "▸" in text
-    assert "输入不在选项中的答案" in text
+    # ★ 2026-10-22（Claude 对齐）：自定义输入项为普通编号项（无说明行）。
+    assert "其他（自定义输入…）" in text
+    assert "输入不在选项中的答案" not in text
 
 
 def test_submit_page_shows_defaults_for_unanswered() -> None:
@@ -256,13 +259,36 @@ def test_submit_page_shows_defaults_for_unanswered() -> None:
     assert press("tab") is True
     assert press("tab") is True
     text = snapshot()
-    assert "提交全部答案" in text
-    assert "✓ A" in text
+    # ★ 2026-10-22（Claude 对齐）：Review 页标题 / 箭头结果行 / 底部两项。
+    assert "检查你的答案" in text
+    assert "提交答案" in text and "取消" in text
+    assert "→ A" in text
     assert "未回答（默认：B）" in text
-    # Submit 页 Enter：已回答按结果、未回答按默认值统一提交。
+    # Submit 页 Enter（默认选中「提交答案」）：已回答按结果、未回答按默认值统一提交。
     assert press("enter") is True
     assert s1.done is True and s1.result == ["A"]
     assert s2.done is True and s2.result == ["B"]
+
+
+def test_submit_page_cancel_option_returns_to_questions() -> None:
+    """★ 2026-10-22（Claude 对齐）：Submit 页 ↓ 选「取消」Enter 返回问题页。"""
+    s1 = _state("Q1", ["A"], seq=1, allow_custom=False)
+    s2 = _state("Q2", ["B"], seq=2, allow_custom=False)
+    model, element, root, press, snapshot = _mount_popup([s1, s2])
+    assert press("tab") is True
+    assert press("tab") is True
+    assert press("arrow_down") is True
+    text = snapshot()
+    # 高亮行变为「取消」。
+    cancel_line = next(
+        line for line in text.splitlines() if "取消" in line
+    )
+    assert cancel_line.lstrip().startswith("> 2.")
+    assert press("enter") is True
+    assert s1.done is False and s2.done is False
+    text = snapshot()
+    assert "检查你的答案" not in text
+    assert "Q2" in text
 
 
 def test_multi_zero_checked_hint() -> None:
@@ -455,7 +481,8 @@ def test_input_ctrl_w_u_real_delete_events() -> None:
     assert st2.result == ["ok"]
 
 
-def test_tab_summaries_for_confirmed_cancel_timeout() -> None:
+def test_tab_marks_answered_cancel_timeout() -> None:
+    """★ 2026-10-22（Claude 对齐）：tab 只显示 [x] 标记（无答案摘要）。"""
     s1 = _state("Q1", ["A"], seq=1, allow_custom=False)
     s1.mark_answered("confirmed", ["Python"])
     s2 = _state("Q2", ["B"], seq=2, allow_custom=False)
@@ -463,22 +490,28 @@ def test_tab_summaries_for_confirmed_cancel_timeout() -> None:
     s3 = _state("Q3", ["C"], seq=3, allow_custom=False)
     s3.try_set_final("timeout", [])
     text = _render([s1, s2, s3], width=100)
-    assert "✓ Python" in text
-    assert "✗ 取消" in text
-    assert "⏱ 超时" in text
+    assert "[x] Q1" in text
+    assert "[x] Q2" in text
+    assert "[x] Q3" in text
+    # 未回答的 tab 为 [ ]（此处无）。
+    assert "[ ]" not in text.split("\n")[0]
+    # 答案摘要不再出现在 tab 栏（Submit 页可见）。
+    assert "✓ Python" not in text.split("\n")[0]
+    assert "✗ 取消" not in text.split("\n")[0]
 
 
-def test_claude_layout_chip_pointer_and_description_below() -> None:
-    """Claude 对齐布局：header chip + ❯ 指针 + 说明缩进在选项下方。"""
+def test_claude_layout_pointer_and_description_below() -> None:
+    """Claude 对齐布局：``> `` 指针 + 说明缩进在选项下方。"""
     st = _state(
         "问题正文", ["A", "B"], allow_custom=True,
         option_descriptions=["说明甲", "说明乙"],
     )
     st.header = "短标签"
     text = _render([st], width=80)
-    assert "短标签" in text
+    # 单问题无 tab 栏 → header 不渲染（Claude：header 只出现在 tab 栏）。
+    assert "短标签" not in text
     assert "问题正文" in text
-    assert "\u276f" in text  # ❯ 指针
+    assert "> 1. A" in text  # Claude 指针
     # 分栏表头/竖线已移除。
     assert "选项 \u2502" not in text
     assert "\u2502" not in text
@@ -489,14 +522,20 @@ def test_claude_layout_chip_pointer_and_description_below() -> None:
     assert "说明乙" in lines[idx_b + 1]
 
 
-def test_header_chip_and_question_on_separate_lines() -> None:
-    st = _state("完整问题文本", ["A"], allow_custom=False)
-    st.header = "认证方式"
-    text = _render([st], width=80)
+def test_header_only_rendered_in_tab_bar() -> None:
+    """★ 2026-10-22（Claude 对齐）：header 只用于 tab 标签，问题页无 chip。"""
+    s1 = _state("完整问题文本", ["A"], seq=1, allow_custom=False)
+    s1.header = "认证方式"
+    s2 = _state("第二个问题", ["B"], seq=2, allow_custom=False)
+    s2.header = "优先级"
+    text = _render([s1, s2], width=80)
     lines = [line for line in text.splitlines() if line.strip()]
-    chip_line = next(line for line in lines if "认证方式" in line)
-    assert "完整问题文本" not in chip_line
-    assert any("完整问题文本" in line for line in lines)
+    tab_line = lines[0]
+    assert "认证方式" in tab_line and "优先级" in tab_line
+    # 问题正文行（非 tab 行）不出现 header chip。
+    body = "\n".join(lines[1:])
+    assert "认证方式" not in body
+    assert "完整问题文本" in body
     # 无整行 ─ 分割线（Claude 风格）。
     assert "\u2500" not in text
 
@@ -528,7 +567,49 @@ def test_multiselect_checkbox_marks() -> None:
     assert "[ ]" in text
     assert press("char", " ") is True
     text = snapshot()
-    assert "[x]" in text
+    # ★ 2026-10-22（Claude 对齐）：勾选标记为 ``[√]``（实机 Claude 同款）。
+    assert "[\u221a]" in text
+
+
+def test_tab_bar_claude_layout() -> None:
+    """★ 2026-10-22（Claude 对齐）：``← [ ] 标题  [ ] 标题  √ 提交 →``。"""
+    s1 = _state("Q1", ["A"], seq=1, allow_custom=False)
+    s2 = _state("Q2", ["B"], seq=2, allow_custom=False)
+    text = _render([s1, s2], width=80)
+    tab_line = text.splitlines()[0]
+    assert tab_line.startswith("\u2190 ")
+    assert tab_line.rstrip().endswith("\u2192")
+    assert "[ ] Q1" in tab_line and "[ ] Q2" in tab_line
+    s1.mark_answered("confirmed", ["A"])
+    text = _render([s1, s2], width=80)
+    tab_line = text.splitlines()[0]
+    assert "[x] Q1" in tab_line
+    # 全部已回答 → Submit tab 显示 √。
+    s2.mark_answered("confirmed", ["B"])
+    text = _render([s1, s2], width=80)
+    assert "\u221a 提交" in text.splitlines()[0]
+
+
+def test_multiselect_submit_item_commits_checked() -> None:
+    """★ 2026-10-22（Claude 对齐）：多选列表末尾「提交」项提交勾选集合。"""
+    st = _state("Q", ["A", "B"], multi_select=True, allow_custom=True)
+    model, element, root, press, snapshot = _mount_popup([st])
+    assert press("char", " ") is True
+    assert st.checked == [0]
+    # 选项 2 个 + 自定义 + 提交 → 光标移到末尾「提交」项。
+    for _ in range(3):
+        assert press("arrow_down") is True
+    assert st.selected == 3
+    assert press("enter") is True
+    assert st.done is True
+    assert st.action == "confirmed"
+    assert st.result == ["A"]
+
+
+def test_custom_item_is_numbered_like_claude() -> None:
+    """★ 2026-10-22（Claude 对齐）：自定义输入项是普通编号项（无说明行）。"""
+    text = _render([_state("Q", ["A", "B"])], width=80)
+    assert "3. 其他（自定义输入…）" in text
 
 
 def test_submit_page_scroll_and_digit_jump(monkeypatch) -> None:
@@ -545,16 +626,18 @@ def test_submit_page_scroll_and_digit_jump(monkeypatch) -> None:
     for _ in range(8):
         assert press("tab") is True
     text = snapshot()
-    assert "提交全部答案" in text
-    assert "显示 1-5/8" in text
-    # PgDn 滚到底部。
+    # ★ 2026-10-22（Claude 对齐）：每题占 2 行（问题 + 答案），行预算 5 →
+    #   每页 1 题。
+    assert "检查你的答案" in text
+    assert "显示 1-1/8" in text
+    # PgDn 滚动（步长 = 行预算 5）。
     assert press("page_down") is True
     text = snapshot()
-    assert "显示 4-8/8" in text
+    assert "显示 6-6/8" in text
     # 数字键跳到 Q2 修改。
     assert press("char", "2") is True
     text = snapshot()
-    assert "提交全部答案" not in text
+    assert "检查你的答案" not in text
     assert "Q2" in text
 
 

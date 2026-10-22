@@ -5,7 +5,7 @@
   - 空闲超时（2026-10-22 用户需求：删除 ``timeout`` 参数，改成「不操作界面
     一分钟后才算超时」）——每次按键/鼠标操作重置 1 分钟倒计时、共享计时、
     已提交问题不刷新、固定 deadline 调用方不受影响；外部编辑器期间暂停；
-  - 弹窗「✎ 其他（自定义输入…）」伪选项的完整交互（单选/多选/多问题）；
+  - 弹窗「其他（自定义输入…）」伪选项的完整交互（单选/多选/多问题）；
   - 输入模式 Esc/Tab 退出语义、空文本不提交、伪选项空格不可勾选；
   - ``MultiSelect`` 新增可选 props（onSelect/onChange/canToggle）零回归。
 """
@@ -273,8 +273,9 @@ def test_render_contains_custom_entry_and_hint() -> None:
         user_selects=[st], user_select=st, bottom_view="user_select",
     )
     text = _plain(h(UserSelectPopup, {"model": model, "width": 80}))
-    assert "\u270e 其他（自定义输入…）" in text
-    assert "\u270e 其他=自定义" in text
+    # ★ 2026-10-22（Claude 对齐）：自定义项为普通编号项（无 ✎ 图标）。
+    assert "其他（自定义输入…）" in text
+    assert "其他=自定义" in text
 
 
 def test_disabled_custom_not_rendered() -> None:
@@ -289,7 +290,7 @@ def test_disabled_custom_not_rendered() -> None:
 def test_single_select_custom_input_and_submit() -> None:
     st = _state()
     model, element, root, press = _mount_popup([st])
-    # 导航到列表末尾「✎ 其他」行（两个普通选项）。
+    # 导航到列表末尾「其他（自定义输入…）」行（两个普通选项）。
     assert press("arrow_down") is True
     assert press("arrow_down") is True
     assert st.selected == 2
@@ -427,14 +428,78 @@ def test_arrow_in_input_mode_does_not_switch_tab() -> None:
     assert s2.answered is False
 
 
-def test_custom_row_has_description_below() -> None:
+def test_custom_row_has_no_description_like_claude() -> None:
+    """★ 2026-10-22（Claude 对齐）：自定义项是普通编号项，无说明行。"""
     st = _state(option_descriptions=["说明一", "说明二"])
     model = SimpleNamespace(
         user_selects=[st], user_select=st, bottom_view="user_select",
     )
     text = _plain(h(UserSelectPopup, {"model": model, "width": 80}))
-    assert "\u270e 其他（自定义输入…）" in text
-    assert "输入不在选项中的答案" in text
+    assert "其他（自定义输入…）" in text
+    assert "输入不在选项中的答案" not in text
+    lines = [line for line in text.splitlines() if line.strip()]
+    idx = next(i for i, line in enumerate(lines) if "其他（自定义输入…）" in line)
+    # 下一行不是说明行（是空行/提示行）。
+    assert "输入不在选项中的答案" not in lines[idx + 1]
+
+
+def test_tool_returns_explicit_empty_multi_submit(monkeypatch) -> None:
+    """★ 2026-10-22：用户明确提交空选择时不得回退 default_options。
+
+    实测发现（本次 Claude TUI 对齐）：修复前工具返回分支
+    ``result if result else default_opts`` 把「多选未勾选提交」变成默认值，
+    与提示「Enter 提交空」矛盾。
+    """
+    import asyncio
+    import json
+    import threading
+
+    import src.tools.user_select as tool_mod
+
+    model = SimpleNamespace(
+        user_select=UserSelectState(), user_selects=[], bottom_view="",
+    )
+
+    class _UI:
+        bottom_bar = None
+
+        def get_model(self):
+            return model
+
+        def request_bottom_redraw(self):
+            pass
+
+        def get_input_component(self):
+            return None
+
+        def flush_input_router(self, timeout):
+            pass
+
+    monkeypatch.setattr(tool_mod, "_interactive_stdin", lambda: True)
+    monkeypatch.setattr(tool_mod, "get_display_target", lambda: _UI())
+
+    out: list = []
+
+    def run() -> None:
+        func = tool_mod.UserSelectFunc(
+            title="Q", options=["A", "B"], multi_select=True,
+        )
+        out.append(asyncio.run(func.execute()))
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    for _ in range(200):
+        if model.user_selects:
+            break
+        time.sleep(0.02)
+    assert model.user_selects
+    # 显式提交空选择（多选未勾选）。
+    model.user_selects[0].try_set_final("confirmed", [])
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    payload = json.loads(out[0])
+    assert payload["action"] == "confirmed"
+    assert payload["selected"] == []
 
 
 # ══════════════════════════════════════════════════════════

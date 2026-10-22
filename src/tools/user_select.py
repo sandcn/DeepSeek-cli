@@ -40,7 +40,7 @@ AskUserQuestion）：``parallel_safe=True``——多个 user_select 工具调用
 
 ★ 2026-10-21（用户需求：支持用户输入不在选项中的内容并返回，用户输入时
 停止自动超时）：工具构造的 ``UserSelectState`` 带 ``allow_custom=True``
-——弹窗列表末尾渲染「✎ 其他（自定义输入…）」入口，用户可输入任意文本。
+——弹窗列表末尾渲染「其他（自定义输入…）」入口，用户可输入任意文本。
 结果 ``selected`` 含自定义文本，并在 JSON 中额外返回
 ``"custom": "..."`` 标记自由输入。
 
@@ -199,7 +199,7 @@ class UserSelectFunc(Func):
                     "1 分钟没有任何操作（按键/滚动）才自动超时并回退 default_options，"
                     "用户持续操作期间不会超时；非交互自动回退 default_options。"
                     "★ 支持用户输入选项外的自定义答案：选项列表末尾自动追加"
-                    "『✎ 其他（自定义输入…）』入口，用户可输入任意文本；"
+                    "『其他（自定义输入…）』入口，用户可输入任意文本；"
                     "输入期间同样按空闲计时（每次按键重置 1 分钟倒计时）。"
                     "返回 JSON：{\"selected\":[...], \"action\":...}，"
                     "action 为 confirmed/cancel/timeout/non_interactive/empty/error；"
@@ -215,17 +215,17 @@ class UserSelectFunc(Func):
                         },
                         "header": {
                             "type": "string",
-                            "description": "极短标签（≤12 字符），显示为弹窗标题 chip 与多问题 tab 标签，如「认证方式」「优先级」；缺省时用 title 截断"
+                            "description": "极短标签（≤12 字符），显示为多问题 tab 标签，如「认证方式」「优先级」；缺省时用 title 截断"
                         },
                         "options": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "选项字符串列表，用户从中选择；列表末尾自动追加『✎ 其他（自定义输入…）』入口，用户可输入不在选项中的答案；空列表时返回 {\"selected\":[], \"action\":\"empty\"}"
+                            "description": "选项字符串列表，用户从中选择；列表末尾自动追加『其他（自定义输入…）』入口，用户可输入不在选项中的答案；空列表时返回 {\"selected\":[], \"action\":\"empty\"}"
                         },
                         "option_descriptions": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "与 options 等长的说明列表，option_descriptions[i] 为 options[i] 的说明；TUI 中移动到选项时说明显示在选项右侧。可选，默认空",
+                            "description": "与 options 等长的说明列表，option_descriptions[i] 为 options[i] 的说明；TUI 中说明缩进显示在选项下方（Claude 选项 label+description 布局）。可选，默认空",
                             "default": []
                         },
                         "multi_select": {
@@ -254,8 +254,8 @@ class UserSelectFunc(Func):
         模型侧历史调用若仍携带 ``timeout``，``Func.from_args`` 会作为多余
         参数忽略（debug 日志），不影响构造与执行。
         ★ 2026-10-22（用户需求：TUI 与 Claude 对齐）：新增可选 ``header``
-        ——极短标签（≤12 字符），渲染为标题 chip 与多问题 tab 标签；空串
-        时渲染层回退 title 截断（旧调用零回归）。
+        ——极短标签（≤12 字符），渲染为多问题 tab 标签；空串时 tab 回退
+        title 截断（旧调用零回归）。问题页正文只显示 ``title``。
         """
         super().__init__()  # 调用父类初始化，设置agent为None
         self.title = title
@@ -425,7 +425,13 @@ class UserSelectFunc(Func):
 
             st = state
             action = st.action or "timeout"
-            result = list(st.result) if st.result else default_opts
+            # ★ 2026-10-22（本次 TUI 对齐实测发现）：修复前
+            #   ``result = list(st.result) if st.result else default_opts``
+            #   把「用户明确提交空选择」（多选未勾选按 Enter / 选「提交」项）
+            #   错误地回退成 default_options——与提示「Enter 提交空」矛盾。
+            #   终态已由 ``try_set_final`` 写入权威 result（timeout/cancel
+            #   分支已显式写入 default_options），此处直接采用。
+            result = list(st.result)
             custom = str(getattr(st, "custom", "") or "")
             payload = {
                 "selected": result,

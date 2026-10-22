@@ -42,7 +42,7 @@ def MultiSelect(props: dict) -> Element:
             values 列表，保持 items 顺序）。
         onSelect: ``(item) -> None``——Enter 时回调**当前光标项**
             （``{"label", "value"}``，与 SelectInput 对齐）；提供时 Enter
-            走 onSelect、不再触发 onSubmit（UserSelectPopup 的「✎ 其他
+            走 onSelect、不再触发 onSubmit（UserSelectPopup 的「其他
             （自定义输入…）」伪选项需要拿到确定项判断进入输入模式）。
         onChange: ``(selected: list) -> None``——勾选集合变化时回调
             （空格切换后；ordered values，保持 items 顺序）。
