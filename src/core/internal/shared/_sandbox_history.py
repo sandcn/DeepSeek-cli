@@ -134,6 +134,7 @@ class _FileHistory:
         message_index: int,
         tool_name: str = "write",
         record_type: str = "file",
+        agent_id: str = "",
     ) -> FileChangeRecord:
         """记录文件修改（仅写入 file_history，不涉及 message_history）。"""
         with self._lock:
@@ -144,6 +145,7 @@ class _FileHistory:
                 message_index=message_index,
                 tool_name=tool_name,
                 record_type=record_type,
+                agent_id=agent_id,
             )
             self.file_history.setdefault(file_path, []).append(record)
             self._cleanup_old_records(file_path)

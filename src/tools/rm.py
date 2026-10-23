@@ -9,6 +9,7 @@ from .file_ops import (
     validate_path_security, async_file_exists, async_collect_files,
     async_read_file_content, async_remove_file, async_is_link,
     async_record_sandbox, async_collect_dirs, async_record_sandbox_batch,
+    acquire_sandbox_locks, tool_agent_id,
 )
 
 
@@ -63,10 +64,18 @@ class RmFunc(FileSystemToolBase):
             if not await async_file_exists(self.path):
                 return f"(路径不存在: {self.path})"
 
+            # ── 沙盒 Agent 写锁：待删除路径（目录锁覆盖整棵子树）
+            lock_error = acquire_sandbox_locks(self.agent, [self.path], self.name)
+            if lock_error:
+                return lock_error
+
             if await async_is_link(self.path) or await asyncio.to_thread(os.path.isfile, self.path):
                 # ── 删除文件 ──
                 content = await async_read_file_content(self.path)
-                await async_record_sandbox(self.path, content, None, self.name)
+                await async_record_sandbox(
+                    self.path, content, None, self.name,
+                    agent_id=tool_agent_id(self.agent),
+                )
                 await async_remove_file(self.path)
                 return f"删除成功: {self.path}"
 
@@ -76,7 +85,11 @@ class RmFunc(FileSystemToolBase):
                     entries = await asyncio.to_thread(os.listdir, self.path)
                     if not entries:
                         # 空目录：直接删除
-                        await async_record_sandbox(self.path, "", None, self.name, record_type="directory")
+                        await async_record_sandbox(
+                            self.path, "", None, self.name,
+                            record_type="directory",
+                            agent_id=tool_agent_id(self.agent),
+                        )
                         await asyncio.to_thread(os.rmdir, self.path)
                         return f"删除成功: {self.path}"
                     else:
@@ -97,7 +110,9 @@ class RmFunc(FileSystemToolBase):
                     (d, "", None, self.name, "directory") for d in dirs
                 )
                 changes.append((self.path, "", None, self.name, "directory"))
-                await async_record_sandbox_batch(changes)
+                await async_record_sandbox_batch(
+                    changes, tool_agent_id(self.agent),
+                )
 
                 await asyncio.to_thread(shutil.rmtree, self.path)
                 return f"删除成功: {self.path} ({len(files)}个文件)"

@@ -370,6 +370,12 @@ class Agent(BaseAgent):
                 except Exception:
                     _logger.debug("检查 kill_background 标志异常", exc_info=True)
                 break
+        # ★ 主 Agent 的文件沙盒锁**不在轮次结束自动释放**（用户需求 2026-10）：
+        #   锁必须持续到「持锁 Agent 主动释放」或「Agent 删除 / 沙盒清空」。
+        #   修复前此处释放会让主 Agent 先写 a.txt、下一轮再派发 SubAgent 写
+        #   a.txt 时直接成功（无「写入被锁定」报错），与独占语义矛盾；该释放
+        #   点还会与仍在运行的后台 subagent 形成竞态。主 Agent 的锁改由
+        #   `subagent_opt(op="release")` 主动释放，进程退出时随内存 map 消失。
         return interrupted
 
     # ── 兼容旧版直接调用（某些测试可能直接使用） ──────────

@@ -78,6 +78,13 @@ class ToolScheduler:
         self._global_dag: Optional[ToolDAG] = None
         self._global_tool_calls: list[dict] = []
         self._batch_boundaries: list[int] = []
+        # ── 工具调用归属 Agent（tool_call_id → agent 引用）──────────
+        # 全局 DAG 由所有 Agent 共享，某一 Agent 的调度循环可能拾取到
+        # 另一 Agent 后加入的节点（并发 SubAgent / 多批调度）。执行时必须
+        # 按**节点自己的**归属 Agent 派发与写 contextvar，否则 SubAgent 的
+        # write 会以主 Agent 身份执行——文件沙盒锁会被同 owner 放行，
+        # 出现「主 Agent 已写 a.txt，SubAgent 仍能写且不报错」。
+        self._tool_agent_refs: dict[str, Any] = {}
         self._prev_non_dispatch_ids: set[str] = set()
         self._results_map: dict[str, tuple[str, str, bool]] = {}
         self._completed_tc_ids: set[str] = set()
@@ -147,11 +154,25 @@ class ToolScheduler:
             _default_scheduler = cls()
         return _default_scheduler
 
+    def _remember_tool_agents(self, tool_calls, agent_ref) -> None:
+        """登记本批工具调用的归属 Agent（tool_call_id → agent 引用）。
+
+        全局 DAG 跨 Agent 共享，执行时必须按节点自身的归属 Agent 派发
+        （见 ``_tool_agent_refs`` 注释），而不是按「当前调度循环的调用方」。
+        """
+        for tc in tool_calls or ():
+            if not isinstance(tc, dict):
+                continue
+            tc_id = tc.get("id")
+            if tc_id:
+                self._tool_agent_refs[str(tc_id)] = agent_ref
+
     def _reset_global_state(self) -> None:
         """重置全局 DAG 状态（供测试清理使用）"""
         self._global_dag = None
         self._global_tool_calls.clear()
         self._batch_boundaries.clear()
+        self._tool_agent_refs.clear()
         self._prev_non_dispatch_ids.clear()
         self._results_map.clear()
         self._completed_tc_ids.clear()
@@ -175,6 +196,7 @@ class ToolScheduler:
         """
         _logger.debug("ToolScheduler: 清除跨批记录")
         self._batch_boundaries.clear()
+        self._tool_agent_refs.clear()
         self._results_map.clear()
         self._completed_tc_ids.clear()
         self._global_tool_calls.clear()
@@ -620,6 +642,15 @@ class ToolScheduler:
             (tool_call_id, output, success)；output 为 str 或 ToolResult
             （多模态结构化结果，见 _run_tool_func）。
         """
+        # ★ 按工具调用**自身的归属 Agent** 执行（而非当前调度循环的调用方）：
+        #   全局 DAG 共享，主 Agent 的调度循环可能拾取到 SubAgent 后加入的
+        #   节点。若沿用调用方身份，SubAgent 的 write 会以主 Agent 身份执行，
+        #   文件沙盒锁按同 owner 放行（用户报告：主 Agent 先写 a.txt，
+        #   SubAgent 仍能写且不报错）。归属表由 schedule() 登记。
+        effective_agent = self._tool_agent_refs.get(
+            str(tc.get("id", "")), agent_ref,
+        )
+
         # 对齐 Claude Code：工具卡 detail 用关键参数**值**（非 JSON）——已知工具
         # 显示如 `Read pyproject.toml` 的路径/命令，未知工具显示紧凑 `k=v`
         try:
@@ -638,8 +669,8 @@ class ToolScheduler:
             "id": tc.get("id", ""),
             "name": tc["name"],
             "arguments": tc.get("arguments") or {},
-            "agent": agent_ref,
-            "agent_type": getattr(agent_ref, "agent_type", None),
+            "agent": effective_agent,
+            "agent_type": getattr(effective_agent, "agent_type", None),
         }
 
         try:
@@ -655,13 +686,28 @@ class ToolScheduler:
                                         tc.get("name", "?"), exc_info=True)
                 return (tc["id"], output, False)
 
-            func = self._registry.dispatch(tc["name"], tc["arguments"], agent=agent_ref)
+            func = self._registry.dispatch(
+                tc["name"], tc["arguments"], agent=effective_agent,
+            )
             # 注入 agent_type（SubAgent 通过此属性限制 plan 的写入路径）
-            if hasattr(agent_ref, 'agent_type') and agent_ref.agent_type is not None:
-                func.agent_type = agent_ref.agent_type
+            if (hasattr(effective_agent, 'agent_type')
+                    and effective_agent.agent_type is not None):
+                func.agent_type = effective_agent.agent_type
 
             async def _run_tool_func_via_pipeline():
-                return await self._run_tool_func(func, tc, run_method)
+                # ── 当前 Agent 标识写入 contextvar（文件沙盒锁 / 记录归属）──
+                # to_thread 会复制当前上下文，工具内部的沙盒记录与审计因此
+                # 能拿到正确的 agent_id；执行结束按 token 恢复外层值（嵌套
+                # SubAgent / 并发调度互不污染）。
+                from .sandbox_manager import (
+                    resolve_agent_id, set_current_agent_id,
+                    reset_current_agent_id,
+                )
+                _token = set_current_agent_id(resolve_agent_id(effective_agent))
+                try:
+                    return await self._run_tool_func(func, tc, run_method)
+                finally:
+                    reset_current_agent_id(_token)
 
             # ── 工具执行管线：execute（环绕超时/重试/审计） ──
             result = await _pipeline_execute(call_ctx, _run_tool_func_via_pipeline)
@@ -942,6 +988,11 @@ class ToolScheduler:
             if not tool_calls:
                 _logger.debug("schedule[%s]: 空列表，返回 []", agent_label)
                 return []
+
+            # ★ 登记本批工具调用的归属 Agent（DAG 跨 Agent 共享，执行侧按
+            #   节点归属派发；防止 SubAgent 的工具被主 Agent 的调度循环
+            #   以主 Agent 身份执行——那会让文件沙盒锁按同 owner 放行）。
+            self._remember_tool_agents(tool_calls, agent_ref)
 
             # ── 执行引擎分派（「一切皆插件」）：非默认引擎（serial/parallel/
             #    自定义）走注册表解析的引擎；默认 dag 引擎走下方内联路径

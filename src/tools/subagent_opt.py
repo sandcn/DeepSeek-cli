@@ -10,6 +10,8 @@ subagent_opt — 按 task_id 操作后台 subagent 任务
 - op=kill     取消后台 subagent 任务（级联取消其内部 SubAgent）
 - op=wait_all 等待**所有**后台 subagent 任务完成，返回每个任务结果的 JSON 数组
              （无需 task_id；timeout 秒，默认 300/0 无限）
+- op=release  释放**调用方自己持有**的文件沙盒锁（参数只有 file）；
+             调用方不是锁持有者时拒绝，主 Agent 也没有特权
 
 后台 subagent 仅主 Agent 独有（subagent 工具运行时校验 + SubAgent 工具
 白名单排除），因此 subagent_opt 同样仅主 Agent 可用（SubAgent 内无
@@ -43,27 +45,41 @@ class SubagentOptFunc(Func):
                 "description": (
                     "按 task_id 操作后台 subagent 任务；op：read（读当前状态/结果，"
                     "立即返回）/ wait（等待完成）/ kill（取消，级联取消其内部子 Agent）/ "
-                    "wait_all（等待全部，无需 task_id）。task_id 必须是 sa-xxx，"
-                    "timeout 默认 300 秒（0 不限），wait 超时返回 timeout=true "
-                    "且任务继续运行。"
+                    "wait_all（等待全部，无需 task_id）/ release（释放文件沙盒锁："
+                    "参数只有 file；调用方必须是该锁持有者，主 Agent 也无特权，"
+                    "不能释放其他 Agent 的锁）。"
+                    "task_id 必须是 sa-xxx，timeout 默认 300 秒（0 不限），wait 超时"
+                    "返回 timeout=true 且任务继续运行。"
                     "例：subagent_opt({\"task_id\": \"sa-abc123\", \"op\": \"wait\", "
-                    "\"timeout\": 60})"
+                    "\"timeout\": 60})；subagent_opt({\"op\": \"release\", "
+                    "\"file\": \"src/a.py\"})"
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "task_id": {
                             "type": "string",
-                            "description": "任务 ID（sa-xxx；wait_all 可省略）",
+                            "description": (
+                                "任务 ID（sa-xxx；wait_all 可省略；release 不使用"
+                                "此参数）"
+                            ),
                         },
                         "op": {
                             "type": "string",
-                            "enum": ["read", "wait", "kill", "wait_all"],
-                            "description": "要执行的操作（read/wait/kill/wait_all）",
+                            "enum": ["read", "wait", "kill", "wait_all", "release"],
+                            "description": "要执行的操作（read/wait/kill/wait_all/release）",
                         },
                         "timeout": {
                             "type": "number",
                             "description": "超时秒数（wait/wait_all 默认 300，0 不限）",
+                        },
+                        "file": {
+                            "type": "string",
+                            "description": (
+                                "op=release 时必填：要释放锁的文件路径。只有该"
+                                "路径的锁持有者（如 sa-xx）能释放；目录路径会"
+                                "同时释放其子孙锁"
+                            ),
                         },
                     },
                     "required": ["op"],
@@ -76,16 +92,22 @@ class SubagentOptFunc(Func):
         op = arguments.get("op", "")
         if op == "wait_all":
             return "'wait_all'"
+        if op == "release":
+            # release 的参数只有 file（不展示 / 不使用 task_id）
+            return f"'release {arguments.get('file') or ''}'"
         task_id = arguments.get("task_id") or ""  # 防御 None（模型传 null）
         return f"'{op} {task_id}'"
 
-    def __init__(self, task_id: str = "", op: str = "read", timeout=None):
+    def __init__(self, task_id: str = "", op: str = "read", timeout=None,
+                 file: str = ""):
         super().__init__()
         # task_id 归一化（防御 None/缺失）：模型传 {"task_id": null} 时
         # from_args 把 None 传入（默认值不生效），后续 startswith 崩溃——
         # 统一归一化为空串（wait_all 批量操作本就无需 task_id）。
         self.task_id = task_id or ""
         self.op = op
+        # op=release 的锁路径（release 必填；仅释放调用方自己持有的锁）
+        self.file = file or ""
         # timeout 仅对 wait / wait_all 生效：省略/None → 300s；<=0 → 无限等待
         # 使用 float 保留小数（如 0.5 秒短超时），避免 int() 截断
         if timeout is None:
@@ -113,6 +135,13 @@ class SubagentOptFunc(Func):
         if isinstance(agent, SubAgent):
             return ("错误：subagent_opt 仅主 Agent 可用"
                     "（SubAgent 内不可管理后台 subagent）")
+
+        # ★ op=release：释放文件沙盒锁（用户需求 2026-10）。只依赖沙盒
+        #   管理器，不依赖子代理任务表——必须在 `_subagent_tasks` 校验之前
+        #   处理（测试桩 / 无任务上下文时也能释放调用方自身的锁）。
+        if self.op == "release":
+            return self._op_release(agent)
+
         if agent is None or not hasattr(agent, '_subagent_tasks'):
             return "(后台 subagent 操作需要关联 Agent 上下文，当前未关联)"
 
@@ -149,7 +178,53 @@ class SubagentOptFunc(Func):
             return await self._op_wait(agent, rec)
         if self.op == "kill":
             return await self._op_kill(agent, rec)
-        return f"(未知操作: {self.op}。支持: read/wait/kill/wait_all)"
+        return f"(未知操作: {self.op}。支持: read/wait/kill/wait_all/release)"
+
+    # ── op=release ───────────────────────────────────────
+
+    def _op_release(self, agent) -> str:
+        """释放**调用方自己持有**的文件沙盒锁（参数只有 ``file``）。
+
+        规则（用户需求 2026-10）：
+          - 锁所有者按 Agent 标识记录（SubAgent 为其 ``sa-xx`` task_id）；
+          - 调用方必须就是该 ``file`` 的锁持有者，否则拒绝——**主 Agent
+            也没有特权**，不能释放其他 Agent 的锁；
+          - 只接受 ``file`` 参数，不支持按 ``task_id`` 或「释放全部锁」操作。
+        """
+        from ..core.sandbox_manager import (
+            get_sandbox_manager, resolve_agent_id,
+        )
+
+        if agent is None:
+            return "(释放文件沙盒锁需要关联 Agent 上下文，当前未关联)"
+
+        sandbox = get_sandbox_manager()
+        if sandbox is None:
+            return "(文件沙盒未初始化，无可释放的锁)"
+
+        file_path = str(self.file or "").strip()
+        if not file_path:
+            return ("(错误：release 只接受 file 参数（要释放锁的文件路径），"
+                    "且调用方必须是该锁的持有者)")
+
+        caller_id = resolve_agent_id(agent)
+        owner = sandbox.get_lock_owner(file_path)
+        if owner != caller_id:
+            if not owner:
+                return f"(agent {caller_id} 未持有 {file_path} 的锁，不能释放)"
+            return (
+                f"(无法释放: 调用方 agent {caller_id} 未持有 {file_path} 的锁"
+                f"（当前持有人: {owner}）；mainagent 也没有特权)"
+            )
+
+        count = sandbox.release_locks(caller_id, file_path)
+        if count:
+            return f"(已释放 {count} 个锁: agent {caller_id} @ {file_path})"
+        # 持有者命中的是祖先目录锁（file 本身没有精确锁）：不擅自释放目录锁
+        return (
+            f"(agent {caller_id} 未持有 {file_path} 的精确锁"
+            f"（若该路径由目录锁覆盖，请传目录路径释放）)"
+        )
 
     # ── op=read ──────────────────────────────────────────
 

@@ -11,6 +11,8 @@ from .file_ops import (
     async_record_sandbox,
     build_directory_target_creation_changes,
     build_directory_source_removal_changes,
+    acquire_sandbox_locks,
+    tool_agent_id,
 )
 
 
@@ -97,6 +99,14 @@ class MvFunc(FileSystemToolBase):
                 if same_eff:
                     return f"(源和目标路径相同: {self.source})"
 
+            # ── 沙盒 Agent 写锁：源（将被删除）与目标（将被写入）都要归本 agent
+            # 基础校验通过后才建锁，避免为不存在的源 / 相同路径留下锁。
+            lock_error = acquire_sandbox_locks(
+                self.agent, [self.source, self.destination], self.name,
+            )
+            if lock_error:
+                return lock_error
+
             if src_is_file:
                 source_content = await async_read_file_content(self.source)
                 dst_content = await async_read_file_content(effective_dst) if effective_exists else None
@@ -106,10 +116,19 @@ class MvFunc(FileSystemToolBase):
                 source_still_exists = await async_file_exists(self.source)
                 if source_still_exists:
                     # 跨文件系统：复制成功但源删除失败，仅记录目标写入
-                    await async_record_sandbox(effective_dst, dst_content, source_content, self.name)
+                    await async_record_sandbox(
+                        effective_dst, dst_content, source_content, self.name,
+                        agent_id=tool_agent_id(self.agent),
+                    )
                     return f"(移动部分成功: 跨文件系统复制完成但源文件删除失败: {self.source})"
-                await async_record_sandbox(self.source, source_content, None, self.name)
-                await async_record_sandbox(effective_dst, dst_content, source_content, self.name)
+                _agent_id = tool_agent_id(self.agent)
+                await async_record_sandbox(
+                    self.source, source_content, None, self.name, agent_id=_agent_id,
+                )
+                await async_record_sandbox(
+                    effective_dst, dst_content, source_content, self.name,
+                    agent_id=_agent_id,
+                )
                 action = "覆盖" if effective_exists else "移动"
                 return f"{action}成功: {self.source} -> {effective_dst}"
 
@@ -148,6 +167,7 @@ class MvFunc(FileSystemToolBase):
                         self.source, effective_dst, src_files, self.name,
                         dst_existing or None, source_contents=src_contents,
                         source_deleted=False, dir_changes=target_creation,
+                        agent_id=tool_agent_id(self.agent),
                     )
                     return f"(移动部分成功: 跨文件系统复制完成但源目录删除失败: {self.source})"
 
@@ -155,6 +175,7 @@ class MvFunc(FileSystemToolBase):
                     self.source, effective_dst, src_files, self.name,
                     dst_existing or None, source_contents=src_contents,
                     dir_changes=target_creation + source_removal,
+                    agent_id=tool_agent_id(self.agent),
                 )
                 return f"移动成功: {self.source} -> {effective_dst} ({len(src_files)}个文件)"
 

@@ -15,6 +15,8 @@ from .file_ops import (
     async_file_exists,
     get_plan_allowed_dir,
     is_path_within_dir,
+    acquire_sandbox_locks,
+    tool_agent_id,
 )
 from ..core.constants import GREEN, RED, DIM, RESET
 from ..core.diff_state import diff_active
@@ -353,12 +355,22 @@ class FileToolBase(Func):
         total_start = time.monotonic()
         try:
             # 路径安全校验 + 文件大小检查（在异步上下文中执行，避免构造时阻塞）
+            # 先做只读校验，避免为非法路径建锁；随后才申请沙盒写锁。
             self._validate_path_and_size()
+
+            # ── 沙盒 Agent 写锁（第一个写该路径的 agent 持锁）────────
+            # 冲突时直接返回错误（不落盘、不写沙盒记录）；成功时锁在
+            # 本次写操作期间由本 agent 持有，后续同 agent 写入直接复用。
+            lock_error = acquire_sandbox_locks(self.agent, [self.path], self.name)
+            if lock_error:
+                return lock_error
 
             parent_dir = os.path.dirname(self.path)
             if parent_dir:
                 from .file_ops import async_makedirs_and_record
-                await async_makedirs_and_record(parent_dir, self.name)
+                await async_makedirs_and_record(
+                    parent_dir, self.name, tool_agent_id(self.agent),
+                )
 
             old_content = await self._read_original()
             new_content = precomputed_content if precomputed_content is not None else await self._get_new_content()
@@ -371,7 +383,8 @@ class FileToolBase(Func):
             #   （捕获 + warning）策略一致——捕获 + warning，工具仍报成功。
             try:
                 await async_record_file_change_from_context(
-                    self.path, old_content, new_content, self.name
+                    self.path, old_content, new_content, self.name,
+                    agent_id=tool_agent_id(self.agent),
                 )
             except Exception:
                 _logger.warning("沙盒记录失败（文件已写入，忽略）: %s", self.path,

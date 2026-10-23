@@ -4,7 +4,10 @@ import asyncio
 import os
 
 from .file_base import FileSystemToolBase
-from .file_ops import validate_path_security, async_file_exists
+from .file_ops import (
+    validate_path_security, async_file_exists,
+    acquire_sandbox_locks, tool_agent_id,
+)
 
 
 class MkdirFunc(FileSystemToolBase):
@@ -83,9 +86,18 @@ class MkdirFunc(FileSystemToolBase):
                 if parent_dir and not await async_file_exists(parent_dir):
                     return f"(父目录不存在，如需递归创建请设置 parents=True: {self.path})"
 
+            # ── 沙盒 Agent 写锁：待创建目录（目录锁覆盖后续子孙路径）
+            # 放在存在性 / 父目录校验之后，避免为「目录已存在」等无写入
+            # 场景留下无意义的锁。
+            lock_error = acquire_sandbox_locks(self.agent, [self.path], self.name)
+            if lock_error:
+                return lock_error
+
             # 执行目录创建 + 沙盒记录（含隐式创建的父目录）
             from .file_ops import async_makedirs_and_record
-            await async_makedirs_and_record(self.path, self.name)
+            await async_makedirs_and_record(
+                self.path, self.name, tool_agent_id(self.agent),
+            )
 
             return f"创建成功: {self.path}"
 

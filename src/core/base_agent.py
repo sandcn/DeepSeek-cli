@@ -118,6 +118,11 @@ class BaseAgent:
         self.messages: list[dict] = []
         self.model: str | None = None
         self.tools: list[dict] = []
+        # ── Agent 标识（文件沙盒锁 / 工具审计）──────────────────
+        # 主 Agent 恒为 "main"；SubAgent 在 __init__ 中覆盖为唯一 label
+        # （后台 subagent 为 task_id "sa-xxx"）。resolve_agent_id 优先读取
+        # 本属性，缺失时才回退 label。
+        self.agent_id: str = "main"
         # ── 后台任务列表（task_id → 任务记录） ──
         # ★ 两类后台任务使用**独立**列表（2026-08-18）：
         #   - _background_tasks：bash 后台任务（bash background=True /
@@ -427,6 +432,23 @@ class BaseAgent:
     #   ② 无已完成但仍有运行中 → 等待全部完成 → 插入结果消息 → 返回 True
     #   ③ 无任何后台任务 → 返回 False（对话可正常结束）
 
+    def _release_sandbox_locks(self) -> int:
+        """释放本 Agent 持有的全部文件沙盒锁（Agent 结束 / 被删除时调用）。
+
+        返回释放数量；无沙盒 / 无锁时返回 0（幂等）。异常不外抛——
+        清理路径不应影响主流程收尾。
+        """
+        try:
+            from .sandbox_manager import get_sandbox_manager, resolve_agent_id
+
+            sandbox = get_sandbox_manager()
+            if sandbox is None:
+                return 0
+            return sandbox.release_agent_locks(resolve_agent_id(self))
+        except Exception:
+            _logger.debug("释放文件沙盒锁失败", exc_info=True)
+            return 0
+
     def _register_background_task(self, task_id: str, record: dict) -> None:
         """注册 bash 后台任务记录到 bash 任务表（_background_tasks）。
 
@@ -572,6 +594,19 @@ class BaseAgent:
             return None
         rec = self._subagent_tasks.pop(task_id, None)
         if rec is not None:
+            # ★ 用户需求（2026-10）：agent 删除后释放其文件沙盒锁——
+            #   后台 subagent 的 label 即 task_id（sa-xxx），任务记录被
+            #   subagent_opt wait/kill/wait_all 移除时释放该 agent 的锁，
+            #   其他 agent 随后可写同一路径（幂等；run() finally 已释放时
+            #   此处返回 0，无副作用）。
+            try:
+                from .sandbox_manager import get_sandbox_manager
+
+                sandbox = get_sandbox_manager()
+                if sandbox is not None:
+                    sandbox.release_agent_locks(str(task_id))
+            except Exception:
+                _logger.debug("移除 subagent 任务时释放沙盒锁失败", exc_info=True)
             self._publish_background_task_event()
         return rec
 

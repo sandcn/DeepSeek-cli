@@ -118,6 +118,9 @@ def build_record_row(record) -> dict:
         "is_dir": is_dir,
         "change_label": change_label(before, after, is_dir),
         "is_revert": _is_revert_tool(_rec_tool(record)),
+        # 产生本次变更的 Agent（文件沙盒锁 / 审计视图用）
+        "agent_id": str(getattr(record, "agent_id", "") or ""),
+        "is_audit": False,
     }
 
 
@@ -252,6 +255,34 @@ def build_record_history_entries(sandbox, file_path=None) -> list:
             continue
         row["seq"] = i + 1
         rows.append(row)
+    # ── 工具调用审计（读 / 写 / 被锁拒绝）作为流水的只读条目追加 ──
+    try:
+        audits = sandbox.get_tool_audit_records() or []
+    except Exception:
+        audits = []
+    prefix = f"{str(file_path).rstrip('/')}/" if file_path else ""
+    for i, audit in enumerate(audits, len(rows) + 1):
+        path = str(audit.get("path", "") or "")
+        if file_path and path != file_path and not (prefix and path.startswith(prefix)):
+            continue
+        action = str(audit.get("action", "") or "")
+        rows.append({
+            "path": path,
+            "before": None,
+            "after": None,
+            "message_index": -1,
+            "tool": str(audit.get("tool", "") or ""),
+            "time": float(audit.get("time", 0.0) or 0.0),
+            "is_dir": False,
+            "change_label": action or "调用",
+            "is_revert": False,
+            "agent_id": str(audit.get("agent_id", "") or ""),
+            "lock_owner": str(audit.get("lock_owner", "") or ""),
+            "success": bool(audit.get("success")),
+            "action": action,
+            "is_audit": True,
+            "seq": i,
+        })
     return rows
 
 
@@ -318,11 +349,49 @@ def build_sandbox_sections(sandbox, stats: dict | None = None) -> list:
             ("回滚次数", _fmt_int(stats.get("revert_count", 0)), "warn", None),
         ],
     })
+    # ── Agent 文件锁（内存 map 快照） ──
+    try:
+        locks = sandbox.get_locks() or []
+    except Exception:
+        locks = []
+    lock_rows = [
+        (
+            f"{info.get('agent_id') or '?'} @ {info.get('path') or '?'}",
+            str(info.get("tool") or ""),
+            "info",
+            None,
+        )
+        for info in locks
+    ]
+    sections.append({
+        "title": "文件锁",
+        "rows": lock_rows or [("状态", "(无)", "info", None)],
+    })
+    # ── 最近工具调用（读 / 写 / 被锁拒绝） ──
+    try:
+        audits = sandbox.get_tool_audit_records(limit=8) or []
+    except Exception:
+        audits = []
+    audit_rows: list = []
+    for audit in reversed(audits):
+        path = str(audit.get("path", "") or "")
+        owner = str(audit.get("lock_owner", "") or "")
+        audit_rows.append((
+            f"{audit.get('action') or '?'} {audit.get('tool') or '?'} "
+            f"{audit.get('agent_id') or '?'} {path}",
+            f"锁: {owner}" if owner else "",
+            "info" if audit.get("success") else "warn",
+            None,
+        ))
+    sections.append({
+        "title": "最近工具调用",
+        "rows": audit_rows or [("状态", "(无)", "info", None)],
+    })
     return sections
 
 
 def sandbox_signature(sandbox) -> tuple:
-    """沙盒数据签名（记录数 / 文件数 / 当前消息索引）——实时刷新检测用。
+    """沙盒数据签名（记录数 / 文件数 / 当前索引 / 锁数 / 审计数）——实时刷新检测用。
 
     ★ 性能（2026-10）：改用轻量 ``get_stats()``（只统计条数）——修复前用
     ``get_extended_stats()``（遍历全部记录计算工具分布 / 变更类型 / 内容字符
@@ -330,15 +399,25 @@ def sandbox_signature(sandbox) -> tuple:
     每帧产生一次全量遍历的无谓开销。签名语义不变。
     """
     if sandbox is None:
-        return (0, 0, 0)
+        return (0, 0, 0, 0, 0)
     try:
         stats = sandbox.get_stats()
     except Exception:
-        return (0, 0, 0)
+        return (0, 0, 0, 0, 0)
+    try:
+        lock_count = len(sandbox.get_locks())
+    except Exception:
+        lock_count = 0
+    try:
+        audit_count = len(sandbox.get_tool_audit_records())
+    except Exception:
+        audit_count = 0
     return (
         int(stats.get("total_records", 0) or 0),
         int(stats.get("total_files", 0) or 0),
         int(stats.get("current_message_index", 0) or 0),
+        lock_count,
+        audit_count,
     )
 
 

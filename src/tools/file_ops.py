@@ -401,6 +401,7 @@ async def async_record_directory_files(
     source_deleted: bool = True,
     source_contents: dict[str, str | None] | None = None,
     dir_changes: list[tuple] | None = None,
+    agent_id: str = "",
 ) -> None:
     """记录目录移动/复制操作中所有文件 **及目录树** 的沙盒变更
 
@@ -454,7 +455,7 @@ async def async_record_directory_files(
         else:
             changes.append((dst_fp, None, content, tool_name, "file"))
 
-    await async_record_sandbox_batch(changes)
+    await async_record_sandbox_batch(changes, agent_id)
 
 
 def build_directory_target_creation_changes(
@@ -513,25 +514,66 @@ def _get_sandbox_logger():
     return _LOGGER_SANDBOX
 
 
+def acquire_sandbox_locks(agent, paths, tool_name: str) -> str:
+    """为当前工具申请沙盒写锁（同步，内存操作）。
+
+    Args:
+        agent: 工具实例上的 Agent 对象（``self.agent``），用于解析 agent_id。
+        paths: 本次写操作涉及的路径（单个或序列）。
+        tool_name: 工具名（write/edit/cp/mv/rm/mkdir）。
+
+    Returns:
+        ``""`` 表示成功；非空为冲突错误文本（含持锁 agent 标识），
+        调用方应直接作为工具结果返回（不落盘）。
+    """
+    from ..core.sandbox_manager import get_sandbox_manager, resolve_agent_id
+    try:
+        sandbox = get_sandbox_manager()
+        if sandbox is None:
+            return ""
+        return sandbox.acquire_locks(resolve_agent_id(agent), paths, tool_name)
+    except Exception as e:
+        _get_sandbox_logger().warning("沙盒锁申请失败（放行执行）: %s", e)
+        return ""
+
+
+def record_sandbox_read(agent, path: str) -> None:
+    """记录 read 工具调用审计（只读不抢锁，异常不影响读取）。"""
+    from ..core.sandbox_manager import get_sandbox_manager, resolve_agent_id
+    try:
+        sandbox = get_sandbox_manager()
+        if sandbox is not None:
+            sandbox.record_read_audit(resolve_agent_id(agent), path)
+    except Exception as e:
+        _get_sandbox_logger().warning("沙盒读审计失败（忽略）: %s", e)
+
+
+def tool_agent_id(agent) -> str:
+    """工具实例的 Agent 标识（主 Agent = "main"，SubAgent = label）。"""
+    from ..core.sandbox_manager import resolve_agent_id
+    return resolve_agent_id(agent)
+
+
 async def async_record_sandbox(
     file_path: str,
     content_before: str | None,
     content_after: str | None,
     tool_name: str,
     record_type: str = "file",
+    agent_id: str = "",
 ) -> None:
     """记录文件变更到沙盒，捕获并记录异常。"""
     from ..core.sandbox_manager import async_record_file_change_from_context
     try:
         await async_record_file_change_from_context(
             file_path, content_before, content_after, tool_name,
-            record_type,
+            record_type, agent_id,
         )
     except Exception as e:
         _get_sandbox_logger().warning("沙盒记录失败 %s: %s", file_path, e)
 
 
-async def async_record_sandbox_batch(changes: list[tuple]) -> None:
+async def async_record_sandbox_batch(changes: list[tuple], agent_id: str = "") -> None:
     """批量记录文件变更到沙盒（一次 to_thread），捕获并记录异常。
 
     目录级操作（cp/mv/rm 目录树）逐条调用 ``async_record_sandbox`` 会为每条
@@ -545,12 +587,12 @@ async def async_record_sandbox_batch(changes: list[tuple]) -> None:
         return
     from ..core.sandbox_manager import async_record_file_changes_from_context
     try:
-        await async_record_file_changes_from_context(changes)
+        await async_record_file_changes_from_context(changes, agent_id)
     except Exception as e:
         _get_sandbox_logger().warning("沙盒批量记录失败（%d 条）: %s", len(changes), e)
 
 
-async def async_makedirs_and_record(path: str, tool_name: str) -> None:
+async def async_makedirs_and_record(path: str, tool_name: str, agent_id: str = "") -> None:
     """创建目录（含父目录）并记录到沙盒，使沙盒回滚可正确清理。
 
     与 async_makedirs 的区别：本函数会将所有隐式创建（原本不存在）的
@@ -586,4 +628,4 @@ async def async_makedirs_and_record(path: str, tool_name: str) -> None:
     changes = [
         (d, None, "", tool_name, "directory") for d in missing
     ]
-    await async_record_sandbox_batch(changes)
+    await async_record_sandbox_batch(changes, agent_id)

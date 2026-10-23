@@ -24,7 +24,7 @@ class FileChangeRecord:
     def __init__(self, file_path: str, content_before: Optional[str],
                  content_after: Optional[str], message_index: int,
                  timestamp: float = None, tool_name: str = "write",
-                 record_type: str = "file"):
+                 record_type: str = "file", agent_id: str = ""):
         """
         初始化文件修改记录
 
@@ -36,6 +36,7 @@ class FileChangeRecord:
             timestamp: 时间戳，默认为当前时间
             tool_name: 工具名称
             record_type: 记录类型，"file"（默认）或 "directory"
+            agent_id: 产生本次变更的 Agent 标识（文件沙盒锁 / 审计用）
         """
         self.file_path = file_path
         self.content_before = content_before
@@ -44,6 +45,7 @@ class FileChangeRecord:
         self.timestamp = timestamp or time.time()
         self.tool_name = tool_name
         self.record_type = record_type  # "file" | "directory"
+        self.agent_id = agent_id or ""
 
         # ─── 锁层次（两锁设计）──────────────────────────────────────
         # 本实例使用两个锁，锁获取顺序固定，禁止调换：

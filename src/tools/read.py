@@ -7,7 +7,9 @@ from functools import lru_cache
 import aiofiles
 import aiofiles.os
 from .base import Func
-from .file_ops import validate_path_security, check_file_size
+from .file_ops import (
+    validate_path_security, check_file_size, record_sandbox_read,
+)
 from .encoding import async_detect_encoding, pick_best_decoding
 from ._constants import fallback_encodings, large_file_threshold, max_file_size_mb
 from ..core.constants import RESET, RED
@@ -300,6 +302,9 @@ class ReadFunc(Func):
     async def execute(self):
         """异步读取文件并返回内容（无UI输出）"""
         file_path = self.path
+
+        # 只读工具不抢写锁：记录审计（含当前锁持有者），读取照常放行
+        record_sandbox_read(self.agent, file_path)
 
         # 检查文件是否存在
         if not await aiofiles.os.path.exists(file_path):

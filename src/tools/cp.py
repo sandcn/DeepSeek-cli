@@ -10,6 +10,8 @@ from .file_ops import (
     async_collect_files, async_is_link,
     async_record_directory_files,
     async_record_sandbox,
+    acquire_sandbox_locks,
+    tool_agent_id,
 )
 
 
@@ -97,6 +99,14 @@ class CpFunc(FileSystemToolBase):
             src_is_file = await asyncio.to_thread(os.path.isfile, self.source)
             src_is_dir = await asyncio.to_thread(os.path.isdir, self.source)
 
+            # ── 沙盒 Agent 写锁：复制目标（文件 / 目录树）归首个 agent 独占
+            # 源校验通过后才建锁，避免为不存在的源 / 非法类型留下锁。
+            lock_error = acquire_sandbox_locks(
+                self.agent, [self.destination], self.name,
+            )
+            if lock_error:
+                return lock_error
+
             # 复制文件
             if src_is_file:
                 # ★ 修复（review 方向）：目标为已存在目录时 shutil.copy2 会把
@@ -115,10 +125,15 @@ class CpFunc(FileSystemToolBase):
                 dest_dir = os.path.dirname(effective_dst)
                 if dest_dir:
                     from .file_ops import async_makedirs_and_record
-                    await async_makedirs_and_record(dest_dir, self.name)
+                    await async_makedirs_and_record(
+                        dest_dir, self.name, tool_agent_id(self.agent),
+                    )
 
                 await asyncio.to_thread(shutil.copy2, self.source, self.destination)
-                await async_record_sandbox(effective_dst, dest_content_before, source_content, self.name)
+                await async_record_sandbox(
+                    effective_dst, dest_content_before, source_content, self.name,
+                    agent_id=tool_agent_id(self.agent),
+                )
                 return f"复制成功: {self.source} \u2192 {effective_dst}"
 
             # 复制目录
@@ -139,7 +154,7 @@ class CpFunc(FileSystemToolBase):
 
                 await async_record_directory_files(
                     self.source, self.destination, source_files, self.name, dst_existing,
-                    source_deleted=False,
+                    source_deleted=False, agent_id=tool_agent_id(self.agent),
                 )
 
                 if await async_file_exists(self.destination):

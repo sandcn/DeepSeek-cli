@@ -9,6 +9,7 @@ import asyncio
 import contextvars
 import os
 import threading
+import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .internal.shared._sandbox_history import (
@@ -53,6 +54,16 @@ class SandboxManager:
         self.current_message_index = 0
         # 锁用于线程安全
         self.lock = threading.RLock()
+
+        # ── Agent 文件锁（内存 map：规范化路径 → 锁信息）──────────
+        # 键为规范化后的绝对路径，值为
+        # {"path", "agent_id", "tool", "time"}。同一时刻一个路径只允许
+        # 一个 agent 持有写锁；目录锁覆盖其全部子孙路径，子路径锁也会
+        # 阻止父目录加锁（见 acquire_locks 的祖先 / 后代冲突判定）。
+        self._locks: Dict[str, Dict[str, Any]] = {}
+        # 工具调用审计（有界滚动：最近 max_audit_records 条）
+        self._tool_audit: List[Dict[str, Any]] = []
+        self.max_audit_records = 200
 
     # ── 配置属性 ───────────────────────────────────────
 
@@ -115,7 +126,8 @@ class SandboxManager:
     def record_file_change(self, file_path: str, content_before: Optional[str],
                           content_after: Optional[str], message_index: int,
                           tool_name: str = "write",
-                          record_type: str = "file") -> FileChangeRecord:
+                          record_type: str = "file",
+                          agent_id: Optional[str] = None) -> FileChangeRecord:
         """
         记录文件修改
 
@@ -126,6 +138,8 @@ class SandboxManager:
             message_index: 关联的消息索引
             tool_name: 工具名称
             record_type: 记录类型，"file"（默认）或 "directory"
+            agent_id: 产生变更的 Agent 标识（None → 取当前 Agent 上下文；
+                上下文为空则为空串）
 
         Returns:
             FileChangeRecord: 创建的记录
@@ -141,6 +155,7 @@ class SandboxManager:
             record = self._fh.record(
                 file_path, content_before, content_after, message_index,
                 tool_name, record_type,
+                agent_id=get_current_agent_id() or agent_id or "",
             )
             self.message_history.setdefault(message_index, []).append(record)
             self._prune_evicted_for_file(file_path)
@@ -153,6 +168,7 @@ class SandboxManager:
         self,
         changes: Iterable[Tuple[str, Optional[str], Optional[str], str, str]],
         message_index: int,
+        agent_id: Optional[str] = None,
     ) -> List[FileChangeRecord]:
         """批量记录文件修改（同一消息索引），返回创建的记录列表。
 
@@ -163,15 +179,18 @@ class SandboxManager:
             changes: 可迭代的 5 元组
                 ``(file_path, content_before, content_after, tool_name, record_type)``。
             message_index: 关联的消息索引（本批统一）。
+            agent_id: 产生变更的 Agent 标识（None → 取当前 Agent 上下文）。
         """
         records: List[FileChangeRecord] = []
         touched_paths: set = set()
+        effective_agent = get_current_agent_id() or agent_id or ""
         with self.lock:
             bucket = self.message_history.setdefault(message_index, [])
             for file_path, content_before, content_after, tool_name, record_type in changes:
                 record = self._fh.record(
                     file_path, content_before, content_after, message_index,
                     tool_name, record_type,
+                    agent_id=effective_agent,
                 )
                 bucket.append(record)
                 records.append(record)
@@ -187,21 +206,23 @@ class SandboxManager:
     async def async_record_file_change(self, file_path: str, content_before: Optional[str],
                                        content_after: Optional[str], message_index: int,
                                        tool_name: str = "write",
-                                       record_type: str = "file") -> FileChangeRecord:
+                                       record_type: str = "file",
+                                       agent_id: Optional[str] = None) -> FileChangeRecord:
         """异步记录文件修改（内部同步操作已包装为 async）"""
         return await asyncio.to_thread(
             self.record_file_change, file_path, content_before, content_after,
-            message_index, tool_name, record_type,
+            message_index, tool_name, record_type, agent_id,
         )
 
     async def async_record_file_changes_batch(
         self,
         changes: Iterable[Tuple[str, Optional[str], Optional[str], str, str]],
         message_index: int,
+        agent_id: Optional[str] = None,
     ) -> List[FileChangeRecord]:
         """异步批量记录文件修改（包装为 to_thread）。"""
         return await asyncio.to_thread(
-            self.record_file_changes_batch, list(changes), message_index,
+            self.record_file_changes_batch, list(changes), message_index, agent_id,
         )
 
     def update_message_index(self, new_index: int):
@@ -363,6 +384,242 @@ class SandboxManager:
     def get_all_file_changes(self) -> List[FileChangeRecord]:
         """获取所有文件修改记录（按消息索引排序）"""
         return self._fh.get_all_records()
+
+    # ── Agent 文件锁 + 工具调用审计（内存 map；2026-10） ─────────
+    #
+    # 语义：
+    #   - 第一个对某路径执行沙盒写工具（write/edit/cp/mv/rm/mkdir）的
+    #     agent 获得该路径的锁；其他 agent 再写同一路径（或其父目录 /
+    #     子路径，目录锁覆盖子孙）时返回「写入被锁定」错误，不会落盘；
+    #   - 读工具（read）不抢写锁，只记录审计（带当前锁持有者）；
+    #   - 锁随 agent 生命周期释放（SubAgent 结束 / 任务记录删除 /
+    #     主 Agent 轮次结束），也可由持锁方经
+    #     ``subagent_opt(op="release", file=...)`` 主动释放。
+
+    @staticmethod
+    def _normalize_lock_path(path: Any) -> str:
+        """路径规范化（锁键唯一化）：展开 ~ → abspath → realpath。"""
+        text = os.path.expanduser(str(path or "").strip())
+        if not text:
+            return ""
+        try:
+            return os.path.realpath(os.path.abspath(text))
+        except (OSError, ValueError):
+            return os.path.abspath(text)
+
+    @staticmethod
+    def _path_covers(parent: str, child: str) -> bool:
+        """``parent`` 是否为 ``child`` 本身或祖先目录（目录锁覆盖子孙）。"""
+        if not parent or not child:
+            return False
+        if parent == child:
+            return True
+        try:
+            return os.path.commonpath([parent, child]) == parent
+        except (OSError, ValueError):
+            return False
+
+    @staticmethod
+    def format_lock_conflict_message(path: str, owner: str, tool: str,
+                                     lock_path: str) -> str:
+        """锁冲突提示（单一真源，措辞按用户指定模板固定）。
+
+        示例::
+
+            (写入被锁定: /home/lmy/tools/a.txt 已被 agent sa-xx 锁定
+            （write 于 /home/lmy/tools/a.txt），无法执行 write；
+            请等待该 agent 结束 / 被移除释放锁，或由持锁方调用
+            subagent_opt(op="release", file="/home/lmy/tools/a.txt") 主动释放)
+
+        说明：目录锁覆盖子孙路径时，``lock_path`` 为实际持锁的目录，
+        ``file=`` 也使用该目录（否则按文件释放无法命中目录锁）。
+        """
+        return (
+            f"(写入被锁定: {path} 已被 agent {owner} 锁定"
+            f"（{tool or 'write'} 于 {lock_path}），"
+            f"无法执行 {tool}；请等待该 agent 结束 / 被移除释放锁，"
+            f"或由持锁方调用 "
+            f"subagent_opt(op=\"release\", file=\"{lock_path}\") 主动释放)"
+        )
+
+    def _find_lock_conflict_locked(self, path: str, agent_id: str):
+        """查找与 ``path`` 冲突（祖先 / 后代 / 同路径）的他人锁（持 self.lock）。"""
+        for lock_path, info in self._locks.items():
+            if not (self._path_covers(lock_path, path)
+                    or self._path_covers(path, lock_path)):
+                continue
+            owner = str(info.get("agent_id") or "")
+            if owner and owner != agent_id:
+                return (lock_path, info)
+        return None
+
+    def _get_lock_owner_locked(self, path: str) -> str:
+        """路径当前归属的 agent（精确锁优先，其次最近祖先目录锁；持 self.lock）。"""
+        info = self._locks.get(path)
+        if info is not None:
+            return str(info.get("agent_id") or "")
+        best_path = ""
+        best_info = None
+        for lock_path, lock_info in self._locks.items():
+            if not self._path_covers(lock_path, path):
+                continue
+            if len(lock_path) > len(best_path):
+                best_path, best_info = lock_path, lock_info
+        return str(best_info.get("agent_id") or "") if best_info else ""
+
+    def acquire_locks(self, agent_id: str, paths, tool: str = "write") -> str:
+        """为 ``agent_id`` 原子地申请一组路径的沙盒写锁。
+
+        Args:
+            agent_id: 申请方 Agent 标识（``resolve_agent_id`` 解析）。
+            paths: 单个路径或路径序列（写操作涉及的文件 / 目录）。
+            tool: 工具名（用于审计与错误提示）。
+
+        Returns:
+            ``""`` 表示申请成功；非空字符串为冲突错误（含持锁 agent 标识与
+            「写入被锁定」字样），调用方应直接作为工具失败结果返回。
+        """
+        agent_id = str(agent_id or "").strip() or "main"
+        tool = str(tool or "write")
+        if isinstance(paths, (str, os.PathLike)):
+            raw_paths = [paths]
+        else:
+            raw_paths = list(paths or ())
+        normalized: List[str] = []
+        for p in raw_paths:
+            np = self._normalize_lock_path(p)
+            if np and np not in normalized:
+                normalized.append(np)
+        if not normalized:
+            return ""
+
+        with self.lock:
+            # 先整体检查（全有或全无，避免部分加锁后失败留下半锁）
+            for path in normalized:
+                conflict = self._find_lock_conflict_locked(path, agent_id)
+                if conflict is None:
+                    continue
+                lock_path, info = conflict
+                owner = str(info.get("agent_id") or "")
+                error = self.format_lock_conflict_message(
+                    path, owner, tool, lock_path,
+                )
+                self._append_tool_audit(
+                    action="denied", agent_id=agent_id, tool=tool,
+                    path=path, lock_owner=owner, success=False,
+                )
+                return error
+
+            now = time.time()
+            for path in normalized:
+                info = self._locks.get(path)
+                if info is None:
+                    self._locks[path] = {
+                        "path": path,
+                        "agent_id": agent_id,
+                        "tool": tool,
+                        "time": now,
+                    }
+                else:
+                    # 同 agent 重复使用：刷新工具 / 时间（不重复建锁）
+                    info["tool"] = tool
+                    info["time"] = now
+            audit_path = normalized[0]
+            if len(normalized) > 1:
+                audit_path = f"{audit_path} 等 {len(normalized)} 个路径"
+            self._append_tool_audit(
+                action=("read" if tool == "read" else "write"),
+                agent_id=agent_id, tool=tool, path=audit_path,
+                lock_owner=agent_id, success=True,
+            )
+        return ""
+
+    def get_lock_owner(self, path: str) -> str:
+        """路径当前归属的 Agent 标识（无锁返回 ``""``）。
+
+        精确路径锁优先；否则返回覆盖该路径的最近祖先目录锁持有者——
+        目录锁对子孙路径生效。
+        """
+        np = self._normalize_lock_path(path)
+        if not np:
+            return ""
+        with self.lock:
+            return self._get_lock_owner_locked(np)
+
+    def get_locks(self) -> List[Dict[str, Any]]:
+        """当前全部锁（快照，按路径升序）。"""
+        with self.lock:
+            return [
+                dict(info) for _p, info in sorted(self._locks.items())
+            ]
+
+    def release_locks(self, agent_id: str, path: Optional[str] = None) -> int:
+        """释放 ``agent_id`` 持有的锁，返回释放数量（幂等）。
+
+        Args:
+            agent_id: 锁持有者标识。
+            path: 给定时只释放该路径及其**子孙**锁（目录释放覆盖整棵子树）；
+                ``None`` 时释放该 agent 的全部锁。
+        """
+        agent_id = str(agent_id or "").strip()
+        if not agent_id:
+            return 0
+        with self.lock:
+            if path is None:
+                targets = [
+                    lp for lp, info in self._locks.items()
+                    if str(info.get("agent_id") or "") == agent_id
+                ]
+            else:
+                np = self._normalize_lock_path(path)
+                targets = [
+                    lp for lp, info in self._locks.items()
+                    if str(info.get("agent_id") or "") == agent_id
+                    and self._path_covers(np, lp)
+                ]
+            for lp in targets:
+                self._locks.pop(lp, None)
+            return len(targets)
+
+    def release_agent_locks(self, agent_id: str) -> int:
+        """释放该 Agent 的全部沙盒锁（Agent 结束 / 被删除时调用，幂等）。"""
+        return self.release_locks(agent_id, None)
+
+    def record_read_audit(self, agent_id: str, path: str) -> None:
+        """记录一次 read 工具调用（只读不抢锁；记录当前锁持有者）。"""
+        np = self._normalize_lock_path(path)
+        if not np:
+            return
+        with self.lock:
+            owner = self._get_lock_owner_locked(np)
+            self._append_tool_audit(
+                action="read", agent_id=str(agent_id or "main"),
+                tool="read", path=np, lock_owner=owner, success=True,
+            )
+
+    def get_tool_audit_records(self, limit: Optional[int] = None
+                               ) -> List[Dict[str, Any]]:
+        """最近工具调用审计记录（复制；``limit`` 为最近 N 条）。"""
+        with self.lock:
+            records = [dict(r) for r in self._tool_audit]
+        if limit is not None and limit >= 0:
+            records = records[-limit:]
+        return records
+
+    def _append_tool_audit(self, *, action: str, agent_id: str, tool: str,
+                           path: str, lock_owner: str, success: bool) -> None:
+        """追加一条审计记录（有界滚动；调用方须持 self.lock）。"""
+        self._tool_audit.append({
+            "action": str(action or ""),
+            "agent_id": str(agent_id or ""),
+            "tool": str(tool or ""),
+            "path": str(path or ""),
+            "lock_owner": str(lock_owner or ""),
+            "success": bool(success),
+            "time": time.time(),
+        })
+        if len(self._tool_audit) > self.max_audit_records:
+            del self._tool_audit[:-self.max_audit_records]
 
     # ── 视图 / 统计查询（TUI 沙盒界面数据源，2026-10） ──────────
 
@@ -650,10 +907,12 @@ class SandboxManager:
             )
 
     def clear(self):
-        """清空所有沙盒记录"""
+        """清空所有沙盒记录（含 Agent 文件锁与工具审计）。"""
         with self.lock:
             self._fh.clear()
             self.message_history.clear()
+            self._locks.clear()
+            self._tool_audit.clear()
             self._update_current_index(0)
 
     def get_stats(self) -> Dict[str, Any]:
@@ -756,10 +1015,63 @@ def clear_current_message_index():
         delattr(_thread_local, 'current_message_index')
 
 
+# ── 当前 Agent 标识（asyncio / to_thread 安全传播） ───────────
+# 与消息索引一样使用 contextvar：工具调度器在调用工具前写入当前 Agent
+# 标识，工具内部的 ``asyncio.to_thread`` 会复制上下文，因此沙盒记录与
+# 审计都能拿到正确的 agent_id（主 Agent = "main"，SubAgent = label）。
+_current_agent_id_contextvar = contextvars.ContextVar(
+    'current_agent_id', default=None,
+)
+
+
+def set_current_agent_id(agent_id: Optional[str]):
+    """设置当前上下文的 Agent 标识，返回可回滚的 token。"""
+    return _current_agent_id_contextvar.set(agent_id or None)
+
+
+def reset_current_agent_id(token) -> None:
+    """按 token 恢复 Agent 标识（跨 context 恢复失败时静默忽略）。"""
+    if token is None:
+        return
+    try:
+        _current_agent_id_contextvar.reset(token)
+    except (ValueError, RuntimeError):
+        _current_agent_id_contextvar.set(None)
+
+
+def get_current_agent_id() -> Optional[str]:
+    """获取当前上下文的 Agent 标识（未设置返回 None）。"""
+    return _current_agent_id_contextvar.get(None)
+
+
+def clear_current_agent_id() -> None:
+    """清除当前上下文的 Agent 标识（测试 / 会话收尾用）。"""
+    _current_agent_id_contextvar.set(None)
+
+
+def resolve_agent_id(agent) -> str:
+    """解析 Agent 标识：``agent_id`` 优先 → ``label`` → 主 Agent ``"main"``。
+
+    ``Agent`` / ``SubAgent`` 均提供 ``agent_id``（主 Agent 为 ``"main"``，
+    SubAgent 为唯一 label）；测试桩或第三方 Agent 只提供 ``label`` 时回退
+    使用 label，均无标识时统一视为主 Agent。
+    """
+    if agent is None:
+        return "main"
+    agent_id = str(getattr(agent, "agent_id", "") or "").strip()
+    if agent_id:
+        return agent_id
+    label = str(getattr(agent, "label", "") or "").strip()
+    if label:
+        return label
+    return "main"
+
+
 def record_file_change_from_context(file_path: str, content_before: Optional[str],
                                    content_after: Optional[str],
                                    tool_name: str = "write",
-                                   record_type: str = "file") -> Optional[FileChangeRecord]:
+                                   record_type: str = "file",
+                                   agent_id: str = "") -> Optional[FileChangeRecord]:
     """
     从上下文记录文件修改
 
@@ -778,7 +1090,7 @@ def record_file_change_from_context(file_path: str, content_before: Optional[str
     if message_index is not None:
         return sandbox_manager.record_file_change(
             file_path, content_before, content_after, message_index, tool_name,
-            record_type,
+            record_type, agent_id=get_current_agent_id() or agent_id or "",
         )
 
     return None
@@ -789,16 +1101,18 @@ async def async_record_file_change_from_context(
     content_after: Optional[str],
     tool_name: str = "write",
     record_type: str = "file",
+    agent_id: str = "",
 ) -> Optional[FileChangeRecord]:
     """异步版本：从上下文记录文件修改，使用 asyncio.to_thread 包装"""
     return await asyncio.to_thread(
         record_file_change_from_context, file_path, content_before,
-        content_after, tool_name, record_type,
+        content_after, tool_name, record_type, agent_id,
     )
 
 
 def record_file_changes_from_context(
     changes: Iterable[Tuple[str, Optional[str], Optional[str], str, str]],
+    agent_id: str = "",
 ) -> List[FileChangeRecord]:
     """从上下文批量记录文件修改（同一消息索引）。
 
@@ -817,13 +1131,17 @@ def record_file_changes_from_context(
         message_index = sandbox_manager.get_current_message_index_safe()
     if message_index is None:
         return []
-    return sandbox_manager.record_file_changes_batch(changes, message_index)
+    return sandbox_manager.record_file_changes_batch(
+        changes, message_index,
+        agent_id=get_current_agent_id() or agent_id or "",
+    )
 
 
 async def async_record_file_changes_from_context(
     changes: Iterable[Tuple[str, Optional[str], Optional[str], str, str]],
+    agent_id: str = "",
 ) -> List[FileChangeRecord]:
     """异步版本：从上下文批量记录文件修改（一次 to_thread，避免逐条线程切换）。"""
     return await asyncio.to_thread(
-        record_file_changes_from_context, list(changes),
+        record_file_changes_from_context, list(changes), agent_id,
     )

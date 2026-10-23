@@ -49,6 +49,9 @@ class SubAgent(BaseAgent):
         super().__init__()
 
         self.label = label
+        # 文件沙盒锁 / 工具审计使用的唯一 Agent 标识（后台 subagent 的
+        # label 即 task_id "sa-xxx"；并行场景为 "agent-N"）。
+        self.agent_id = label
         self.description = description
         self.prompt = prompt
         self.parent = parent_agent
@@ -193,6 +196,10 @@ class SubAgent(BaseAgent):
                     "SubAgent %s 清理后台任务异常（不影响记录导出）", self.label,
                 )
             finally:
+                # ★ 用户需求（2026-10）：SubAgent 结束（完成 / 失败 / 取消）
+                #   即释放其持有的文件沙盒锁——「agent 删除后就释放」，
+                #   其他 agent 随后可写同一路径。释放失败不影响记录导出。
+                self._release_sandbox_locks()
                 # 无论成功/失败/取消，均将完整对话记录到父 Agent（供 /export 导出）
                 self._record_to_parent()
                 self._unregister_from_agents()
