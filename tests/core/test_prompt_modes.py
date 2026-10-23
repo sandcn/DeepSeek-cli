@@ -24,6 +24,9 @@
 悬空章节引用与 `.bak` 快照提交边界。
 
 并锁定空模式第七章「正例 / 反例对照」与正文判据的一致性（示例不得顶掉条款）。
+
+并锁定空模式「输出语言」条款：思考与回答都强制中文，同时保留代码 / 命令 /
+报错原文与安全红线脱敏要求的例外。
 """
 
 from __future__ import annotations
@@ -425,3 +428,24 @@ def test_empty_prompt_has_positive_and_negative_examples() -> None:
     assert "授权自检：改 + config/app.toml → 已授权" in content
     assert "按〈决策与默认项〉默认项继续执行" in content
     assert "无图形环境按〈实操三查与例外〉⑤ 用命令输出替代截图" in content
+
+
+def test_empty_prompt_forces_chinese_output() -> None:
+    """输出语言条款：思考与回答都强制中文，且不与其他条款互斥。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    # 条款存在且覆盖「思考 + 回答」两侧，而不是只约束最终回答。
+    assert "# 输出语言（强制）" in content
+    assert "思考与回答都强制中文" in content
+    assert "思考（内部推理过程）" in content
+    assert "对用户的全部交付内容" in content
+    assert "禁止用英文作答" in content
+
+    # 代码 / 命令 / 报错原文可原样引用，避免与「强制中文」自相矛盾。
+    assert "原样保留项" in content
+    assert "命令输出与报错原文可原样引用" in content
+    assert "解释、结论与交付说明必须用中文" in content
+
+    # 与安全红线的脱敏要求冲突时以安全红线为准。
+    assert "本条款属〈唯一阶梯〉最底层的「协作、流程与风格约定」" in content
+    assert "与〈安全红线〉冲突时以安全红线为准" in content
