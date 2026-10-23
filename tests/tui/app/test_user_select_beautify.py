@@ -192,8 +192,8 @@ def test_number_key_in_custom_input_is_text() -> None:
     # 导航到「其他（自定义输入…）」并进入输入模式。
     assert press("arrow_down") is True
     assert press("enter") is True
-    # ★ 2026-10-22：输入模式不再暂停计时（typing 仅外部编辑器期间为 True）。
-    assert st.typing is False
+    # ★ 2026-10-23：输入模式暂停空闲计时（typing=True）。
+    assert st.typing is True
     assert press("char", "1") is True
     assert press("char", "2") is True
     assert st.done is False
@@ -326,11 +326,15 @@ def test_multi_zero_checked_hint() -> None:
     assert "提交空" in text
 
 
-def test_done_result_folds_newline() -> None:
+def test_done_result_renders_multiline() -> None:
+    """★ 2026-10-23（用户需求：输入完了要显示所有的输入（多行））：
+    已提交结果按原文逐行显示（不再折叠为 ⏎）。"""
     st = _state("Q", ["A"], allow_custom=False)
     st.try_set_final("confirmed", ["A\nB"])
     text = _render([st], width=80)
-    assert "A⏎B" in text
+    assert "A⏎B" not in text
+    assert "  → A" in text
+    assert "    B" in text
 
 
 # ══════════════════════════════════════════════════════════
@@ -448,8 +452,8 @@ def test_batch_keys_select_all_and_clear() -> None:
     press("arrow_down")
     press("arrow_down")
     press("enter")
-    # ★ 2026-10-22：输入模式不再暂停计时（typing 仅外部编辑器期间为 True）。
-    assert st.typing is False
+    # ★ 2026-10-23：输入模式暂停空闲计时（typing=True）。
+    assert st.typing is True
     assert press("char", "a") is True
     assert st.checked == []
 
@@ -478,8 +482,8 @@ def test_input_ctrl_u_clears_buffer() -> None:
     # 空文本 Enter 不提交，保持输入模式。
     assert press("enter") is True
     assert st.done is False
-    # ★ 2026-10-22：输入模式不再暂停计时（typing 仅外部编辑器期间为 True）。
-    assert st.typing is False
+    # ★ 2026-10-23：输入模式暂停空闲计时（typing=True）。
+    assert st.typing is True
     for ch in "ok":
         press("char", ch)
     assert press("enter") is True

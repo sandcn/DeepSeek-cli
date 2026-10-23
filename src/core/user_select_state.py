@@ -146,13 +146,14 @@ class UserSelectState:
         result: 选中选项的 label 列表（含自由输入时附加的自定义文本）。
         allow_custom: 是否允许用户输入选项外的自定义答案（工具路径为
             True；命令系统选择路径默认 False，保持 index 契约）。
-        typing: 外部编辑器（Ctrl+G，默认 vim）当前是否正在运行（跨线程
-            标志；组件写、工具轮询读）——为 True 时暂停空闲超时，编辑器
-            返回后把运行时长补回 ``deadline``。★ 2026-10-22：超时改为
-            「界面 1 分钟没有操作才超时」后，弹窗内正常打字/浏览由每次
-            按键（``touch_activity``）重置倒计时；只有外部编辑器独占终端、
-            界面收不到按键时才需要本标志暂停计时。
+        typing: 是否暂停空闲计时（跨线程标志；组件写、工具轮询读）。
+            外部编辑器（Ctrl+G）运行期间与**自定义输入编辑期间**为 True，
+            提交/退出/切走后复位并把暂停时长补回 ``deadline``。
         custom: 本次回答的自由输入文本（空串 = 未使用自定义输入）。
+        custom_draft: 该问题当前未提交的自定义输入草稿（跨 tab 切换保留）。
+        custom_draft_cursor: 草稿光标位置（字符索引）。
+        custom_active: 该问题的自定义编辑区是否处于「活动」状态——切走再
+            切回时自动恢复编辑区与草稿（Esc 退出后为 False，但草稿仍保留）。
         _final_lock: 终态原子写锁。
     """
 
@@ -180,6 +181,11 @@ class UserSelectState:
     allow_custom: bool = False
     typing: bool = False
     custom: str = ""
+    # ★ 2026-10-23（用户需求：并发 tab 切换保留自定义输入草稿）：每个
+    #   问题各自保存草稿/光标/编辑区活动状态；切走再切回自动恢复。
+    custom_draft: str = ""
+    custom_draft_cursor: int = 0
+    custom_active: bool = False
     _final_lock: threading.Lock = field(
         default_factory=threading.Lock, repr=False, compare=False,
     )

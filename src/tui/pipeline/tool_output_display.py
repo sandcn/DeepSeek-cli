@@ -154,7 +154,11 @@ def _format_subagent_start(data: dict) -> str | None:
 
 
 def _format_user_select(data: dict) -> str:
-    """user_select 结果显示文本（对齐实时 _emit_user_select_output）。"""
+    """user_select 结果显示文本（对齐实时 _emit_user_select_output）。
+
+    ★ 2026-10-23（用户需求：输入完了要显示所有的输入（多行））：自定义
+    答案保留原始换行逐行输出，不再折叠为单行或用逗号拼接。
+    """
     action = str(data.get("action") or "")
     if action != "confirmed":
         return ""
@@ -163,12 +167,27 @@ def _format_user_select(data: dict) -> str:
         selected = [] if selected is None else [selected]
     if not selected:
         return "未选择任何项"
+
+    def _lines(value) -> list:
+        return (
+            str(value).replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        )
+
     if len(selected) == 1:
-        return f"已选择: {selected[0]}"
-    items = ", ".join(str(item) for item in selected[:3])
+        lines = _lines(selected[0])
+        if len(lines) == 1:
+            return f"已选择: {lines[0]}"
+        return "已选择: " + lines[0] + "\n" + "\n".join(
+            f"  {line}" for line in lines[1:]
+        )
+    out: list = [f"已选择 {len(selected)} 项:"]
+    for item in selected[:3]:
+        lines = _lines(item)
+        out.append(f"- {lines[0]}")
+        out.extend(f"  {line}" for line in lines[1:])
     if len(selected) > 3:
-        items += f" ... 还有 {len(selected) - 3} 项"
-    return f"已选择 {len(selected)} 项: {items}"
+        out.append(f"... 还有 {len(selected) - 3} 项")
+    return "\n".join(out)
 
 
 def format_tool_message_content(

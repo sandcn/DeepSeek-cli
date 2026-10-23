@@ -342,13 +342,31 @@ class ToolCallbackChain:
 
         if action == "confirmed":
             if selected:
+                def _lines(value) -> list:
+                    return (
+                        str(value)
+                        .replace("\r\n", "\n")
+                        .replace("\r", "\n")
+                        .split("\n")
+                    )
+
                 if len(selected) == 1:
-                    text = f"已选择: {selected[0]}"
+                    lines = _lines(selected[0])
+                    if len(lines) == 1:
+                        text = f"已选择: {lines[0]}"
+                    else:
+                        text = "已选择: " + lines[0] + "\n" + "\n".join(
+                            f"  {line}" for line in lines[1:]
+                        )
                 else:
-                    items = ", ".join(selected[:3])
+                    parts = [f"已选择 {len(selected)} 项:"]
+                    for item in selected[:3]:
+                        lines = _lines(item)
+                        parts.append(f"- {lines[0]}")
+                        parts.extend(f"  {line}" for line in lines[1:])
                     if len(selected) > 3:
-                        items += f" ... 还有 {len(selected) - 3} 项"
-                    text = f"已选择 {len(selected)} 项: {items}"
+                        parts.append(f"... 还有 {len(selected) - 3} 项")
+                    text = "\n".join(parts)
             else:
                 text = "未选择任何项"
         elif action in ("cancel", "timeout", "non_interactive"):

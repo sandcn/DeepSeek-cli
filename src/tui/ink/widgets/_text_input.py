@@ -148,6 +148,24 @@ def TextInput(props: dict) -> Element:
     display = (mask * len(text)) if mask else text
     eff = max(0, min(cursor, len(text)))
     if not display:
+        # ★ 2026-10-23（用户需求：空输入框没有光标）：修复前空值时直接返回
+        #   placeholder / 空格，**跳过下方光标块渲染**——首次进入自定义输入
+        #   （文本为空）时看不到光标，无法判断字符会插入到哪里。空值且聚焦
+        #   时先渲染光标块，再在其后显示 placeholder；未聚焦保持原样。
+        if focus and show_cursor:
+            cursor_block = h(TEXT, {
+                "children": " ", "style": Style(bg=cursor_color),
+            })
+            if placeholder:
+                return h(Row, {"height": 1}, [
+                    cursor_block,
+                    h(TEXT, {
+                        "children": placeholder,
+                        "dim": True,
+                        "style": Style(fg=244),
+                    }),
+                ])
+            return h(Row, {"height": 1}, [cursor_block])
         if placeholder:
             return h(TEXT, {"children": placeholder, "dim": True, "style": Style(fg=244)})
         return h(TEXT, {"children": " ", "height": 1})

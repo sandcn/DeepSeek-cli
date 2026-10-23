@@ -563,40 +563,55 @@ class UserSelectFunc(Func):
 
         if action == "confirmed":
             # ★ 2026-10-21（用户需求）：自由输入优先展示（selected 中同名
-            #   文本不重复显示；多选时其余勾选项单独汇总）。多行内容在
-            #   单行输出中折叠为 ⏎（返回 JSON 仍保留原始换行）。
-            def _oneline(value) -> str:
+            #   文本不重复显示；多选时其余勾选项单独汇总）。
+            # ★ 2026-10-23（用户需求：输入完了要显示所有的输入（多行））：
+            #   自定义答案保留原始换行，逐行输出（不再折叠为 ⏎ 或单行截断）。
+            def _value_lines(value) -> list:
                 return (
                     str(value)
                     .replace("\r\n", "\n")
                     .replace("\r", "\n")
-                    .replace("\n", "\u23ce")
+                    .split("\n")
                 )
+
+            def _emit_value(prefix: str, value) -> None:
+                lines = _value_lines(value)
+                Func._publish_tool_text(
+                    f"  {GREEN}{prefix}{lines[0]}{RESET}"
+                )
+                for line in lines[1:]:
+                    Func._publish_tool_text(f"  {GREEN}  {line}{RESET}")
+
+            def _emit_items(label: str, items) -> None:
+                Func._publish_tool_text(f"  {GREEN}{label}{RESET}")
+                for item in items:
+                    lines = _value_lines(item)
+                    Func._publish_tool_text(
+                        f"  {GREEN}  - {lines[0]}{RESET}"
+                    )
+                    for line in lines[1:]:
+                        Func._publish_tool_text(
+                            f"  {GREEN}    {line}{RESET}"
+                        )
 
             others = [x for x in selected if str(x) != custom] if custom else list(selected)
             if custom:
-                Func._publish_tool_text(
-                    f"  {GREEN}+ 自定义输入: {_oneline(custom)}{RESET}"
-                )
+                _emit_value("+ 自定义输入: ", custom)
                 if others:
-                    Func._publish_tool_text(
-                        f"  {GREEN}+ 同时选择 {len(others)} 项: "
-                        f"{', '.join(_oneline(x) for x in others[:3])}{RESET}"
-                    )
+                    _emit_items(f"+ 同时选择 {len(others)} 项:", others[:3])
                     if len(others) > 3:
-                        Func._publish_tool_text(f"  {DIM}  ... 还有 {len(others)-3} 项{RESET}")
+                        Func._publish_tool_text(
+                            f"  {DIM}  ... 还有 {len(others)-3} 项{RESET}"
+                        )
             elif selected:
                 if len(selected) == 1:
-                    Func._publish_tool_text(
-                        f"  {GREEN}+ 已选择: {_oneline(selected[0])}{RESET}"
-                    )
+                    _emit_value("+ 已选择: ", selected[0])
                 else:
-                    Func._publish_tool_text(
-                        f"  {GREEN}+ 已选择 {len(selected)} 项: "
-                        f"{', '.join(_oneline(x) for x in selected[:3])}{RESET}"
-                    )
+                    _emit_items(f"+ 已选择 {len(selected)} 项:", selected[:3])
                     if len(selected) > 3:
-                        Func._publish_tool_text(f"  {DIM}  ... 还有 {len(selected)-3} 项{RESET}")
+                        Func._publish_tool_text(
+                            f"  {DIM}  ... 还有 {len(selected)-3} 项{RESET}"
+                        )
             else:
                 Func._publish_tool_text(f"  {YELLOW}未选择任何项{RESET}")
         elif action == "cancel":

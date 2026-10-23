@@ -31,7 +31,7 @@ user_select 工具调用各自 append 一个 ``UserSelectState`` 到
     后自动切到 Submit 页。
   - ★ 2026-10-21（用户需求：支持用户输入不在选项中的内容并返回）：
     选项列表末尾追加「其他（自定义输入…）」伪选项——Enter 进入输入编辑
-    模式（TextInput 接管字符/退格/方向键），Enter 提交自由输入、Esc 返回
+    模式，Enter 提交自由输入、Esc 返回（多行编辑见 2026-10-23 说明）
     选项。自由输入结果并入 ``result``，并经 ``custom`` 字段返回（见工具层
     JSON）。
   - ★ 2026-10-22（用户需求：删除 ``timeout`` 参数，改成「不操作界面一分钟
@@ -148,10 +148,10 @@ from src.tui._width import wcswidth_simple
 from src.tui._input_layout import _wrap_by_width
 from src.tui.app.input_area import _truncate_width
 from src.tui.app._theme import _S_DIM
-from src.tui.ink import TEXT, h, Column, Row, StyledRun
+from src.tui.ink import TEXT, h, Column, StyledRun
 from src.tui.ink.helpers import truncate_runs_ellipsis
 from src.tui.ink.hooks import use_effect, use_ref, use_state, use_input, useMouseInput
-from src.tui.ink.widgets.interactive import SelectInput, MultiSelect, TextInput
+from src.tui.ink.widgets.interactive import SelectInput, MultiSelect
 from src.tui._external_editor import run_external_editor as _run_external_editor
 
 from ._modal_view import empty_modal_frame, use_modal_scope
@@ -208,10 +208,8 @@ _CUSTOM_VALUE = "\x00__user_select_custom__"
 _SUBMIT_LABEL = "提交"
 #: 多选提交项的内部值（同 _CUSTOM_VALUE：不进入提交结果/返回 JSON）
 _SUBMIT_VALUE = "\x00__user_select_submit__"
-#: 自定义输入文本的显示宽度上限（防止单行输入超出弹窗宽度；按显示宽度截断）
-_CUSTOM_INPUT_MAX_WIDTH = 200
-#: 自定义输入多行内容的单行显示标记（提交/返回保留原始换行）
-_NEWLINE_MARK = "\u23ce"
+#: 自定义输入编辑行占位提示（空文本时显示在光标块之后）
+_CUSTOM_PLACEHOLDER = "输入自定义答案 · Enter 提交 · Shift+Enter/Ctrl+O 换行"
 
 #: 并发 tab 栏样式（Claude 风格）：当前焦点问题（反色块：亮底暗字）
 _S_TAB_ACTIVE = Style(fg=235, bg=252, bold=True)
@@ -225,6 +223,8 @@ _S_TAB_DONE = Style(fg=240)
 _S_SUBMIT = Style(fg=40, bold=True)
 #: 已完成 tab 只读结果行（绿色）
 _S_DONE_RESULT = Style(fg=40)
+#: 自定义输入光标块（青色背景；空文本/行尾同样可见）
+_S_CURSOR = Style(bg=6)
 
 
 def _popup_item_rows() -> int:
@@ -263,37 +263,229 @@ def _submit_rows_limit() -> int:
     return max(1, _popup_item_rows() - 3)
 
 
-def _truncate_display(text: str, max_w: int) -> str:
-    """按显示宽度截断单行文本（CJK/emoji 安全；用于自定义输入缓冲上限）。"""
-    if max_w <= 0:
-        return ""
-    if wcswidth_simple(text) <= max_w:
-        return text
+def _normalize_multiline(text) -> str:
+    """归一化自定义输入原始文本（CRLF/CR → LF；None → 空串）。"""
+    return str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _wrap_segment(text: str, width: int) -> list:
+    """把一条硬换行行按显示宽度切成视觉行。
+
+    Returns:
+        ``[(start, end, segment), ...]``——``start/end`` 为该视觉行在
+        ``text`` 中的字符索引（不含硬换行符），``segment`` 为显示文本。
+    """
+    width = max(1, int(width))
+    if not text:
+        return [(0, 0, "")]
     out: list = []
+    start = 0
     used = 0
-    for ch in text:
+    for idx, ch in enumerate(text):
         cw = wcswidth_simple(ch)
         if cw < 0:
             cw = 1
-        if used + cw > max_w:
-            break
-        out.append(ch)
+        if used + cw > width and idx > start:
+            out.append((start, idx, text[start:idx]))
+            start = idx
+            used = 0
         used += cw
-    return "".join(out)
+    out.append((start, len(text), text[start:]))
+    return out
 
 
-def _single_line_custom(text: str, max_w: int) -> str:
-    """把自定义输入原始文本转为单行显示（换行 → ``⏎``，超宽截断）。
+def _visual_lines(text: str, width: int) -> list:
+    """把多行文本切成视觉行：``[(start, end, segment, hard_break), ...]``。
 
-    ★ 2026-10-21（用户需求：vim 输入保留多行）：TextInput 为单行控件，
-    多行内容只在**显示层**折叠为 ``⏎``；``custom_text`` 原文保留换行，
-    提交/返回 JSON 仍是完整多行文本。
+    ``hard_break`` 表示该视觉行以硬换行（``\\n``）结束——光标落在硬换行
+    索引时显示在该行末尾；软换行边界则显示在下一行开头（避免光标重复）。
     """
-    raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
-    view = raw.replace("\n", _NEWLINE_MARK)
-    if max_w > 0 and wcswidth_simple(view) > max_w:
-        view = _truncate_width(view, max_w)
-    return view
+    raw = _normalize_multiline(text)
+    if not raw:
+        return [(0, 0, "", False)]
+    out: list = []
+    i = 0
+    n = len(raw)
+    while i <= n:
+        j = raw.find("\n", i)
+        if j < 0:
+            content = raw[i:]
+            hard = False
+        else:
+            content = raw[i:j]
+            hard = True
+        segs = _wrap_segment(content, width)
+        last = len(segs) - 1
+        for k, (s, e, seg) in enumerate(segs):
+            out.append((i + s, i + e, seg, bool(hard and k == last)))
+        if j < 0:
+            break
+        i = j + 1
+        if i >= n:
+            # 末尾硬换行：补一条空行，光标可落在新行行首。
+            out.append((n, n, "", False))
+            break
+    return out
+
+
+def _line_bounds(text: str, pos: int) -> "tuple[int, int]":
+    """返回光标所在硬换行行的 ``(start, end)``（``end`` 不含换行符）。"""
+    raw = _normalize_multiline(text)
+    pos = max(0, min(int(pos), len(raw)))
+    start = raw.rfind("\n", 0, pos) + 1
+    end = raw.find("\n", pos)
+    if end < 0:
+        end = len(raw)
+    return start, end
+
+
+def _editor_marker(text: str, width: int, key: str) -> object:
+    """多行编辑器的隐藏行提示（dim 单行）。"""
+    return h(TEXT, {
+        "children": _truncate_width(text, max(1, int(width))),
+        "style": _S_DESC_DIM,
+        "height": 1,
+        "key": key,
+        "textWrap": "truncate-end",
+    })
+
+
+def _build_editor_line(
+    raw: str, cursor: int, seg_start: int, seg_end: int, seg: str,
+    *, first: bool, width: int, key: str,
+) -> object:
+    """构造一条自定义输入视觉行（含光标块）。
+
+    ★ 2026-10-23（用户需求：自定义输入没有光标 + 多行显示）：不再依赖单行
+    ``TextInput``；空文本、行尾、行中均显式渲染光标块，且硬换行/软换行
+    都按完整内容逐行输出。
+    """
+    width_i = max(1, int(width))
+    prefix = _CURSOR if first else _CURSOR_PAD
+    runs: list = [StyledRun(
+        prefix, _S_SEL_ACCENT if first else _S_NUM,
+    )]
+    text_w = max(1, width_i - wcswidth_simple(prefix))
+    cur_off = None
+    if seg_start <= cursor < seg_end:
+        cur_off = cursor - seg_start
+    elif cursor == seg_end and (
+        seg_end == len(raw)
+        or (0 <= seg_end < len(raw) and raw[seg_end] == "\n")
+    ):
+        # 光标在硬换行处（行尾）或全文末尾。
+        cur_off = len(seg)
+    elif seg_start == seg_end == cursor:
+        # 空行 / 空文本。
+        cur_off = 0
+    if not raw:
+        runs.append(StyledRun(" ", _S_CURSOR))
+        runs.append(StyledRun(_CUSTOM_PLACEHOLDER, _S_DESC_DIM))
+        return h(TEXT, {
+            "styled": runs, "height": 1, "key": key,
+            "textWrap": "truncate-end",
+        })
+    if cur_off is None:
+        body = _truncate_width(seg, text_w)
+        if body:
+            runs.append(StyledRun(body, _S_ITEM_IDLE))
+    else:
+        off = max(0, min(int(cur_off), len(seg)))
+        before = seg[:off]
+        if off < len(seg):
+            ch = seg[off]
+            after = seg[off + 1:]
+            if before:
+                runs.append(StyledRun(before, _S_ITEM_IDLE))
+            runs.append(StyledRun(ch, _S_CURSOR))
+            if after:
+                runs.append(StyledRun(after, _S_ITEM_IDLE))
+        else:
+            if before:
+                runs.append(StyledRun(before, _S_ITEM_IDLE))
+            used = wcswidth_simple(before)
+            if used + 1 <= text_w:
+                runs.append(StyledRun(" ", _S_CURSOR))
+            elif before:
+                # 行已满：光标覆盖最后一个字符（仍保持行宽不溢出）。
+                runs[-1] = StyledRun(before[:-1], _S_ITEM_IDLE)
+                runs.append(StyledRun(before[-1], _S_CURSOR))
+            else:
+                runs.append(StyledRun(" ", _S_CURSOR))
+    return h(TEXT, {
+        "styled": runs, "height": 1, "key": key,
+        "textWrap": "truncate-end",
+    })
+
+
+def _build_custom_editor_rows(
+    text: str, cursor: int, width: int, max_rows: "int | None" = None,
+) -> list:
+    """构造自定义输入的多行编辑区（完整内容 + 光标块）。
+
+    Args:
+        text: 原始文本（可含换行）。
+        cursor: 光标字符索引（0..len(text)）。
+        width: 弹窗宽度。
+        max_rows: 最大渲染行数（None = 全部显示）；超出时以光标为中心
+            滚动，并在上方/下方显示隐藏行提示。
+
+    Returns:
+        TEXT 行列表（每行高度 1）。
+    """
+    raw = _normalize_multiline(text)
+    width_i = max(1, int(width))
+    text_w = max(1, width_i - wcswidth_simple(_CURSOR))
+    cursor = max(0, min(int(cursor), len(raw)))
+    visual = _visual_lines(raw, text_w)
+    total = len(visual)
+    start, end = 0, total
+    above = below = 0
+    if max_rows is not None:
+        try:
+            cap = max(1, int(max_rows))
+        except (TypeError, ValueError, OverflowError):
+            cap = 1
+        if total > cap:
+            # 光标所在视觉行（硬换行末尾 / 全文末尾也算当前行）。
+            ci = total - 1
+            for i, (s, e, _seg, hard) in enumerate(visual):
+                if s <= cursor < e or (cursor == e and (hard or i == total - 1)):
+                    ci = i
+                    break
+            visible = min(cap, total)
+            while True:
+                visible = max(1, min(visible, total))
+                start = max(0, min(ci - visible // 2, total - visible))
+                end = min(total, start + visible)
+                above = start
+                below = total - end
+                need = (1 if above else 0) + (1 if below else 0)
+                if visible + need <= cap:
+                    break
+                if visible <= 1:
+                    # 高度只够一行：只显示光标行，不放隐藏行提示。
+                    start = ci
+                    end = min(total, ci + 1)
+                    above = below = 0
+                    break
+                visible = max(1, cap - need)
+    rows: list = []
+    if above:
+        rows.append(_editor_marker(
+            f"\u25b2 上方 {above} 行", width_i, "us-custom-editor-above",
+        ))
+    for i in range(start, end):
+        s, e, seg, _hard = visual[i]
+        rows.append(_build_editor_line(
+            raw, cursor, s, e, seg, first=(i == 0), width=width_i,
+            key=f"us-custom-editor-{i}",
+        ))
+    if below:
+        rows.append(_editor_marker(
+            f"\u25bc 下方 {below} 行", width_i, "us-custom-editor-below",
+        ))
+    return rows
 
 
 def _num_width(total: int) -> int:
@@ -443,12 +635,16 @@ def _option_indent(num_w: int, multi: bool) -> int:
 def _build_custom_row(
     is_sel: bool, opt_w: int, total: int, multi: bool = False,
     idx: int | None = None, num_total: int | None = None,
+    draft: str = "", max_desc_rows: "int | None" = None,
 ) -> object:
-    """自定义输入伪选项（Claude 风格：列表末尾的普通编号项，无说明行）。
+    """自定义输入伪选项（Claude 风格：普通编号项 + 已输入草稿说明）。
 
     实测 Claude AskUserQuestion 的 ``4. Type something.`` 是一项普通选项
-    （带序号、多选带 ``[ ]`` 勾选框），没有额外的说明行——本函数对齐该
-    布局；进入输入模式后由输入行接管。
+    （带序号、多选带 ``[ ]`` 勾选框），没有额外的说明行。★ 2026-10-23
+    （用户需求：没输入时也要显示已输入内容，像选项说明一样）：当该 tab
+    存在未提交草稿且**不在编辑模式**时，在自定义行下方按选项说明样式显示
+    草稿——选中项多行展开，未选中折叠单行；进入编辑模式后由编辑区接管，
+    不再重复显示说明。
 
     Args:
         is_sel: 是否当前高亮。
@@ -457,6 +653,8 @@ def _build_custom_row(
         multi: 是否多选（渲染 ``[ ]`` 勾选框）。
         idx: 自定义项在控件 items 中的下标（缺省 ``total``）。
         num_total: 序号列宽参考的总项数（含伪选项；缺省 ``total + 1``）。
+        draft: 未提交的自定义草稿（空串 = 不显示说明行）。
+        max_desc_rows: 选中项草稿说明最大行数（None = 不限制）。
     """
     n = int(num_total if num_total is not None else total + 1)
     i = int(total if idx is None else idx)
@@ -472,10 +670,25 @@ def _build_custom_row(
         target_w=max(1, opt_w),
         pad_style=_S_SEL_PAD if is_sel else None,
     )
-    return h(TEXT, {
+    row = h(TEXT, {
         "styled": runs, "height": 1, "key": "row-custom",
         "textWrap": "truncate-end",
     })
+    draft_text = str(draft or "")
+    if not draft_text.strip():
+        return row
+    indent = _option_indent(num_w, multi)
+    if is_sel:
+        desc_rows = _option_desc_rows(
+            draft_text, indent=indent, target_w=max(1, opt_w),
+            style=_S_DESC, key="row-custom-desc", max_rows=max_desc_rows,
+        )
+    else:
+        desc_rows = [_option_folded_desc_row(
+            draft_text, indent=indent, target_w=max(1, opt_w),
+            style=_S_DESC_DIM, key="row-custom-desc",
+        )]
+    return h(Column, None, [row] + desc_rows)
 
 
 def _build_submit_row(
@@ -515,30 +728,6 @@ def _build_submit_row(
         "styled": runs, "height": 1, "key": f"row-submit-{idx_i}",
         "textWrap": "truncate-end",
     })
-
-
-def _build_custom_input_row(
-    text: str, on_change, on_submit, rev: int = 0,
-) -> object:
-    """自定义输入编辑行（TextInput 受控；输入模式下渲染在选项列表之后）。
-
-    ``rev`` 为外部重置版本号（Ctrl+U/Ctrl+W/外部编辑器回填时递增）——用作
-    TextInput 的 key 强制重挂载，使半受控控件的内部缓冲同步为新的 ``value``
-    （否则清除后继续输入会拼到旧文本上）。
-    """
-    return h(Row, {"height": 1}, [
-        h(TEXT, {
-            "children": _CURSOR, "style": _S_SEL_ACCENT, "height": 1,
-        }),
-        h(TextInput, {
-            "key": f"us-custom-input-{rev}",
-            "value": text,
-            "onChange": on_change,
-            "onSubmit": on_submit,
-            "focus": True,
-            "placeholder": "输入自定义答案后 Enter 提交",
-        }),
-    ])
 
 
 def _header_chip_label(us) -> str:
@@ -967,7 +1156,7 @@ def _advance_to_next_pending(model, active_ref, set_active) -> None:
 def _handle_tab_event(
     event, *, visible: bool, is_submit: bool, multi_mode: bool, tab_count: int,
     active_ref, set_active, states: list, model,
-    input_mode: bool = False, exit_custom=None,
+    input_mode: bool = False, exit_custom=None, suspend_custom=None,
     submit_scroll_ref=None, set_submit_scroll=None, submit_rows_limit=None,
     submit_choice_ref=None, set_submit_choice=None,
 ) -> bool:
@@ -984,10 +1173,13 @@ def _handle_tab_event(
 
     Args:
         input_mode: 当前是否处于自定义输入编辑模式。输入模式下 ←/→ 必须
-            放行给 TextInput 移动光标（不得切换问题 tab）；Tab 仍切换问题，
-            但切换前调用 ``exit_custom`` 退出输入并清空本题缓冲（避免输入
-            内容串到下一题）。
-        exit_custom: 退出自定义输入模式的回调（无参）。
+            放行给编辑区移动光标（不得切换问题 tab）；Tab 仍切换问题——
+            切换前调用 ``suspend_custom`` 挂起输入并**保留本题草稿**，切回
+            该 tab 时自动恢复编辑区与草稿。
+        exit_custom: 退出自定义输入模式的回调（无参；Esc 语义，保留草稿
+            但不自动恢复）。
+        suspend_custom: 切 tab 时挂起自定义输入的回调（无参；保留草稿且
+            标记 ``custom_active=True``，切回自动恢复）。
         submit_scroll_ref: Submit 页滚动偏移 ref。
         set_submit_scroll: Submit 页滚动偏移 state setter。
         submit_rows_limit: Submit 页当前可见问题行数（用于滚动步长/边界）。
@@ -1049,9 +1241,9 @@ def _handle_tab_event(
                 )
             except (TypeError, ValueError, OverflowError):
                 rows = _submit_rows_limit()
-            # 每题占 2 行（问题 + 答案）+ 固定 5 行 → 当前可见题数。
-            visible_q = max(1, (int(rows) - 5) // 2)
-            max_scroll = max(0, len(states) - visible_q)
+            # ★ 2026-10-23（多行答案）：按实际答案行数计算最大滚动题号
+            #   （固定行 5 + 每题至少 1 行问题 + 动态答案行）。
+            max_scroll = _submit_max_scroll(states, rows)
             try:
                 cur_scroll = max(
                     0, min(int(submit_scroll_ref.current or 0), max_scroll),
@@ -1078,10 +1270,14 @@ def _handle_tab_event(
     cur = active_ref.current
     new = cur
     if event.kind == "tab":
-        # ★ 2026-10-21（用户需求）：输入模式中 Tab 切换问题前先退出输入
-        #   （清空未提交文本 + 恢复自动超时），避免输入内容串题。
-        if input_mode and exit_custom is not None:
-            exit_custom()
+        # ★ 2026-10-23（用户需求：并发 tab 切换保留自定义草稿）：切 tab
+        #   前**挂起**输入（保留草稿 + 光标 + active 标记），切回该 tab 时
+        #   自动恢复编辑区；不再清空未提交文本。
+        if input_mode:
+            if suspend_custom is not None:
+                suspend_custom()
+            elif exit_custom is not None:
+                exit_custom()
         # Tab → 下一个；Shift+Tab（CSI u modifier=2）→ 上一个
         new = (cur + 1) % n if getattr(event, "modifier", 0) != 2 else (cur - 1) % n
     elif event.kind == "arrow_right":
@@ -1104,30 +1300,46 @@ def _handle_tab_event(
 def _handle_custom_input_event(
     event, *, visible: bool, input_mode: bool, exit_custom=None,
     edit_custom=None, clear_custom=None, delete_word=None,
+    insert_text=None, backspace=None, delete_forward=None,
+    move_left=None, move_right=None, move_home=None, move_end=None,
+    move_up=None, move_down=None, insert_newline=None, submit=None,
 ) -> bool:
     """自定义输入编辑模式的顶层按键（模块级）。
 
+    ★ 2026-10-23（用户需求：光标 + 多行输入）：不再使用单行 ``TextInput``
+    ——字符/粘贴/退格/Delete/方向键/Home/End/上下行全部由本 handler 直接
+    编辑 ``custom_text`` + ``custom_cursor``，支持多行显示与行内光标。
+
     接管：
-      - ``Ctrl+G``（``\\x07``）：调用外部编辑器（``EDITOR``，默认 vim）
-        编辑当前自定义答案；回填后仍停留在输入模式（Enter 确认）。
-      - ``Ctrl+U``（``\\x15``）：清空当前输入。
-      - ``Ctrl+W``（``\\x17``）：删除光标前一个词。
+      - ``Shift+Enter``（``kind="enter", modifier=2``）：插入换行；
+      - ``Enter``（含 CSI u modifier=1/3/5）：提交当前答案；
+      - 可打印字符 / 多字符粘贴：插入光标位置；
+      - ``Backspace`` / ``Delete``：删除光标前/后字符；
+      - ``←/→``：移动光标；``↑/↓``：上下行移动；``Home/End``：行首/行尾；
+      - ``Ctrl+G``（``\\x07``）：外部编辑器（``EDITOR``，默认 vim）；
+      - ``Ctrl+U``（``\\x15`` / ``delete`` modifier=2）：清空；
+      - ``Ctrl+W``（``\\x17`` / ``delete`` modifier=1）：删除光标前一个词；
       - ``Esc``：退出输入、返回选项（**不取消问题**——再次 Esc 才由
         SelectInput/MultiSelect 的 onCancel 取消）。
-
-    字符/退格/方向键/Enter 全部放行给 TextInput（输入行）处理。
 
     Args:
         edit_custom: Ctrl+G 回调（无参）；None 时消费但不动作（防御）。
         clear_custom: Ctrl+U 回调（无参）。
         delete_word: Ctrl+W 回调（无参）。
+        insert_text: ``(text: str) -> None``——在光标处插入文本。
+        backspace: 删除光标前一个字符。
+        delete_forward: 删除光标处字符。
+        move_left/move_right/move_home/move_end/move_up/move_down: 光标移动。
+        insert_newline: 插入 ``\\n``。
+        submit: 提交当前答案。
     """
     if not visible or not input_mode:
         return False
+    kind = getattr(event, "kind", "")
+    mod = int(getattr(event, "modifier", 0) or 0)
     # ★ 真实终端解析：Ctrl+W → ``delete`` modifier=1；Ctrl+U →
     #   ``delete`` modifier=2（见 InputParser._decode_control_char）。
-    if getattr(event, "kind", "") == "delete":
-        mod = int(getattr(event, "modifier", 0) or 0)
+    if kind == "delete":
         if mod == 1:
             if delete_word is not None:
                 delete_word()
@@ -1136,11 +1348,24 @@ def _handle_custom_input_event(
             if clear_custom is not None:
                 clear_custom()
             return True
+        if mod == 3:
+            # Alt+Delete / kill-line 等组合键交给上层（不误删单字符）。
+            return False
+        if delete_forward is not None:
+            delete_forward()
+            return True
         return False
     ch = getattr(event, "char", "") or ""
     if ch == "\x07":
         if edit_custom is not None:
             edit_custom()
+        return True
+    # ★ 2026-10-23（多行输入兼容）：传统终端（mintty/Cygwin）不区分
+    #   Shift+Enter，且 Enter/Ctrl+J 都可能同发 LF——改用 Ctrl+O（0x0F）
+    #   作为可靠换行键（弹窗内被本 handler 消费，不会触发 /editmsg）。
+    if ch == "\x0f":
+        if insert_newline is not None:
+            insert_newline()
         return True
     if ch == "\x15":
         if clear_custom is not None:
@@ -1150,10 +1375,83 @@ def _handle_custom_input_event(
         if delete_word is not None:
             delete_word()
         return True
-    if event.kind == "escape":
+    if kind == "escape":
         if exit_custom is not None:
             exit_custom()
         return True
+    if kind == "enter":
+        if mod == 2:
+            # Shift+Enter：插入换行（多行输入）。
+            if insert_newline is not None:
+                insert_newline()
+            return True
+        if submit is not None:
+            submit()
+        return True
+    if kind == "paste":
+        if ch and insert_text is not None:
+            insert_text(ch)
+            return True
+        return False
+    if kind == "char":
+        if not ch:
+            return False
+        # 控制字符（Ctrl+字母等）不插入；换行/制表符按文本插入。
+        if any(ord(c) < 32 and c not in ("\n", "\t") for c in ch):
+            return False
+        if insert_text is not None:
+            insert_text(ch)
+            return True
+        return False
+    if kind == "backspace":
+        if mod not in (0, 1):
+            return False
+        if backspace is not None:
+            backspace()
+            return True
+        return False
+    if kind == "arrow_left":
+        if mod not in (0, 1):
+            return False
+        if move_left is not None:
+            move_left()
+            return True
+        return False
+    if kind == "arrow_right":
+        if mod not in (0, 1):
+            return False
+        if move_right is not None:
+            move_right()
+            return True
+        return False
+    if kind == "home":
+        if mod not in (0, 1):
+            return False
+        if move_home is not None:
+            move_home()
+            return True
+        return False
+    if kind == "end":
+        if mod not in (0, 1):
+            return False
+        if move_end is not None:
+            move_end()
+            return True
+        return False
+    if kind == "arrow_up":
+        if mod not in (0, 1):
+            return False
+        if move_up is not None:
+            move_up()
+            return True
+        return False
+    if kind == "arrow_down":
+        if mod not in (0, 1):
+            return False
+        if move_down is not None:
+            move_down()
+            return True
+        return False
     return False
 
 
@@ -1340,6 +1638,143 @@ def _handle_batch_event(
     return False
 
 
+def _result_rows(
+    result, width: int, key_prefix: str, style: Style, *,
+    first_prefix: str = "  \u2192 ",
+    other_prefix: str = "  \u00b7 ",
+    continuation: str = "    ",
+    first_suffix: str = "",
+) -> list:
+    """把选择结果按原文逐行渲染（多行自定义输入完整显示）。
+
+    ★ 2026-10-23（用户需求：输入完了要显示所有的输入（多行））：不再用
+    ``、`` 拼接并折叠换行——每个结果项的第一行加前缀，后续行缩进对齐；
+    自定义多行答案逐行输出，不截断、不折叠。
+    """
+    width_i = max(1, int(width))
+    items = [str(x) for x in (result or [])]
+    if not items:
+        items = ["（无）"]
+    rows: list = []
+    first_row = True
+    for i, item in enumerate(items):
+        for j, line in enumerate(_normalize_multiline(item).split("\n")):
+            if j == 0:
+                prefix = first_prefix if i == 0 else other_prefix
+            else:
+                prefix = continuation
+            text = prefix + line
+            if first_row and first_suffix:
+                text += first_suffix
+            rows.append(h(TEXT, {
+                "children": _truncate_width(text, width_i),
+                "style": style,
+                "height": 1,
+                "key": f"{key_prefix}-{i}-{j}",
+                "textWrap": "truncate-end",
+            }))
+            first_row = False
+    return rows
+
+
+def _answer_rows_for_state(
+    s, width: int, key_prefix: str = "us-submit-a",
+    max_rows: "int | None" = None,
+) -> list:
+    """Submit 页单个问题的答案行（按实际行数，多行答案逐行显示）。"""
+    width_i = max(1, int(width))
+    answered = bool(getattr(s, "answered", False))
+    done = bool(getattr(s, "done", False))
+    action = str(getattr(s, "action", "") or "")
+    if answered or done:
+        if action == "cancel":
+            rows = [h(TEXT, {
+                "children": _truncate_width("  \u2192 \u2717 取消", width_i),
+                "style": _S_TAB_ANSWERED,
+                "height": 1,
+                "key": f"{key_prefix}-cancel",
+                "textWrap": "truncate-end",
+            })]
+        elif action == "timeout":
+            rows = [h(TEXT, {
+                "children": _truncate_width("  \u2192 \u23f1 超时", width_i),
+                "style": _S_TAB_ANSWERED,
+                "height": 1,
+                "key": f"{key_prefix}-timeout",
+                "textWrap": "truncate-end",
+            })]
+        else:
+            result = list(getattr(s, "result", None) or [])
+            custom = str(getattr(s, "custom", "") or "")
+            suffix = "（自定义）" if custom and len(result) == 1 else ""
+            rows = _result_rows(
+                result, width_i, key_prefix, _S_DONE_RESULT,
+                first_suffix=suffix,
+            )
+    else:
+        default_txt = "、".join(
+            _one_line(x) for x in (getattr(s, "default_options", None) or [])
+        )
+        status = (
+            f"未回答（默认：{default_txt}）" if default_txt
+            else "未回答（将返回空）"
+        )
+        rows = [h(TEXT, {
+            "children": _truncate_width(f"  \u2192 {status}", width_i),
+            "style": _S_WARN if default_txt else _S_DESC_DIM,
+            "height": 1,
+            "key": f"{key_prefix}-empty",
+            "textWrap": "truncate-end",
+        })]
+    if max_rows is not None and len(rows) > max(1, int(max_rows)):
+        keep = max(1, int(max_rows))
+        hidden = len(rows) - (keep - 1)
+        rows = rows[:keep - 1] + [h(TEXT, {
+            "children": _truncate_width(
+                f"    \u2026（还有 {hidden} 行）", width_i,
+            ),
+            "style": _S_DESC_DIM,
+            "height": 1,
+            "key": f"{key_prefix}-more",
+            "textWrap": "truncate-end",
+        })]
+    return rows
+
+
+def _submit_max_scroll(states: list, max_rows: "int | None") -> int:
+    """Submit 页最大滚动题号（按实际答案行数计算，保证能翻到最后一题）。"""
+    if max_rows is None:
+        return 0
+    try:
+        budget = max(1, int(max_rows) - 5)
+    except (TypeError, ValueError, OverflowError):
+        budget = max(1, _submit_rows_limit() - 5)
+    n = len(states)
+    if n <= 0:
+        return 0
+
+    def _page_end(start: int) -> int:
+        used = 0
+        i = start
+        while i < n:
+            arows = _answer_rows_for_state(states[i], 80, "sim")
+            need = 1 + len(arows)
+            remaining = budget - used
+            if remaining <= 0:
+                return i - 1
+            if remaining <= 1 or need > remaining:
+                return i
+            used += need
+            i += 1
+        return n - 1
+
+    max_scroll = 0
+    for s in range(n):
+        if _page_end(s) >= n - 1:
+            max_scroll = s
+    return max_scroll
+
+
 def _build_submit_page(
     states: list, width: int, scroll: int = 0, max_rows: int | None = None,
     choice: int = 0,
@@ -1366,23 +1801,21 @@ def _build_submit_page(
         width_i = 80
     n = len(states)
     if max_rows is None:
-        visible = max(1, n) if n else 1
+        budget = None
     else:
-        # 固定行：标题 1 + 「准备好提交答案了吗？」1 + 两个选项 2 + 次提示 1
-        # = 5；每题占 2 行（问题 + 答案）。
         try:
             budget = max(1, int(max_rows))
         except (TypeError, ValueError, OverflowError):
             budget = _submit_rows_limit()
-        visible = max(1, (budget - 5) // 2)
-    visible = max(1, min(visible, n)) if n else 1
-    max_scroll = max(0, n - visible)
+    # ★ 2026-10-23（用户需求：多行答案完整显示）：分页按**实际答案行数**
+    #   计算（固定行 = 标题 1 + 准备提示 1 + 两个选项 2 + 次提示 1 = 5）。
+    max_scroll = _submit_max_scroll(states, max_rows)
     try:
         start = int(scroll or 0)
     except (TypeError, ValueError, OverflowError):
         start = 0
     start = max(0, min(start, max_scroll))
-    end = min(n, start + visible)
+    end = start
     answered_count = sum(
         1 for s in states
         if getattr(s, "answered", False) or getattr(s, "done", False)
@@ -1402,55 +1835,50 @@ def _build_submit_page(
         "key": "us-submit-title",
         "textWrap": "truncate-end",
     }))
-    # ── 每題：``• 问题`` + ``  → 答案`` ──
-    for i in range(start, end):
+    # ── 每题：``• 问题`` + 答案行（多行答案逐行显示，行数动态参与分页）──
+    used = 0
+    for i in range(start, n):
+        remaining = None if budget is None else budget - 5 - used
+        if remaining is not None and remaining <= 0:
+            break
         s = states[i]
-        answered = getattr(s, "answered", False)
-        done = getattr(s, "done", False)
         title_q = _one_line(getattr(s, "title", "") or "选择")
-        action = str(getattr(s, "action", "") or "")
-        if answered or done:
-            if action == "cancel":
-                status, style = "\u2717 取消", _S_TAB_ANSWERED
-            elif action == "timeout":
-                status, style = "\u23f1 超时", _S_TAB_ANSWERED
-            else:
-                result_txt = "、".join(
-                    str(x).replace("\r\n", "\n").replace("\r", "\n").replace(
-                        "\n", _NEWLINE_MARK,
-                    )
-                    for x in (getattr(s, "result", None) or [])
-                ) or "（无）"
-                # ★ 2026-10-21（用户需求）：自由输入标记（提交页汇总可见）。
-                custom_txt = str(getattr(s, "custom", "") or "")
-                status = result_txt + ("（自定义）" if custom_txt else "")
-                style = _S_DONE_RESULT
-        else:
-            default_txt = "、".join(
-                str(x).replace("\r\n", "\n").replace("\r", "\n").replace(
-                    "\n", _NEWLINE_MARK,
-                )
-                for x in (getattr(s, "default_options", None) or [])
-            )
-            status = (
-                f"未回答（默认：{default_txt}）" if default_txt
-                else "未回答（将返回空）"
-            )
-            style = _S_WARN if default_txt else _S_DESC_DIM
-        rows.append(h(TEXT, {
+        q_row = h(TEXT, {
             "children": _truncate_width(f"\u2022 {title_q}", width_i),
             "style": _S_ITEM_IDLE,
             "height": 1,
             "key": f"us-submit-q-{i}",
             "textWrap": "truncate-end",
-        }))
+        })
+        if remaining is not None and remaining <= 1:
+            rows.append(q_row)
+            used += 1
+            end = i + 1
+            break
+        arows = _answer_rows_for_state(
+            s, width_i, f"us-submit-a-{i}",
+            max_rows=None if remaining is None else remaining - 1,
+        )
+        rows.append(q_row)
+        rows.extend(arows)
+        used += 1 + len(arows)
+        end = i + 1
+        if budget is not None and used >= max(1, budget - 5):
+            break
+    if end == start and n:
+        # 预算极矮（< 6 行）：至少显示第一题的问题行，保证页面非空。
+        i = start
         rows.append(h(TEXT, {
-            "children": _truncate_width(f"  \u2192 {status}", width_i),
-            "style": style,
+            "children": _truncate_width(
+                f"\u2022 {_one_line(getattr(states[i], 'title', '') or '选择')}",
+                width_i,
+            ),
+            "style": _S_ITEM_IDLE,
             "height": 1,
-            "key": f"us-submit-a-{i}",
+            "key": f"us-submit-q-{i}",
             "textWrap": "truncate-end",
         }))
+        end = i + 1
     # ── 准备提交提示 ──
     rows.append(h(TEXT, {
         "children": _truncate_width(
@@ -1512,12 +1940,21 @@ def _build_hints(
     Ctrl+G 等），但首行改为 Claude 结构的单行主提示。
     """
     if custom_editing and not done and allow_custom:
-        primary = "输入自定义答案 · Enter 提交 · Esc 返回选项 · Ctrl+G vim 编辑"
         if editor_error:
-            primary += f" · ! {editor_error}"
+            # 错误提示前置，避免长提示在窄屏被截断后看不见。
+            primary = (
+                f"! {editor_error} · Enter 提交 · Shift+Enter/Ctrl+O 换行"
+                " · Esc 返回选项 · Ctrl+G vim 编辑"
+            )
+        else:
+            primary = (
+                "Enter 提交 · Shift+Enter/Ctrl+O 换行"
+                " · Esc 返回选项 · Ctrl+G vim 编辑"
+            )
         secondary = "Ctrl+U 清空 · Ctrl+W 删词"
         if multi_mode:
             secondary += " · Tab 切换问题"
+        secondary += " · ←→ 移动光标 · ↑↓ 切换行"
         return primary, secondary
     if done:
         return "\u2713 已提交（锁定）", ""
@@ -1547,11 +1984,12 @@ def UserSelectPopup(props) -> object:
 
     ★ 2026-10-21（用户需求）：支持用户输入列表外的自定义答案——状态
     ``us.allow_custom`` 为 True 时列表末尾渲染「其他（自定义输入…）」
-    伪选项；Enter 进入输入编辑模式（选项控件失焦、TextInput 接管），
-    Enter 提交 / Esc 返回；输入模式内 Ctrl+G 调用外部编辑器（``EDITOR``，
-    默认 vim，多行以 ``⏎`` 折叠显示、返回保留换行）。
-    ★ 2026-10-22：``us.typing`` 仅在外部编辑器运行期间为 True（暂停空闲
-    计时）；弹窗内正常打字/导航由每次按键重置 1 分钟空闲倒计时。
+    伪选项；Enter 进入多行编辑模式，Enter 提交 / Esc 返回；输入模式内
+    Ctrl+G 调用外部编辑器（``EDITOR``，默认 vim，返回保留换行）。
+    ★ 2026-10-23（用户需求：光标 + 多行输入 + 输入中不计时）：空输入框
+    也显示光标块；``Shift+Enter`` / ``Ctrl+O`` 换行，``Enter`` 提交，
+    ``←→↑↓`` 移动光标；输入内容逐行显示；输入模式期间 ``us.typing=True``
+    暂停空闲超时（标题区不显示/递减 ⏱），提交/退出后恢复。
 
     ★ 2026-10-21（继续优化）：Submit 页分页滚动 + 数字键 1-9 跳题；长列表
     显示上方/下方隐藏项数；tab 显示回答摘要；多选 `a` 全选/`c` 清空；
@@ -1612,17 +2050,17 @@ def UserSelectPopup(props) -> object:
     selected, set_selected = use_state(initial_sel)
     # ★ 2026-10-21（用户需求：user_select 支持自定义输入）：输入编辑状态。
     #   - custom_editing_ref 是事件期权威源（同批按键无重渲染时 state 陈旧）；
-    #   - custom_text 受控传给输入行 TextInput；
+    #   - custom_text / custom_cursor 为受控原始文本与字符光标（多行编辑）；
     #   - state setter 仅负责触发重渲染（ref 即时生效）。
     custom_editing, set_custom_editing = use_state(False)
     custom_text, set_custom_text = use_state("")
-    # 外部重置版本号（Ctrl+U/Ctrl+W/编辑器回填）——TextInput key 强制重挂载。
-    custom_input_rev, set_custom_input_rev = use_state(0)
+    custom_cursor, set_custom_cursor = use_state(0)
     custom_editing_ref = use_ref(False)
     custom_editing_ref.current = custom_editing
-    # ★ 2026-10-21（Ctrl+G vim 输入）：原始文本 ref（事件期权威源；可含换行，
-    #   与单行显示分离）与编辑器错误提示 state。
+    # ★ 2026-10-23（用户需求：光标 + 多行输入）：原始文本/光标 ref（事件期
+    #   权威源）与编辑器错误提示 state。
     custom_text_ref = use_ref("")
+    custom_cursor_ref = use_ref(0)
     custom_editor_error, set_custom_editor_error = use_state("")
     # ★ 2026-10-21（继续优化）：Submit 页滚动偏移 + 当前列表可见窗口
     #   （offset, count）——Submit 页大量问题时滚动；列表上方显示隐藏项数。
@@ -1679,30 +2117,59 @@ def UserSelectPopup(props) -> object:
     fresh_us = prev_us is not us
     if fresh_us:
         us_ref.current = us
-        # ★ 2026-10-21（用户需求）：切换问题（手动 tab / 自动推进 / 并发
-        #   新 tab 导致焦点变化）时退出自定义输入并清空缓冲——避免输入
-        #   内容串到下一题；同时复位旧 state 的 typing（清除外部编辑器
-        #   暂停标志，空闲计时恢复正常）。
-        if custom_editing_ref.current:
-            custom_editing_ref.current = False
-            set_custom_editing(False)
-            set_custom_text("")
-        # ★ 2026-10-21：切题/自动推进时清空输入原文与编辑器错误提示。
-        custom_text_ref.current = ""
+        # ★ 2026-10-23（用户需求：并发 tab 切换保留自定义输入）：
+        #   切走时把当前草稿/光标写回旧 state（并标记 active），切回时
+        #   恢复该 tab 自己的草稿、光标与编辑区；不再清空输入内容。
+        if prev_us is not None:
+            if custom_editing_ref.current:
+                prev_us.custom_draft = custom_text_ref.current or ""
+                prev_us.custom_draft_cursor = custom_cursor_ref.current
+                prev_us.custom_active = True
+                # 有活动草稿的 tab 在后台也暂停计时（避免切走期间超时丢草稿）。
+                prev_us.typing = True
+            # 未处于输入模式时不动 prev_us.typing：可能由外部编辑器（Ctrl+G）
+            # 或 _suspend_custom/_exit_custom 维护。
+        draft = ""
+        draft_cursor = 0
+        resume_editing = False
+        if us is not None:
+            draft = str(getattr(us, "custom_draft", "") or "")
+            try:
+                draft_cursor = int(getattr(us, "custom_draft_cursor", 0) or 0)
+            except (TypeError, ValueError):
+                draft_cursor = len(draft)
+            draft_cursor = max(0, min(draft_cursor, len(draft)))
+            allow_custom_us = bool(getattr(us, "allow_custom", False))
+            resume_editing = (
+                bool(getattr(us, "custom_active", False)) and allow_custom_us
+            )
+        custom_editing_ref.current = resume_editing
+        set_custom_editing(resume_editing)
+        custom_text_ref.current = draft
+        set_custom_text(draft)
+        custom_cursor_ref.current = draft_cursor
+        set_custom_cursor(draft_cursor)
         set_custom_editor_error("")
         # ★ 2026-10-21（继续优化）：切题时列表窗口回到顶部（新控件上报后覆盖）。
         if list_window_ref.current != (0, 0):
             list_window_ref.current = (0, 0)
             set_list_window((0, 0))
-        if prev_us is not None:
-            prev_us.typing = False
         if us is not None:
-            try:
-                sel_us = int(getattr(us, "selected", 0) or 0)
-            except (TypeError, ValueError):
-                sel_us = 0
-            if selected != sel_us:
-                set_selected(sel_us)
+            if resume_editing:
+                total_us = len(getattr(us, "options", None) or [])
+                us.selected = total_us
+                us.typing = True
+                if selected != total_us:
+                    set_selected(total_us)
+            else:
+                # 不覆盖 ``typing``：外部编辑器（Ctrl+G）运行期间它为 True；
+                # 挂起/退出自定义输入时已由 _suspend_custom/_exit_custom 维护。
+                try:
+                    sel_us = int(getattr(us, "selected", 0) or 0)
+                except (TypeError, ValueError):
+                    sel_us = 0
+                if selected != sel_us:
+                    set_selected(sel_us)
     # ── 当前问题基础数据（提前计算：自定义输入回调/渲染共用） ──
     # ★ 2026-10-23（用户需求：说明并入选项对象）：options 为
     #   ``UserSelectOption(label, description)`` 列表，label 作为控件值与
@@ -1816,87 +2283,201 @@ def UserSelectPopup(props) -> object:
         """列表末尾伪选项行（自定义输入 / 提交）不可勾选。"""
         return idx < total
 
-    def _exit_custom(clear: bool = True) -> None:
-        """退出自定义输入编辑模式（恢复选项控件焦点；清空未提交缓冲）。
+    def _save_custom_to_state(active: bool) -> None:
+        """把当前草稿/光标写回本题 state（跨 tab 切换保留）。"""
+        if us is None:
+            return
+        us.custom_draft = custom_text_ref.current or ""
+        us.custom_draft_cursor = custom_cursor_ref.current
+        us.custom_active = bool(active)
 
-        ``us.typing`` 一并复位——外部编辑器异常退出等路径不会残留暂停标志
-        （空闲计时恢复正常）。
-        """
+    def _set_custom_cursor_only(pos: int) -> None:
+        """只移动光标（不改文本、不清错误提示）。"""
+        text = custom_text_ref.current or ""
+        cur = max(0, min(int(pos), len(text)))
+        custom_cursor_ref.current = cur
+        set_custom_cursor(cur)
+        if us is not None:
+            us.custom_draft = text
+            us.custom_draft_cursor = cur
+            us.custom_active = True
+
+    def _sync_custom(text, cursor=None) -> None:
+        """写入原始文本 + 光标（文本变化时清除错误提示）。"""
+        raw = _normalize_multiline(text)
+        custom_text_ref.current = raw
+        set_custom_text(raw)
+        cur = len(raw) if cursor is None else int(cursor)
+        cur = max(0, min(cur, len(raw)))
+        custom_cursor_ref.current = cur
+        set_custom_cursor(cur)
+        set_custom_editor_error("")
+        if us is not None:
+            us.custom_draft = raw
+            us.custom_draft_cursor = cur
+            us.custom_active = True
+
+    def _suspend_custom() -> None:
+        """切 tab：挂起自定义输入（保留草稿/光标；切回自动恢复编辑区）。"""
+        _save_custom_to_state(True)
         custom_editing_ref.current = False
         set_custom_editing(False)
+        # 保留本地 text/cursor（切回时由 fresh_us 从 state 恢复）。
+        set_custom_editor_error("")
+        if us is not None:
+            # 草稿仍处于活动状态：后台也暂停该 tab 的计时，防止切走期间
+            # 超时把草稿作废；切回后继续编辑，Esc/提交后恢复计时。
+            us.typing = True
+
+    def _exit_custom(clear: bool = False) -> None:
+        """退出自定义输入编辑模式（Esc/提交；保留草稿，但不自动恢复）。
+
+        ★ 2026-10-23（用户需求：输入中不要继续倒计时 + 切换 tab 保留内容）：
+        输入模式期间 ``us.typing=True`` 暂停空闲超时；退出/提交后复位。
+        默认保留草稿（``custom_active=False``），切回该 tab 后可再次进入
+        编辑区继续编辑；``clear=True`` 才清空草稿。
+        """
         if clear:
-            set_custom_text("")
             custom_text_ref.current = ""
+            set_custom_text("")
+            custom_cursor_ref.current = 0
+            set_custom_cursor(0)
+            if us is not None:
+                us.custom_draft = ""
+                us.custom_draft_cursor = 0
+                us.custom_active = False
+        else:
+            _save_custom_to_state(False)
+        custom_editing_ref.current = False
+        set_custom_editing(False)
         set_custom_editor_error("")
         if us is not None:
             us.typing = False
 
     def _enter_custom() -> None:
-        """进入自定义输入编辑模式（空缓冲；高亮伪选项行）。
+        """进入自定义输入编辑模式（恢复本题草稿；高亮伪选项行）。
 
-        ★ 2026-10-22（用户需求：删除 timeout 参数，改成「不操作界面一分钟
-        后才算超时」）：进入输入模式**不再**置 ``us.typing``——正常打字属于
-        界面操作，每次按键经 ``_touch_idle_states`` 重置 1 分钟倒计时；
-        ``typing`` 仅用于外部编辑器（Ctrl+G vim）独占终端期间暂停计时。
+        ★ 2026-10-23（用户需求：再次编辑不能清空原来的内容）：从
+        ``us.custom_draft`` / ``custom_draft_cursor`` 恢复上次输入；
+        没有草稿时从空文本开始。
         """
         if us is None or not allow_custom:
             return
+        draft = str(getattr(us, "custom_draft", "") or "")
+        try:
+            cur = int(getattr(us, "custom_draft_cursor", 0) or 0)
+        except (TypeError, ValueError):
+            cur = len(draft)
+        cur = max(0, min(cur, len(draft)))
         custom_editing_ref.current = True
         set_custom_editing(True)
-        set_custom_text("")
-        custom_text_ref.current = ""
+        custom_text_ref.current = draft
+        set_custom_text(draft)
+        custom_cursor_ref.current = cur
+        set_custom_cursor(cur)
         set_custom_editor_error("")
-        set_custom_input_rev(custom_input_rev + 1)
+        # 输入模式期间暂停空闲超时（标题区不再显示/递减 ⏱ 倒计时）。
+        us.typing = True
+        us.custom_active = True
         # 视觉：高亮列表末尾的「其他（自定义输入…）」行（普通项索引 0..total-1）。
         us.selected = total
         set_selected(total)
 
-    def _on_custom_change(text: str) -> None:
-        """TextInput 受控变化：保存原始文本（保留换行）。
+    def _insert_custom_text(value) -> None:
+        """在光标处插入文本（支持多字符粘贴与换行）。"""
+        raw = _normalize_multiline(value)
+        if not raw:
+            return
+        text = custom_text_ref.current or ""
+        cur = max(0, min(custom_cursor_ref.current, len(text)))
+        _sync_custom(text[:cur] + raw + text[cur:], cur + len(raw))
 
-        TextInput 显示的是单行折叠文本（换行 → ``_NEWLINE_MARK``）；此处
-        还原换行后写入 ``custom_text_ref`` / state。显示宽度截断只在渲染
-        输入行时做（``_single_line_custom``），不丢失原始多行内容。
-        """
-        raw = str(text or "").replace(_NEWLINE_MARK, "\n")
-        raw = raw.replace("\r\n", "\n").replace("\r", "\n")
-        custom_text_ref.current = raw
-        set_custom_text(raw)
-        set_custom_editor_error("")
+    def _backspace_custom() -> None:
+        """删除光标前一个字符。"""
+        text = custom_text_ref.current or ""
+        cur = max(0, min(custom_cursor_ref.current, len(text)))
+        if cur <= 0:
+            return
+        _sync_custom(text[:cur - 1] + text[cur:], cur - 1)
+
+    def _delete_forward_custom() -> None:
+        """删除光标处字符。"""
+        text = custom_text_ref.current or ""
+        cur = max(0, min(custom_cursor_ref.current, len(text)))
+        if cur >= len(text):
+            return
+        _sync_custom(text[:cur] + text[cur + 1:], cur)
+
+    def _move_custom_left() -> None:
+        _set_custom_cursor_only(custom_cursor_ref.current - 1)
+
+    def _move_custom_right() -> None:
+        _set_custom_cursor_only(custom_cursor_ref.current + 1)
+
+    def _move_custom_home() -> None:
+        text = custom_text_ref.current or ""
+        start, _end = _line_bounds(text, custom_cursor_ref.current)
+        _set_custom_cursor_only(start)
+
+    def _move_custom_end() -> None:
+        text = custom_text_ref.current or ""
+        _start, end = _line_bounds(text, custom_cursor_ref.current)
+        _set_custom_cursor_only(end)
+
+    def _move_custom_vertical(delta: int) -> None:
+        """↑/↓：在当前硬换行行与相邻行之间移动（保持列号，越界钳制）。"""
+        text = custom_text_ref.current or ""
+        cur = max(0, min(custom_cursor_ref.current, len(text)))
+        start, end = _line_bounds(text, cur)
+        col = cur - start
+        if delta < 0:
+            if start <= 0:
+                return
+            prev_end = start - 1
+            prev_start, _ = _line_bounds(text, prev_end)
+            _set_custom_cursor_only(prev_start + min(col, prev_end - prev_start))
+            return
+        if end >= len(text):
+            return
+        next_start = end + 1
+        _ns, next_end = _line_bounds(text, next_start)
+        _set_custom_cursor_only(next_start + min(col, next_end - next_start))
+
+    def _move_custom_up() -> None:
+        _move_custom_vertical(-1)
+
+    def _move_custom_down() -> None:
+        _move_custom_vertical(1)
 
     def _clear_custom() -> None:
         """Ctrl+U：清空当前自定义答案输入。"""
-        custom_text_ref.current = ""
-        set_custom_text("")
-        set_custom_editor_error("")
-        set_custom_input_rev(custom_input_rev + 1)
+        _sync_custom("", 0)
 
     def _delete_custom_word() -> None:
         """Ctrl+W：删除光标前的词（按空白边界；CJK 无空格时删整段）。"""
         text = custom_text_ref.current or ""
-        if not text:
+        cur = max(0, min(custom_cursor_ref.current, len(text)))
+        if cur <= 0:
             return
-        i = len(text)
+        i = cur
         while i > 0 and text[i - 1].isspace():
             i -= 1
         while i > 0 and not text[i - 1].isspace():
             i -= 1
-        new_text = text[:i]
-        custom_text_ref.current = new_text
-        set_custom_text(new_text)
-        set_custom_editor_error("")
-        set_custom_input_rev(custom_input_rev + 1)
+        _sync_custom(text[:i] + text[cur:], i)
+
+    def _insert_custom_newline() -> None:
+        """Shift+Enter：插入换行（多行输入）。"""
+        _insert_custom_text("\n")
 
     def _open_custom_editor() -> None:
         """Ctrl+G：用外部编辑器（``EDITOR``，默认 vim）编辑自定义答案。
 
-        编辑器返回文本后回填到输入行（仍保持输入模式，Enter 确认）；
+        编辑器返回文本后回填到输入区（仍保持输入模式，Enter 确认）；
         取消/失败（None）保持原文本并显示错误提示。
 
-        ★ 2026-10-22（用户需求：删除 timeout 参数，改成「不操作界面一分钟
-        后才算超时」）：外部编辑器独占终端，弹窗在此期间收不到任何按键——
-        把 ``us.typing`` 置 True 让工具轮询暂停空闲计时，返回后（finally）
-        复位并把编辑耗时补回倒计时，避免长时间编辑被 1 分钟空闲超时打断。
+        ★ 2026-10-23：输入模式本身已置 ``us.typing=True`` 暂停超时；编辑器
+        运行期间保持该标志，返回后仅在仍处于输入模式时维持暂停。
         """
         if us is None or not custom_editing_ref.current:
             return
@@ -1906,30 +2487,26 @@ def UserSelectPopup(props) -> object:
             edited = _run_external_editor(before)
         finally:
             if us is not None:
-                us.typing = False
+                us.typing = bool(custom_editing_ref.current)
         if edited is None:
             set_custom_editor_error("编辑器不可用，已保留原文本")
             return
-        raw = str(edited).replace("\r\n", "\n").replace("\r", "\n")
-        custom_text_ref.current = raw
-        set_custom_text(raw)
-        set_custom_editor_error("")
-        set_custom_input_rev(custom_input_rev + 1)
+        raw = _normalize_multiline(edited)
+        _sync_custom(raw, len(raw))
 
-    def _submit_custom(text: str) -> None:
-        """Enter 提交自由输入答案（空文本不提交，保持输入模式）。
+    def _submit_custom(*_args) -> None:
+        """Enter 提交自由输入答案（空文本提示并保持输入模式）。
 
-        ★ 2026-10-21：提交使用 ``custom_text_ref`` 的**原始文本**（保留
-        vim 输入的多行换行）；TextInput 的 ``text`` 参数只是单行显示文本
-        （回填后未触发 onChange 时作为兜底）。
+        ★ 2026-10-23：提交使用 ``custom_text_ref`` 的**原始多行文本**；
+        空/纯空白输入不再静默无反应——设置错误提示（主提示行可见），
+        并保持输入模式与暂停计时。
         """
         if us is None or not custom_editing_ref.current:
             return
-        raw = custom_text_ref.current or ""
-        if not raw and text:
-            raw = str(text).replace(_NEWLINE_MARK, "\n")
-        value = raw.replace("\r\n", "\n").replace("\r", "\n").strip()
+        raw = _normalize_multiline(custom_text_ref.current or "")
+        value = raw.strip()
         if not value:
+            set_custom_editor_error("输入不能为空")
             return
         if multi:
             result = _checked_values()
@@ -1943,6 +2520,12 @@ def UserSelectPopup(props) -> object:
         else:
             us.try_set_final("confirmed", result, custom=value)
         _exit_custom()
+        # ★ 2026-10-23（用户需求：再次编辑不能清空原来的内容）：提交后把
+        #   去空白后的答案保留为本 tab 草稿（active=False：切回不自动进入
+        #   编辑区，但再次进入自定义输入时会预填该答案）。
+        us.custom_draft = value
+        us.custom_draft_cursor = len(value)
+        us.custom_active = False
 
     # ── 协议回调（first-write-wins；绑定当前 tab 的 us） ──
     # ★ P1-1（巨型组件拆分）：协议回调（提交/标记回答/自动推进/导航同步）
@@ -1957,14 +2540,20 @@ def UserSelectPopup(props) -> object:
     )
 
     # ── 顶层输入路由（2026-10-21）：自定义输入 Esc 优先于 tab/控件 ──
-    # 父组件 use_input 先于子控件（SelectInput/MultiSelect/TextInput）被
-    # router 调用（前序收集）——输入模式下 Esc 由本 handler 消费（退出
-    # 输入而不是取消问题）；字符/退格/方向键/Enter 放行给 TextInput。
+    # 父组件 use_input 先于子控件（SelectInput/MultiSelect）被 router 调用
+    # （前序收集）——输入模式下所有编辑键由本 handler 消费；Shift+Enter
+    # 插入换行，Enter 提交，Esc 退出输入（不取消问题）。
     use_input(
         lambda ev: _handle_custom_input_event(
             ev, visible=visible, input_mode=custom_editing_ref.current,
             exit_custom=_exit_custom, edit_custom=_open_custom_editor,
             clear_custom=_clear_custom, delete_word=_delete_custom_word,
+            insert_text=_insert_custom_text, backspace=_backspace_custom,
+            delete_forward=_delete_forward_custom,
+            move_left=_move_custom_left, move_right=_move_custom_right,
+            move_home=_move_custom_home, move_end=_move_custom_end,
+            move_up=_move_custom_up, move_down=_move_custom_down,
+            insert_newline=_insert_custom_newline, submit=_submit_custom,
         ),
         visible,
     )
@@ -2000,13 +2589,14 @@ def UserSelectPopup(props) -> object:
     #   收敛到模块级 ``_handle_tab_event``（与 ``_submit_all`` /
     #   ``_back_to_questions``）。
     # ★ 2026-10-21：输入模式下 ←/→ 放行给 TextInput；Tab 切换问题前先退出
-    #   输入（清空未提交文本 + 恢复自动超时）——避免输入内容串题。
+    #   输入（**保留草稿** + 恢复自动超时）——切回该 tab 自动恢复编辑区。
     use_input(
         lambda ev: _handle_tab_event(
             ev, visible=visible, is_submit=is_submit, multi_mode=multi_mode,
             tab_count=tab_count, active_ref=active_ref, set_active=set_active,
             states=states, model=model,
             input_mode=custom_editing_ref.current, exit_custom=_exit_custom,
+            suspend_custom=_suspend_custom,
             submit_scroll_ref=submit_scroll_ref,
             set_submit_scroll=set_submit_scroll,
             submit_rows_limit=_submit_rows_limit(),
@@ -2074,6 +2664,17 @@ def UserSelectPopup(props) -> object:
             ),
         )
         sel_desc_full_rows = len(sel_desc_rows_text)
+    elif (
+        not custom_editing_ref.current
+        and us is not None
+        and str(getattr(us, "custom_draft", "") or "").strip()
+    ):
+        # ★ 2026-10-23（用户需求：没输入时也显示已输入内容）：选中自定义行
+        #   时，草稿说明按原文多行展开——其行数同样参与高度预算。
+        sel_desc_full_rows = len(_wrap_description(
+            str(getattr(us, "custom_draft", "") or ""),
+            max(1, opt_w - _option_indent(_num_width(total_items), multi)),
+        ))
 
     # 主/次两行提示（先算：决定可见项行预算）
     hint_primary, hint_secondary = _build_hints(
@@ -2100,20 +2701,11 @@ def UserSelectPopup(props) -> object:
     # ── 选项控件（SelectInput/MultiSelect 标准控件） ──
     # done（已提交终态）：只读结果行；answered（可重答）与未回答：渲染控件。
     if done:
-        # 已提交 tab：只读结果行（绿色），不渲染交互控件
-        result_txt = "、".join(
-            str(x).replace("\r\n", "\n").replace("\r", "\n").replace("\n", _NEWLINE_MARK)
-            for x in (getattr(us, "result", None) or [])
-        )
-        if not result_txt:
-            result_txt = "（无）"
-        rows.append(h(TEXT, {
-            "children": _truncate_width(f"  \u2192 {result_txt}", width_i),
-            "style": _S_DONE_RESULT,
-            "textWrap": "truncate-end",
-            "height": 1,
-            "key": "us-done-result",
-        }))
+        # 已提交 tab：只读结果行（绿色，按原文多行显示），不渲染交互控件
+        rows.extend(_result_rows(
+            getattr(us, "result", None) or [], width_i,
+            "us-done-result", _S_DONE_RESULT,
+        ))
     else:
         # ★ 2026-10-23：选项对象 → 控件项（value 用 label，说明不参与选择）。
         items = [
@@ -2134,12 +2726,29 @@ def UserSelectPopup(props) -> object:
         #   ≤ 2 行（选项行 + 折叠说明行），选中项 = 1 + 说明展开行数。
         #   先按「选中项占满可用高度」求说明行上限，再据此反推可容纳的
         #   项数（limit），保证无论说明多长都不会撑破底部视图。
-        base_fixed_rows = len(header_rows) + (2 if multi_mode else 0) + 2
+        fixed_chrome = len(header_rows) + (2 if multi_mode else 0) + 2
         if hint_secondary:
-            base_fixed_rows += 1
+            fixed_chrome += 1
+        # ★ 2026-10-23（用户需求：输入内容多行完整显示）：编辑区行数不固定
+        #   ——先把「固定 chrome + 至少 1 行选项」之外的剩余高度给编辑区，
+        #   再把实际行数计入固定行数，避免长输入撑破底部视图。
+        editor_rows: list = []
         if custom_editing_ref.current:
-            base_fixed_rows += 1
-        has_desc = any(_option_description(opt) for opt in options)
+            editor_cap = max(1, _popup_item_rows() - fixed_chrome - 1)
+            editor_rows = _build_custom_editor_rows(
+                custom_text, custom_cursor, width_i, max_rows=editor_cap,
+            )
+        base_fixed_rows = fixed_chrome + len(editor_rows)
+        # ★ 2026-10-23（用户需求：没输入时也显示已输入内容）：非编辑模式下
+        #   自定义行会多一条「草稿说明」——参与列表高度预算（按 2 行/项）。
+        custom_draft_preview = (
+            "" if custom_editing_ref.current
+            else str(getattr(us, "custom_draft", "") or "")
+        )
+        has_desc = (
+            any(_option_description(opt) for opt in options)
+            or bool(custom_draft_preview.strip())
+        )
         other_rows = 2 if has_desc else 1
         base_limit = max(1, _popup_item_rows() - base_fixed_rows)
         sel_desc_cap = max(1, base_limit - 1)
@@ -2189,6 +2798,8 @@ def UserSelectPopup(props) -> object:
                 return _build_custom_row(
                     is_sel, opt_w, total, multi,
                     idx=idx, num_total=total_items,
+                    draft=custom_draft_preview,
+                    max_desc_rows=sel_desc_cap,
                 )
             checked_now = _checked_indices(us, total)
             return _build_regular_row(
@@ -2247,17 +2858,11 @@ def UserSelectPopup(props) -> object:
         #   选项行下方多行展开（`_build_regular_row`），不再额外渲染
         #   列表下方的 `▸` 展开块（避免同一说明重复显示两遍）。
 
-        # ── 自定义输入编辑行（输入模式：选项列表之后、提示行之前） ──
-        if custom_editing_ref.current:
-            try:
-                input_budget = min(_CUSTOM_INPUT_MAX_WIDTH, max(8, int(width) - 8))
-            except (TypeError, ValueError):
-                input_budget = _CUSTOM_INPUT_MAX_WIDTH
-            rows.append(_build_custom_input_row(
-                _single_line_custom(custom_text, input_budget),
-                _on_custom_change, _submit_custom,
-                rev=custom_input_rev,
-            ))
+        # ── 自定义输入编辑区（输入模式：选项列表之后、提示行之前） ──
+        # ★ 2026-10-23（用户需求：输入中显示全部内容 + 光标）：多行编辑区
+        #   由 `_build_custom_editor_rows` 生成，行数已计入上面的高度预算。
+        if custom_editing_ref.current and editor_rows:
+            rows.extend(editor_rows)
 
     # ── 提示行（Claude 风格：列表与提示之间空一行；首行 dim 主操作 +
     #    次行更暗快捷键；窄屏截断） ──

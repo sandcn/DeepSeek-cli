@@ -123,9 +123,18 @@ def test_user_select_summary_matches_live_path() -> None:
     assert format_tool_message_content("user_select", one) == "已选择: 唯一项"
 
     many = json.dumps({"selected": ["a", "b", "c", "d"], "action": "confirmed"})
-    assert (
-        format_tool_message_content("user_select", many)
-        == "已选择 4 项: a, b, c ... 还有 1 项"
+    assert format_tool_message_content("user_select", many) == (
+        "已选择 4 项:\n- a\n- b\n- c\n... 还有 1 项"
+    )
+
+    # ★ 2026-10-23（用户需求：输入完了要显示所有的输入（多行））：
+    #   自定义多行答案保留原始换行逐行显示。
+    custom = json.dumps({
+        "selected": ["第一行\n第二行"], "action": "confirmed",
+        "custom": "第一行\n第二行",
+    })
+    assert format_tool_message_content("user_select", custom) == (
+        "已选择: 第一行\n  第二行"
     )
 
     assert format_tool_message_content(

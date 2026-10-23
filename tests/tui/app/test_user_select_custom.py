@@ -83,6 +83,29 @@ def _mount_popup(states, width: int = 80):
     return model, element, root, press
 
 
+def _collect_styled_text(root) -> list:
+    """收集 fiber 树中的普通 children 与 styled runs 文本（多行编辑区断言）。"""
+    out: list = []
+    stack = [root]
+    while stack:
+        fiber = stack.pop()
+        while fiber is not None:
+            props = fiber.props if isinstance(fiber.props, dict) else {}
+            child = props.get("children")
+            if isinstance(child, str) and child.strip():
+                out.append(child)
+            styled = props.get("styled")
+            if isinstance(styled, list):
+                for run in styled:
+                    text = getattr(run, "text", "")
+                    if isinstance(text, str) and text.strip():
+                        out.append(text)
+            if fiber.child is not None:
+                stack.append(fiber.child)
+            fiber = fiber.sibling
+    return out
+
+
 def _norm_options(options) -> list:
     """测试便捷：字符串 → ``{label}`` 对象（``options`` 严格只接受对象）。"""
     return [
@@ -372,9 +395,9 @@ def test_single_select_custom_input_and_submit() -> None:
     assert st.selected == 2
 
     assert press("enter") is True
-    # ★ 2026-10-22：进入输入模式不再暂停计时（每次按键重置空闲倒计时）。
-    assert st.typing is False
-    assert _find_fiber(root, "TextInput") is not None
+    # ★ 2026-10-23（用户需求：输入中定时器不要继续倒计时）：输入模式
+    #   期间暂停空闲计时（typing=True，标题区不显示 ⏱ 倒计时）。
+    assert st.typing is True
 
     assert press("char", "自") is True
     assert press("char", "定义") is True
@@ -385,8 +408,6 @@ def test_single_select_custom_input_and_submit() -> None:
     assert st.result == ["自定义"]
     assert st.custom == "自定义"
     assert st.typing is False
-    # 输入行退出后 TextInput 从树中移除。
-    assert _find_fiber(root, "TextInput") is None
 
 
 def test_escape_exits_custom_input_then_cancels() -> None:
@@ -396,7 +417,7 @@ def test_escape_exits_custom_input_then_cancels() -> None:
     press("arrow_down")
     press("enter")
     press("char", "X")
-    assert st.typing is False  # 正常打字不暂停空闲计时
+    assert st.typing is True  # 输入模式暂停空闲计时
 
     assert press("escape") is True
     assert st.typing is False
@@ -415,12 +436,14 @@ def test_empty_custom_input_is_not_submitted() -> None:
     press("arrow_down")
     press("arrow_down")
     press("enter")
-    assert st.typing is False  # 输入模式（不暂停计时）
+    assert st.typing is True  # 输入模式暂停空闲计时
 
     assert press("enter") is True
     assert st.done is False
-    assert st.typing is False  # 空文本不提交，保持输入模式
+    assert st.typing is True  # 空文本不提交，保持输入模式
     assert st.result == []
+    # ★ 2026-10-23（用户需求：空 Enter 要有反馈）：提示「输入不能为空」。
+    assert any("输入不能为空" in t for t in _collect_styled_text(root))
 
 
 def test_multi_select_custom_appends_checked_values() -> None:
@@ -437,7 +460,7 @@ def test_multi_select_custom_appends_checked_values() -> None:
     assert st.checked == [0]
 
     assert press("enter") is True
-    assert st.typing is False  # 输入模式（不暂停计时）
+    assert st.typing is True  # 输入模式（暂停计时）
     press("char", "Z")
     assert press("enter") is True
 
@@ -453,7 +476,7 @@ def test_multi_question_custom_answer_advances() -> None:
 
     press("arrow_down")  # 自定义行（1 个普通选项）
     press("enter")
-    assert s1.typing is False  # 输入模式（不暂停计时）
+    assert s1.typing is True  # 输入模式（暂停计时）
 
     press("char", "X")
     assert press("enter") is True
@@ -470,7 +493,7 @@ def test_multi_question_custom_answer_advances() -> None:
     assert s2.result == ["B"]
 
 
-def test_tab_switch_exits_custom_input() -> None:
+def test_tab_switch_suspends_custom_input_preserving_draft() -> None:
     s1 = _state("Q1", options=["A"], seq=1)
     s2 = _state("Q2", options=["B"], seq=2)
     model, element, root, press = _mount_popup([s1, s2])
@@ -478,10 +501,13 @@ def test_tab_switch_exits_custom_input() -> None:
     press("arrow_down")
     press("enter")
     press("char", "X")
-    assert s1.typing is False  # 正常打字不暂停空闲计时
+    assert s1.typing is True  # 输入模式暂停空闲计时
 
     assert press("tab") is True
-    assert s1.typing is False
+    # ★ 2026-10-23：切 tab 只挂起，保留草稿并在后台暂停计时。
+    assert s1.typing is True
+    assert s1.custom_active is True
+    assert s1.custom_draft == "X"
     assert s1.done is False
     assert s1.answered is False
 
@@ -499,7 +525,7 @@ def test_arrow_in_input_mode_does_not_switch_tab() -> None:
     press("arrow_down")
     press("enter")
     assert press("arrow_right") is True
-    assert s1.typing is False  # 输入模式（不暂停计时）
+    assert s1.typing is True  # 输入模式（暂停计时）
     assert s1.answered is False
     assert s2.answered is False
 
@@ -678,13 +704,14 @@ def test_ctrl_g_editor_fills_multiline_and_enter_submits(monkeypatch) -> None:
     assert press("ctrl_key", "\x07") is True
     assert calls == ["初始"]
     assert paused_during_editor == [True]
-    assert st.typing is False  # 编辑器返回后恢复空闲计时
+    assert st.typing is True  # 输入模式继续暂停空闲计时
     assert st.done is False
 
-    # 输入行显示单行折叠（⏎），原始文本保留换行。
-    text_input = _find_fiber(root, "TextInput")
-    assert text_input is not None
-    assert text_input.props.get("value") == "第一行\u23ce第二行"
+    # ★ 2026-10-23：多行编辑区按原文逐行显示（不再折叠为 ⏎）。
+    texts = _collect_styled_text(root)
+    assert any("第一行" in t for t in texts)
+    assert any("第二行" in t for t in texts)
+    assert not any("\u23ce" in t for t in texts)
 
     # 再次 Ctrl+G：编辑器应收到原始多行文本（不是折叠显示文本）。
     press("ctrl_key", "\x07")
@@ -714,7 +741,7 @@ def test_ctrl_g_editor_failure_keeps_text_and_shows_error(monkeypatch) -> None:
 
     assert press("ctrl_key", "\x07") is True
     assert paused == [True]  # 编辑器运行期间暂停空闲计时
-    assert st.typing is False  # 失败返回后复位暂停标志
+    assert st.typing is True  # 仍处于输入模式，继续暂停计时
     assert st.done is False
 
     texts = _collect_texts(root)
@@ -756,7 +783,7 @@ def test_ctrl_g_multiline_multi_question_only_current(monkeypatch) -> None:
 
     press("arrow_down")  # 自定义行（1 个普通选项）
     press("enter")
-    assert s1.typing is False  # 输入模式（不暂停计时）
+    assert s1.typing is True  # 输入模式（暂停计时）
 
     press("ctrl_key", "\x07")
     press("enter")
@@ -782,7 +809,7 @@ def test_ctrl_g_preserves_multi_select_checked(monkeypatch) -> None:
     press("arrow_down")
     press("arrow_down")
     press("enter")
-    assert st.typing is False  # 输入模式（不暂停计时）
+    assert st.typing is True  # 输入模式（暂停计时）
 
     press("ctrl_key", "\x07")
     assert press("enter") is True
@@ -810,12 +837,240 @@ def test_ctrl_g_hint_and_done_result_render_newline_mark(monkeypatch) -> None:
     press("enter")
     assert st.done is True
 
-    # 已提交终态只读行折叠显示换行。
+    # ★ 2026-10-23（用户需求：输入完了要显示所有的输入（多行））：
+    #   已提交终态按原文逐行显示（不再折叠为 ⏎）。
     monkeypatch.setattr(
         us_mod, "_run_external_editor", lambda text: text,
     )
     done_text = _plain(
         h(UserSelectPopup, {"model": model, "width": 80})
     )
-    assert "A\u23ceB" in done_text
+    assert "A\u23ceB" not in done_text
+    assert any(line.rstrip().endswith("A") for line in done_text.splitlines())
+    assert any(line.strip().startswith("B") for line in done_text.splitlines())
 
+
+
+# ══════════════════════════════════════════════════════════
+# 2026-10-23 用户需求：空输入光标 / Shift+Enter 多行 / 输入中暂停计时
+# ══════════════════════════════════════════════════════════
+
+
+def test_text_input_empty_value_renders_cursor_block() -> None:
+    """★ 空输入框也必须显示光标块（修复前直接返回 placeholder）。"""
+    from src.tui.ink.widgets.interactive import TextInput
+
+    raw = renderToString(
+        h(TextInput, {"value": "", "placeholder": "输入自定义答案", "focus": True}),
+        {"columns": 40},
+    )
+    assert "\x1b[48;5;6m" in raw
+    assert "输入自定义答案" in raw
+
+    # 未聚焦时不显示光标（保持原有语义）。
+    raw_off = renderToString(
+        h(TextInput, {"value": "", "placeholder": "输入自定义答案", "focus": False}),
+        {"columns": 40},
+    )
+    assert "\x1b[48;5;6m" not in raw_off
+
+
+def test_shift_enter_inserts_newline_and_enter_submits() -> None:
+    """★ Shift+Enter 换行、Enter 提交，提交结果保留原始换行。"""
+    st = _state()
+    model, element, root, press = _mount_popup([st])
+    press("arrow_down")
+    press("arrow_down")
+    press("enter")
+
+    assert press("char", "A") is True
+    assert press("enter", "", 2) is True  # Shift+Enter
+    assert press("char", "B") is True
+    assert st.done is False
+
+    texts = _collect_styled_text(root)
+    assert any("A" in t for t in texts)
+    assert any("B" in t for t in texts)
+    assert not any("\u23ce" in t for t in texts)
+
+    assert press("enter") is True
+    assert st.done is True
+    assert st.result == ["A\nB"]
+    assert st.custom == "A\nB"
+    assert st.typing is False
+
+
+def test_switch_tab_preserves_custom_draft_and_resumes() -> None:
+    """★ 并发 tab：切走保留草稿，切回自动恢复编辑区与内容。"""
+    s1 = _state("Q1", options=["A"], seq=1)
+    s2 = _state("Q2", options=["B"], seq=2)
+    model, element, root, press = _mount_popup([s1, s2])
+
+    press("arrow_down")  # 自定义行（1 个普通选项）
+    press("enter")
+    for ch in "ABC":
+        press("char", ch)
+    assert s1.custom_draft == "ABC"
+
+    assert press("tab") is True  # 切到 Q2
+    assert s1.custom_draft == "ABC"
+    assert s1.custom_active is True
+    assert s1.typing is True  # 后台草稿暂停计时
+
+    assert press("tab", "", 2) is True  # Shift+Tab 切回 Q1
+    assert s1.typing is True
+    texts = _collect_styled_text(root)
+    assert any("ABC" in t for t in texts)
+
+    press("char", "D")
+    assert press("enter") is True
+    assert s1.result == ["ABCD"]
+    assert s1.custom == "ABCD"
+    assert s1.custom_draft == "ABCD"
+
+
+def test_reenter_custom_restores_draft_after_escape() -> None:
+    """★ Esc 退出后再进入自定义输入，恢复原草稿而不是清空。"""
+    st = _state()
+    model, element, root, press = _mount_popup([st])
+    press("arrow_down")
+    press("arrow_down")
+    press("enter")
+    press("char", "X")
+    press("char", "Y")
+    assert press("escape") is True
+    assert st.custom_active is False
+    assert st.custom_draft == "XY"
+
+    assert press("enter") is True  # 重新进入自定义输入
+    texts = _collect_styled_text(root)
+    assert any("XY" in t for t in texts)
+    assert press("enter") is True
+    assert st.result == ["XY"]
+
+
+def test_custom_draft_rendered_as_description_when_not_editing() -> None:
+    """★ 没在输入模式时，自定义草稿按选项说明样式显示。"""
+    st = _state("Q", options=["A", "B"])
+    st.custom_draft = "已输入草稿"
+    st.custom_active = False
+    model = SimpleNamespace(
+        user_selects=[st], user_select=st, bottom_view="user_select",
+    )
+    text = _plain(h(UserSelectPopup, {"model": model, "width": 80}))
+    assert "已输入草稿" in text
+
+    # 选中自定义行时多行展开；未选中时折叠单行。
+    st2 = _state("Q", options=["A", "B"])
+    st2.custom_draft = "第一行\n第二行"
+    st2.custom_active = False
+    st2.selected = 2
+    model2 = SimpleNamespace(
+        user_selects=[st2], user_select=st2, bottom_view="user_select",
+    )
+    text2 = _plain(h(UserSelectPopup, {"model": model2, "width": 80}))
+    assert "第一行" in text2
+    assert "第二行" in text2
+
+    st3 = _state("Q", options=["A", "B"])
+    st3.custom_draft = "第一行\n第二行"
+    st3.custom_active = False
+    st3.selected = 0
+    model3 = SimpleNamespace(
+        user_selects=[st3], user_select=st3, bottom_view="user_select",
+    )
+    text3 = _plain(h(UserSelectPopup, {"model": model3, "width": 80}))
+    assert "第一行 第二行" in text3
+
+
+def test_custom_draft_description_appears_after_escape() -> None:
+    """★ 按 Esc 退出编辑后，草稿以说明行显示（不丢失）。"""
+    st = _state()
+    model, element, root, press = _mount_popup([st])
+    press("arrow_down")
+    press("arrow_down")
+    press("enter")
+    for ch in "ABC":
+        press("char", ch)
+    assert press("escape") is True
+    texts = _collect_texts(root)
+    assert any("ABC" in t for t in texts)
+
+
+def test_ctrl_o_inserts_newline_fallback() -> None:
+    """★ 传统终端（mintty/Cygwin）不区分 Shift+Enter 时，Ctrl+O 换行。"""
+    st = _state()
+    model, element, root, press = _mount_popup([st])
+    press("arrow_down")
+    press("arrow_down")
+    press("enter")
+
+    assert press("char", "A") is True
+    assert press("ctrl_key", "\x0f") is True  # Ctrl+O
+    assert press("char", "B") is True
+    assert st.done is False
+    assert press("enter") is True
+    assert st.result == ["A\nB"]
+    assert st.custom == "A\nB"
+
+
+def test_input_mode_pauses_idle_timeout() -> None:
+    """★ 输入模式期间暂停空闲计时（typing=True，标题不显示倒计时）。"""
+    st = _state(
+        idle_timeout=60.0, deadline=time.monotonic() + 30,
+    )
+    model, element, root, press = _mount_popup([st])
+    press("arrow_down")
+    press("arrow_down")
+    press("enter")
+
+    assert st.typing is True
+    before = st.deadline
+    paused, expired = _poll_deadline(st, 0.0, time.monotonic() + 3600)
+    assert expired is False
+    assert paused > 0
+    assert st.deadline == before
+
+    from src.tui.app.user_select import _build_header
+
+    header_rows = _build_header(st, 0, 1, False, 0, False, 80)
+    header_text = "\n".join(
+        renderToString(row, {"columns": 80}) for row in header_rows
+    )
+    assert "\u23f1" not in header_text
+
+    # 退出输入模式后恢复计时。
+    assert press("escape") is True
+    assert st.typing is False
+
+
+def test_multiline_editor_renders_all_lines() -> None:
+    """★ 多行编辑区逐行显示完整内容（不折叠、不截断）。"""
+    from src.tui.app.user_select import _build_custom_editor_rows
+
+    rows = _build_custom_editor_rows("A\nB\nC", 5, 30, max_rows=10)
+    raw = "\n".join(
+        renderToString(row, {"columns": 30}) for row in rows
+    )
+    plain = strip_ansi(raw)
+    assert "A" in plain
+    assert "B" in plain
+    assert "C" in plain
+    assert "\u23ce" not in plain
+    assert "\x1b[48;5;6m" in raw  # 光标块仍在最后一行
+
+
+def test_submit_page_renders_multiline_answer() -> None:
+    """★ Submit 页的自定义多行答案逐行显示。"""
+    from src.tui.app.user_select import _build_submit_page
+
+    s1 = _state("Q1", options=["A"], seq=1)
+    s2 = _state("Q2", options=["B"], seq=2)
+    s1.mark_answered("confirmed", ["X\nY"], custom="X\nY")
+    rows = _build_submit_page([s1, s2], 80, max_rows=40)
+    text = "\n".join(
+        strip_ansi(renderToString(row, {"columns": 80})) for row in rows
+    )
+    assert "X" in text
+    assert "Y" in text
+    assert "X\u23ceY" not in text
