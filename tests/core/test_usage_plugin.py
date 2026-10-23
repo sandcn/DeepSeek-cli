@@ -89,8 +89,10 @@ def test_removed_commands_absent_from_manifest():
 
 def test_removed_commands_not_declared():
     # 导入命令模块即触发 declare_command_plugin（声明，不注册）。
-    import src.core.commands  # noqa: F401 — 触发内置命令模块导入
-    import src.core.commands.plugins  # noqa: F401
+    import importlib
+
+    importlib.import_module("src.core.commands")
+    importlib.import_module("src.core.commands.plugins")
 
     from src.core.commands.base import declared_command_plugin
 

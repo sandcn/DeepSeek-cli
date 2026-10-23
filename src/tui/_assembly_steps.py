@@ -166,6 +166,30 @@ def _window_blocks_idle(window) -> bool:
     return not (math.isfinite(interval) and interval > 0)
 
 
+def _view_allows_idle_static(model) -> bool:
+    """当前模态视图是否声明「空闲静态」（2026-10-23 全屏视图脏驱动）。
+
+    视图经 ``ViewSpec.idle_static`` 声明（``view_registry._refresh`` 挂到
+    组件对象的 ``_ink_idle_static``）。未声明/未知视图返回 False（保守：
+    打开期间每帧重建，避免内容冻结）。
+    """
+    try:
+        from src.tui.app.app import BOTTOM_VIEWS, FULLSCREEN_VIEWS
+
+        fullscreen_id = getattr(model, "fullscreen", "") or ""
+        if fullscreen_id:
+            view = FULLSCREEN_VIEWS.get(fullscreen_id)
+            return bool(getattr(view, "_ink_idle_static", False))
+        bottom_id = getattr(model, "bottom_view", "") or ""
+        if bottom_id:
+            entry = BOTTOM_VIEWS.get(bottom_id)
+            view = entry[0] if isinstance(entry, tuple) else entry
+            return bool(getattr(view, "_ink_idle_static", False))
+    except Exception:
+        return False
+    return True
+
+
 def _make_idle_frame_predicate(model, session):
     """构造「空闲帧复用」预测函数（保守判定，2026-10-07 性能优化）。
 
@@ -183,7 +207,12 @@ def _make_idle_frame_predicate(model, session):
             if getattr(model, "parse_line", None) is not None:
                 return False
             if getattr(model, "fullscreen", "") or getattr(model, "bottom_view", ""):
-                return False
+                # ★ 2026-10-23（全屏视图脏驱动）：声明 idle_static 的视图
+                #   （内容只依赖 model/props、无时间驱动）允许空闲复用——
+                #   打开期间不再每帧全量重建。TraceView 等实时视图未声明，
+                #   保持每帧重建（保守）。
+                if not _view_allows_idle_static(model):
+                    return False
             if getattr(model, "history_search", None) is not None:
                 return False
             if getattr(model, "user_selects", None):

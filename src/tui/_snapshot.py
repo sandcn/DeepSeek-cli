@@ -75,7 +75,12 @@ def _get_snapshot():
     if _TOKEN_SPEED_SNAPSHOT is None:
         try:
             # 仅探测依赖可用性；实际读取由 ``_build_snapshot`` 执行（含异常兜底）。
-            from ..core.stats import get_token_speed_snapshot  # noqa: F401
+            # ★ 2026-10-23（lint 卫生）：副作用导入用 importlib 显式表达——
+            #   pyflakes（ruff 缺失时的回退检查器）不识别 ``# noqa: F401``，
+            #   原 ``from ..core.stats import ...  # noqa: F401`` 会报未使用导入。
+            import importlib
+
+            importlib.import_module("src.core.stats")
             _TOKEN_SPEED_SNAPSHOT = _build_snapshot
         except Exception:
             _logger.debug("token 速度快照惰性加载失败，标记不可用", exc_info=True)

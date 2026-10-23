@@ -308,6 +308,14 @@ class Fiber:
     #: 每帧复位、``_measure`` 命中时置位；``components._find_committed_chat``
     #: 据此 O(1) 判定是否需 DFS（无 StaticLines 的树零 DFS）。
     _committed_chat_present: bool = False
+    #: 本帧布局深度（``layout_tree`` 入口迭代计算；``_measure`` 读取）。
+    _depth: int = 0
+    #: 深度超限（``layout.MAX_TREE_DEPTH``）标记——``_measure`` 直接返回零盒
+    #: 并且不递归子节点；``_paint`` 绘制可见占位。
+    _depth_overflow: bool = False
+    #: 最近一次 paint 异常消息（``components._paint_node`` 写入；绘制阶段
+    #: 异常时保留可观测信息，供占位/日志使用）。None=无异常。
+    _paint_error: str | None = None
     #: 组件树中是否存在 ``position="absolute"`` 节点——``layout_tree`` 每帧
     #: 复位、``_measure`` 容器分支检测到 absolute 子节点时置位；无绝对定位
     #: 的树跳过第二遍绝对定位遍历。

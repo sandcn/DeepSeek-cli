@@ -37,6 +37,16 @@ class ViewSpec:
     component: Any  # 可调用组件 或 点分引用字符串
     key_mode: str = ""
     description: str = ""
+    #: 视图内容是否「空闲静态」（2026-10-23 全屏视图脏驱动）：
+    #: True = 内容只依赖 model/props、无每帧时间驱动（time.monotonic /
+    #: useAnimation / refresh_interval）——空闲帧可安全复用上一帧；
+    #: False（默认/未知）= 保守处理，打开期间每帧重建。
+    #: 声明为 True 的视图若后续引入时间驱动渲染，必须改回 False。
+    idle_static: bool = False
+    #: 定时刷新间隔（秒，2026-10-23）：视图内容有时间驱动（实时耗时/计时）
+    #: 但只需低频刷新时声明——空闲复用期间到期强制重建一帧。
+    #: None = 无定时刷新（纯静态，依赖 model 变化置脏）。
+    refresh_interval: float | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -82,7 +92,8 @@ _KEY_FUNCS: Dict[str, Callable[[str], Callable[[Any], str]]] = {
 #: 内置视图声明
 _BUILTIN_SPECS: tuple = (
     ViewSpec("trace", "fullscreen", "src.tui.app.trace_view.TraceView",
-             description="轨迹视图（DSH 风格台账 + 检查器）"),
+             description="轨迹视图（DSH 风格台账 + 检查器）",
+             idle_static=True, refresh_interval=1.0),
     ViewSpec("trace_tools", "fullscreen", "src.tui.app.trace_tools_view.TraceToolsView",
              description="轨迹工具列表详情视图"),
     ViewSpec("config", "fullscreen", "src.tui.app.config_view.ConfigView",
@@ -184,6 +195,19 @@ def _refresh() -> None:
             component = _resolve_component(spec.component)
         except Exception:
             continue
+        # ★ 2026-10-23（全屏视图脏驱动）：把「空闲静态」声明挂到组件对象上
+        #   （``_make_idle_frame_predicate`` 读取）。内置视图默认静态
+        #   （TraceView 除外——实时耗时/进度每帧变化）；扩展/覆盖视图默认
+        #   保守（未声明即每帧重建）。声明为静态的视图若后续引入时间驱动
+        #   渲染，必须显式 ``idle_static=False``。
+        static = spec.idle_static
+        if not static and spec.id in _builtin_specs and spec.id != "trace":
+            static = True
+        try:
+            setattr(component, "_ink_idle_static", static)
+            setattr(component, "_ink_refresh_interval", spec.refresh_interval)
+        except Exception:
+            pass
         if spec.kind == "fullscreen":
             fullscreen[spec.id] = component
         elif spec.kind == "bottom":

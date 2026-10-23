@@ -23,13 +23,12 @@ from typing import Any, TypeVar
 
 __all__: list[str] = ["ConfigBase", "TuiConfig", "RENDER_HZ", "RENDER_INTERVAL_SEC"]
 
-#: 渲染线程帧率（Hz）——恒定 60Hz，唯一真源且**不可改变**（用户需求：
-#: 「render 线程跟 input 处理改成 60hz，不能降减少和降级」）。所有帧率
-#: 相关参数（``render_interval`` / ``drain_lock_timeout`` /
-#: ``bottom_redraw_interval`` / ``spinner_tick_hz``）均由此推导，禁止各模块
-#: 另写 ``60`` / ``1/60`` 魔数。
+#: 渲染线程默认帧率（Hz）= 60。★ 2026-10-23：帧率可通过
+#: ``TuiConfig(render_interval=...)`` / ``render(maxFps=...)`` 显式配置，
+#: 默认仍为 60Hz；本常量是默认值真源，禁止各模块另写 ``60`` /
+#: ``1/60`` 魔数。``spinner_tick_hz`` 等派生参数默认对齐该值。
 RENDER_HZ: float = 60.0
-#: 渲染线程帧间隔（秒）= ``1 / RENDER_HZ``。
+#: 默认渲染帧间隔（秒）= ``1 / RENDER_HZ``。
 RENDER_INTERVAL_SEC: float = 1.0 / RENDER_HZ
 
 # ★ P3（review 2026-08-22）：类级 TypeVar 收窄 defaults()/with_overrides()
@@ -68,13 +67,20 @@ class TuiConfig(ConfigBase):
     """
 
     # ── 渲染引擎参数 ──────────────────────────────────
-    #: 渲染线程帧间隔（秒）——恒定 ``1/60``（60Hz），**不可改变**：任何构造/
-    #: 覆盖路径都会被 ``__post_init__`` 强制回真源值。
+    #: 渲染线程帧间隔（秒）——默认 60Hz。★ 2026-10-23：支持显式配置
+    #: （``render(maxFps=...)`` / ``TuiConfig(render_interval=...)``），
+    #: 默认值不变；``__post_init__`` 只做合法性校验。
     render_interval: float = RENDER_INTERVAL_SEC
     drain_lock_timeout: float = RENDER_INTERVAL_SEC  # drain 锁超时（秒），与 render_interval 对齐
     cmd_queue_maxsize: int = 10000          # 命令队列最大容量
     consecutive_full_threshold: int = 10    # 连续满队列告警阈值
     bottom_redraw_interval: float = RENDER_INTERVAL_SEC  # 底部栏重绘间隔（秒），对应 60Hz
+
+    #: 空闲自适应降频（2026-10-23，默认关闭）：开启后宿主静态预测为真时
+    #: 渲染循环按 ``idle_render_interval`` 降频（仍保持输入轮询与命令处理）。
+    idle_reduce_rate: bool = False
+    #: 空闲降频后的帧间隔（秒，默认 10Hz）。
+    idle_render_interval: float = 0.1
 
     # ── 动画参数 ──────────────────────────────────────
     breath_cycle_len: int = 12              # 呼吸周期长度（帧数）
@@ -140,21 +146,32 @@ class TuiConfig(ConfigBase):
     mouse: bool = True
 
     def __post_init__(self) -> None:
-        """强制渲染帧率恒定 60Hz——帧率不可被任何构造/覆盖路径降低。
+        """校验渲染帧率配置（2026-10-23 支持显式配置）。
 
-        用户需求（2026-10-20）「render 线程跟 input 处理改成 60hz，不能降减少
-        和降级」：``render_interval`` 是帧率唯一表现，任何试图改动的构造
-        （直接 ``TuiConfig(render_interval=...)`` 或 ``with_overrides``）都被
-        此处强制回真源 ``RENDER_INTERVAL_SEC``。同时把由帧率派生的节流参数
-        （``drain_lock_timeout`` / ``bottom_redraw_interval`` /
-        ``spinner_tick_hz``）一并强制回 60Hz 真源——堵死任何通过配置单独降低
-        渲染/输入/动画/解析刷新频率的降级路径。
+        历史实现（2026-10-20 用户需求）强制 ``render_interval`` 恒为 60Hz。
+        2026-10-23 按「修复所有问题」要求改为**可配置**：
+          - 默认值仍为 60Hz（不改变现网行为）；
+          - ``render(maxFps=...)`` 经 ``TuiConfig(render_interval=1/maxFps)``
+            生效；
+          - 非法值（<=0 / 非有限）回退默认 60Hz；
+          - 派生节流参数（``drain_lock_timeout`` / ``bottom_redraw_interval`` /
+            ``spinner_tick_hz``）保持默认，不再强制覆盖用户显式配置。
         """
-        if self.render_interval != RENDER_INTERVAL_SEC:
-            object.__setattr__(self, "render_interval", RENDER_INTERVAL_SEC)
-        if self.drain_lock_timeout != RENDER_INTERVAL_SEC:
-            object.__setattr__(self, "drain_lock_timeout", RENDER_INTERVAL_SEC)
-        if self.bottom_redraw_interval != RENDER_INTERVAL_SEC:
-            object.__setattr__(self, "bottom_redraw_interval", RENDER_INTERVAL_SEC)
-        if self.spinner_tick_hz != RENDER_HZ:
-            object.__setattr__(self, "spinner_tick_hz", RENDER_HZ)
+        import math as _math
+
+        try:
+            interval = float(self.render_interval)
+        except (TypeError, ValueError, OverflowError):
+            interval = RENDER_INTERVAL_SEC
+        if not (_math.isfinite(interval) and interval > 0):
+            interval = RENDER_INTERVAL_SEC
+        if interval != self.render_interval:
+            object.__setattr__(self, "render_interval", interval)
+        try:
+            idle_interval = float(self.idle_render_interval)
+        except (TypeError, ValueError, OverflowError):
+            idle_interval = 0.1
+        if not (_math.isfinite(idle_interval) and idle_interval > 0):
+            idle_interval = 0.1
+        if idle_interval != self.idle_render_interval:
+            object.__setattr__(self, "idle_render_interval", idle_interval)

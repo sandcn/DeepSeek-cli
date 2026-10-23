@@ -139,6 +139,11 @@ class InkRenderer(_RendererContentMixin):
         #   写入按 ``max(0, _buf_h - n)`` 初始化（底部锚定时 = 文档起始物理
         #   行），``reset(full=True)`` 清屏路径重置为 0。
         self._painted_top: int = 0
+        # ★ 2026-10-23（空闲不写终端）：最近一次 place_cursor 的
+        #   ``(target_row, col)``。帧内容未变（``render`` 无写入）且光标目标
+        #   相同 → 跳过 ``\r``/cursor 移动 + flush（原实现每帧至少一次 write
+        #   + flush，60Hz 空闲下持续产生无效终端 IO）。
+        self._placed_cursor: tuple[int, int] | None = None
         # ★ 物理缓冲行数（用户需求「除 resize 外均增量」）：
         #   - ``_write_full``（首帧/reset(full=True) 后） = doc_h（无末尾空行，
         #     最后一行不写 \n）；★ 无末尾空行模型（2026-08-15）；
@@ -524,11 +529,17 @@ class InkRenderer(_RendererContentMixin):
         把文档末尾的 live 行（状态栏/输入区/时间线/边框）当作新增内容反复
         写入输出历史，且真正新增的内容行（插入在文档中部）大量漏记。
         """
+        prev_before = self._prev
         try:
             self._render_frame_impl(frame)
         finally:
             self._sync_start_row_anchor(frame.height)
             self._emit_content_lines(frame)
+            # ★ 2026-10-23（空闲不写终端）：本帧有实际写入（_prev 被替换为新
+            #   帧对象）时失效 place_cursor 缓存；无变化帧（_prev 保持原对象）
+            #   保留缓存，使下一次 place_cursor 可跳过重复写入。
+            if self._prev is not prev_before:
+                self._placed_cursor = None
 
     def _render_frame_impl(self, frame: Frame) -> None:
         """渲染实现（组件树 diff 写入终端；输出历史回调由 ``render`` 统一收口）。
@@ -1523,6 +1534,11 @@ class InkRenderer(_RendererContentMixin):
         if offset < 0 and self._buf_h > 0:
             target = max(1, min(target, self._buf_h))
         target = self._clamp(target)
+        # ★ 2026-10-23（空闲不写终端）：目标位置与上次相同且其后没有帧写入
+        #   （render() 已失效缓存）→ 直接返回，不写 \r/flush。
+        if self._placed_cursor == (target, col):
+            self._cursor_row = target
+            return
         current_row = self._cursor_row
         n_up = current_row - target
         if n_up > 0:
@@ -1534,6 +1550,7 @@ class InkRenderer(_RendererContentMixin):
             self._stream.write(cursor_forward(col - 1))
         self._stream.flush()
         self._cursor_row = target
+        self._placed_cursor = (target, col)
 
     def set_line_callback(self, callback) -> None:
         """设置新增行回调（输出历史跟踪）。"""

@@ -20,7 +20,6 @@ from .fiber import (
     Fiber,
     TAG_ROOT,
     TAG_FUNCTION,
-    StateHook,
     EffectHook,
     InputHook,
     PasteHook,
@@ -284,7 +283,7 @@ class Reconciler:
                 #   （useFocus 渲染期注册）。
                 _hooks._reset_focus_ids()
                 # 调和 root 的子元素
-                self._reconcile_children(root_fiber, [element])
+                self._reconcile_tree(root_fiber, element)
                 # 布局（host 树）
                 _layout.layout_tree(root_fiber, width)
                 # ★ 性能（PERF-25）：合并渲染后置元数据收集——原实现 host ref 填充
@@ -427,8 +426,13 @@ class Reconciler:
                 stack.append(c)
                 c = c.sibling
 
-    def _reconcile_children(self, return_fiber: Fiber, elements) -> None:
+    def _reconcile_children(self, return_fiber: Fiber, elements, out: list) -> None:
         """调和 return_fiber 的子元素列表（按 key/type diff 子 sibling 链）。
+
+        ``out`` 非 None 时**只做匹配**（复用/创建/删除/串链），把
+        ``(fiber, element)`` 追加到 ``out`` 而不调用 ``_begin_work``——供
+        ``_reconcile_tree`` 的迭代工作栈使用（2026-10-23 深嵌套修复）；
+        None 时保持既有递归语义（兼容入口/测试）。
 
         接受 list 或 tuple（只读遍历——不修改 elements；调用方传
         ``element.children`` tuple 时免 list 复制，PERF-24）。
@@ -471,7 +475,7 @@ class Reconciler:
         #   开放块每帧 1000 行 TEXT（key ``chat-{i}-{row}``）场景关键收益：
         #   ``_try_reuse_stable`` 为 O(N) 线性比较，命中原 2 dict + 1 set
         #   分配 + 逐项 dict 查找 + old_list 列表分配。
-        if self._try_reuse_stable(return_fiber, elements):
+        if self._try_reuse_stable(return_fiber, elements, out):
             return
 
         old_list: list[Fiber] = []
@@ -542,13 +546,14 @@ class Reconciler:
                 self._set_props(fiber, _as_props_dict(element.props))
                 self._revive_reused(fiber, return_fiber)
                 fiber.return_ = return_fiber
-                self._begin_work(fiber, element)
+                out.append((fiber, element))
                 consumed.add(id(fiber))
             else:
                 if old is not None:
                     self._mark_deleted(old)
                     consumed.add(id(old))
-                fiber = self._create_and_begin(element, return_fiber)
+                fiber = self._create_fiber(element, return_fiber)
+                out.append((fiber, element))
             # ★ 清除旧 sibling 链——复用 fiber 若保留旧 sibling 指针会形成环
             fiber.sibling = None
             if prev is not None:
@@ -562,10 +567,151 @@ class Reconciler:
                 self._mark_deleted(old)
         return_fiber.child = first
 
+    def _reconcile_tree(self, root_fiber: Fiber, element: Element) -> None:
+        """迭代版调和入口（显式工作栈，替代 ``_begin_work`` 递归链）。
+
+        ★ 2026-10-23（深嵌套修复）：``_begin_work`` 的递归链
+        （``_begin_work → _reconcile_children → _begin_work``）在深层组件树
+        下触发 ``RecursionError``。本方法用显式栈完成同一前序调和：
+          - 工作项 ``(0, fiber, element)``：进入节点（函数组件调用 / host 子项匹配）；
+          - 工作项 ``(1, fiber, None)``：host 退出（聚合 ``_host_only_subtree``）。
+
+        语义与递归实现逐项对齐：hooks push/pop 在组件函数调用前后成对执行；
+        memo 短路保留 child 且不重置 ``_context_dirty``；hook 数减少告警 +
+        截断 + 销毁入队；context provider 值变更清缓存；错误边界 fallback；
+        host 的叶子/children 引用 bailout 快路径。子任务**逆序压栈**保证
+        文档顺序（先子后兄弟）与递归前序一致。
+        """
+        pending: list[tuple[int, Fiber, Element | None]] = []
+        root_out: list[tuple[Fiber, Element]] = []
+        self._reconcile_children(root_fiber, [element], out=root_out)
+        for fiber, el in reversed(root_out):
+            pending.append((0, fiber, el))
+
+        while pending:
+            kind, fiber, item = pending.pop()
+            if kind == 1:
+                # host 退出：子链已完成，聚合「纯 host 子树」标志
+                fiber._host_only_subtree = self._host_only_children(fiber)
+                continue
+            assert item is not None
+            # ★ fallback 标记落位（与 _begin_work 一致）：对所有 fiber 执行
+            if fiber.props.get(_FALLBACK_MARKER):
+                fiber._is_fallback_root = True
+                clean_props = dict(fiber.props)
+                clean_props.pop(_FALLBACK_MARKER, None)
+                fiber.props = clean_props
+
+            if fiber.is_function:
+                fiber.reset_hooks()
+                _hooks._push_current(fiber)
+                memo_skip = False
+                try:
+                    if self._memo_should_skip(fiber, item):
+                        memo_skip = True
+                        rendered = None
+                    else:
+                        fiber._is_boundary = False
+                        if item.children:
+                            call_props = dict(fiber.props)
+                            call_props["children"] = item.children
+                        else:
+                            call_props = fiber.props
+                        if getattr(fiber.type, "_is_forward_ref", False):
+                            rendered = fiber.type(call_props, call_props.get("ref"))
+                        else:
+                            rendered = fiber.type(call_props)
+                        if getattr(fiber.type, "_is_memo", False):
+                            fiber._last_memo_props = dict(fiber.props)
+                            fiber._last_memo_children = item.children
+                except Exception as exc:
+                    if isinstance(exc, _hooks.HookStateError):
+                        raise
+                    if fiber._is_fallback_root:
+                        raise
+                    boundary = self._find_boundary(fiber)
+                    if boundary is None:
+                        raise
+                    self._record_boundary_error(boundary, exc)
+                    rendered = _build_fallback_element(boundary.props, exc)
+                finally:
+                    _hooks._pop_current()
+                if memo_skip:
+                    continue
+                if fiber.hook_index < len(fiber.hooks):
+                    _logger.warning(
+                        "组件 %s 本帧 hook 数减少（%d < %d），违反 Rules of Hooks；"
+                        "丢弃残留 hook（含 effect 清理）",
+                        getattr(fiber.type, "__name__", fiber.type),
+                        fiber.hook_index,
+                        len(fiber.hooks),
+                    )
+                    for stale in fiber.hooks[fiber.hook_index:]:
+                        if isinstance(stale, EffectHook) and stale.destroy is not None:
+                            self._pending_destroys.append((fiber, stale))
+                        elif isinstance(stale, SyncStoreHook) and stale.cleanup is not None:
+                            self._pending_destroys.append((fiber, stale))
+                    del fiber.hooks[fiber.hook_index:]
+                fiber._context_dirty = False
+                if rendered is None:
+                    rendered = Element("text", {"children": ""}, ())
+                elif not isinstance(rendered, Element):
+                    rendered = Element("text", {"children": str(rendered)}, ())
+                child_out: list[tuple[Fiber, Element]] = []
+                child_fiber = self._reconcile_single(
+                    fiber, fiber.child, rendered, out=child_out,
+                )
+                # ★ 迭代化修复：``_reconcile_single`` 只返回匹配结果，父指针
+                #   须由调用方写回（递归实现为 ``fiber.child = ...``）。
+                fiber.child = child_fiber
+                for cf, cel in reversed(child_out):
+                    pending.append((0, cf, cel))
+                continue
+
+            # ── host 分支（与 _begin_work 的 host 逻辑逐行对齐）──
+            children = item.children
+            ftype = fiber.type
+            if not children and fiber.child is None and ftype in _BUILTIN_HOSTS:
+                fiber._host_ref = fiber.props.get("ref")
+                fiber._last_children = children
+                fiber._host_only_subtree = True
+                continue
+            if (
+                children
+                and fiber.child is not None
+                and fiber._last_children is children
+                and fiber._host_only_subtree
+                and ftype in _BUILTIN_HOSTS
+            ):
+                fiber._host_ref = fiber.props.get("ref")
+                continue
+            fiber.contexts.clear()
+            fiber._host_ref = fiber.props.get("ref")
+            if isinstance(ftype, str) and ftype not in _BUILTIN_HOSTS:
+                ctx = _hooks._context_registry.get(ftype)
+                if ctx is not None:
+                    value = fiber.props.get("value", ctx.default)
+                    fiber.contexts[ctx.tag] = value
+                    last = fiber._last_provider_value
+                    if last is _MISSING or not _safe_eq(last, value):
+                        fiber._last_provider_value = value
+                        _hooks._bump_context_version()
+                        _clear_context_cache_subtree(fiber.child)
+            matched: list[tuple[Fiber, Element]] = []
+            if children:
+                self._reconcile_children(fiber, children, out=matched)
+            elif fiber.child is not None:
+                self._reconcile_children(fiber, [], out=matched)
+            fiber._last_children = children
+            pending.append((1, fiber, None))
+            for cf, cel in reversed(matched):
+                pending.append((0, cf, cel))
+
     def _try_reuse_stable(
         self,
         return_fiber: Fiber,
         elements: list[Element],
+        out: list,
     ) -> bool:
         """append-only 稳定列表快路径：按序复用旧 fiber + 创建尾部新元素。
 
@@ -631,9 +777,10 @@ class Reconciler:
                 self._revive_reused(fiber, return_fiber)
                 fiber.return_ = return_fiber
                 fiber.moved = False  # 稳定列表：位置不变
-                self._begin_work(fiber, el)
+                out.append((fiber, el))
             else:
-                fiber = self._create_and_begin(el, return_fiber)
+                fiber = self._create_fiber(el, return_fiber)
+                out.append((fiber, el))
             fiber.sibling = None
             if prev is not None:
                 prev.sibling = fiber
@@ -648,8 +795,13 @@ class Reconciler:
         return_fiber: Fiber,
         existing: Fiber | None,
         element: Element,
+        out: list,
     ) -> Fiber:
-        """调和单个元素（函数组件渲染输出）。"""
+        """调和单个元素（函数组件渲染输出）。
+
+        ``out`` 非 None 时只做匹配（不 begin），``(fiber, element)`` 追加到
+        ``out``——供迭代工作栈使用。
+        """
         if existing is not None and _is_same_type(existing, element):
             # ★ 性能（PERF-7 + props 引用级缓存）：经 ``_set_props`` 值比较
             #   复用（内容相等保持旧引用 → _measure_cache 命中）。
@@ -657,238 +809,23 @@ class Reconciler:
             self._revive_reused(existing, return_fiber)
             existing.return_ = return_fiber
             existing.sibling = None
-            self._begin_work(existing, element)
+            out.append((existing, element))
             return existing
         if existing is not None:
             self._mark_deleted(existing)
-        return self._create_and_begin(element, return_fiber)
+        fiber = self._create_fiber(element, return_fiber)
+        out.append((fiber, element))
+        return fiber
 
-    def _create_and_begin(self, element: Element, return_fiber: Fiber) -> Fiber:
-        """创建新 fiber 并 begin_work。"""
+    def _create_fiber(self, element: Element, return_fiber: Fiber) -> Fiber:
+        """创建新 fiber（不 begin_work——迭代工作栈/兼容路径共用）。"""
         if callable(element.type):
             tag = TAG_FUNCTION
         else:
             tag = "host"
         # ★ 性能（PERF-7）：直接复用 ``element.props`` 引用（Element frozen
         # 不可变）——免新 fiber 构造时 dict 浅拷贝。
-        fiber = Fiber(tag, element.type, _as_props_dict(element.props), return_=return_fiber)
-        self._begin_work(fiber, element)
-        return fiber
-
-    def _begin_work(self, fiber: Fiber, element: Element) -> None:
-        """开始处理一个 fiber：函数组件调用渲染函数；host 调和子元素。
-
-        函数组件渲染异常处理（方向B 步骤9）：
-          - HookStateError（hook 顺序/类型错误，编程错误）→ 直接 re-raise 传播；
-          - 其他 Exception → 沿 return_ 链查找最近 ``_is_boundary`` fiber：
-              找到 → 记录 ``_boundary_error`` + onError 回调一次 + 本帧渲染 fallback；
-              未找到 → re-raise（保持既有崩溃恢复路径）。
-
-        memo 短路（方向B 步骤10）：props 未变且无待处理 state 更新时跳过
-        组件调用与子树重建（保留 ``fiber.child``），``reset_hooks`` 仍执行
-        保持 hook 一致性。
-
-        context 选择性重渲染评估（方向B 步骤11，保守版）：
-          当前架构每帧全量重建元素树 + reconciler 全树调和，Provider 值
-          变化触发子树重渲染属正常路径；完整「仅重渲染 context 消费者」
-          需引入消费者依赖图，收益低（树规模小、60Hz）风险高——本步仅落地
-          「use_context 逐 fiber 缓存 + provider 值变更清缓存传播」，
-          不做消费者级剪枝（评估结论在代码注释中可追溯）。
-        """
-        # ★ P3（review）：fallback 标记落位到 fiber 私有字段并从组件可见 props
-        #   剥除——修复前 reconciler 用 ``fiber.props.get("_fallback")`` 判断
-        #   「fallback 组件（防递归捕获）」，该键会透传给 fallback 组件且可被
-        #   用户同名 prop 绕过（用户组件自带 ``_fallback`` → 其异常不再被边界
-        #   捕获）。现改为 fiber 私有布尔字段。
-        if fiber.props.get(_FALLBACK_MARKER):
-            fiber._is_fallback_root = True
-            clean_props = dict(fiber.props)
-            clean_props.pop(_FALLBACK_MARKER, None)
-            fiber.props = clean_props
-        if fiber.is_function:
-            fiber.reset_hooks()
-            _hooks._push_current(fiber)
-            memo_skip = False
-            try:
-                if self._memo_should_skip(fiber, element):
-                    memo_skip = True
-                    rendered = None
-                else:
-                    # ★ P3（review）：边界标记每帧重置——ErrorBoundary 组件在
-                    #   本次调用中重新置 True；其它组件复用该字段时不会残留
-                    #   旧边界语义（memo 跳过路径不重置，保留既有标记）。
-                    fiber._is_boundary = False
-                    # ★ 完善 react ink：函数组件 children 注入——React 中 children
-                    #   属于 props 一部分（``props.children``）。本框架元素 children
-                    #   为独立字段（``element.children``），函数组件仅收到 props；
-                    #   元素带 children（``h(Comp, {}, child)`` 变参）时经副本注入
-                    #   ``props["children"]``（不修改 fiber.props，调和比较基准
-                    #   保持 props-only）。元素无 children 时零开销（直接传 props）。
-                    #   既有组件（App/ChatView/TopHeader 等无变参子级）行为不变。
-                    if element.children:
-                        call_props = dict(fiber.props)
-                        call_props["children"] = element.children
-                    else:
-                        call_props = fiber.props
-                    # ★ forwardRef（完善 react ink）：带 ``_is_forward_ref`` 标记
-                    #   的组件改以 ``(props, ref)`` 双参调用（ref 取自
-                    #   ``props.ref``——React 约定；不进入普通 props）。
-                    if getattr(fiber.type, "_is_forward_ref", False):
-                        rendered = fiber.type(call_props, call_props.get("ref"))
-                    else:
-                        rendered = fiber.type(call_props)
-                    if getattr(fiber.type, "_is_memo", False):
-                        fiber._last_memo_props = dict(fiber.props)
-                        fiber._last_memo_children = element.children
-            except Exception as exc:
-                if isinstance(exc, _hooks.HookStateError):
-                    raise  # hook 状态机异常：编程错误，不参与 boundary 捕获
-                # P1-3：fallback 函数组件自身渲染异常——直接传播（递归边界）。
-                #   _build_fallback_element 为 callable fallback 构造独立 fiber
-                #   渲染（fiber 私有 ``_is_fallback_root`` 标记）；若此处再次被
-                #   boundary 捕获会递归重建 fallback（无限循环）→ 传播保持崩溃
-                #   恢复语义。
-                if fiber._is_fallback_root:
-                    raise
-                boundary = self._find_boundary(fiber)
-                if boundary is None:
-                    raise  # 无边界：异常照常传播（崩溃恢复语义保留）
-                # ★ 记录 boundary error + onError 回调一次
-                self._record_boundary_error(boundary, exc)
-                # 本帧该子树渲染 fallback（fallback 自身抛异常 → 直接传播）
-                rendered = _build_fallback_element(boundary.props, exc)
-            finally:
-                _hooks._pop_current()
-            if memo_skip:
-                return  # 保留 fiber.child（不重建子树）
-            # ★ P3（review）：hook 数减少检测（Rules of Hooks）——本帧组件调用
-            #   的 hook 数少于上次（``hook_index < len(fiber.hooks)``）时残留
-            #   hook 仍会被 ``_commit_live`` 遍历执行（EffectHook 的
-            #   destroy/create）→ 记录 warning 使违规可观测（条件性 hook 调用
-            #   是编程错误，不中断渲染保持既有健壮性）。
-            if fiber.hook_index < len(fiber.hooks):
-                _logger.warning(
-                    "组件 %s 本帧 hook 数减少（%d < %d），违反 Rules of Hooks；"
-                    "丢弃残留 hook（含 effect 清理）",
-                    getattr(fiber.type, "__name__", fiber.type),
-                    fiber.hook_index,
-                    len(fiber.hooks),
-                )
-                # ★ P1 修复：旧实现只告警，残留 EffectHook 仍会被
-                #   ``_commit_live`` 遍历执行（条件性 useEffect 在分支关闭后
-                #   继续运行）。这里截断多余 hook，并把需要清理的 effect /
-                #   store 订阅加入 pending_destroys（随后统一销毁）。
-                for stale in fiber.hooks[fiber.hook_index:]:
-                    if isinstance(stale, EffectHook) and stale.destroy is not None:
-                        self._pending_destroys.append((fiber, stale))
-                    elif isinstance(stale, SyncStoreHook) and stale.cleanup is not None:
-                        self._pending_destroys.append((fiber, stale))
-                del fiber.hooks[fiber.hook_index:]
-            # ★ BUG-36（review 方向）：本帧组件已渲染（使用最新 context 值，
-            #   含不消费 context 的 memo 组件）→ 清除 ``_context_dirty`` 标记。
-            #   修复前标记仅由 ``use_context`` 消费时清除——位于 provider 子树内
-            #   但不调用 ``use_context`` 的 memo 组件：Provider 值首次变化后
-            #   ``_context_dirty`` 恒 True → **memo 短路永久失效**（每帧全量重建，
-            #   性能退化，树越大越严重）。本帧渲染完成后清除：下次 Provider 值
-            #   变化时 ``_clear_context_cache_subtree`` 会重新置位（React 语义：
-            #   context 变更强制重渲染消费者，与 memo 无关）。
-            fiber._context_dirty = False
-            if rendered is None:
-                rendered = Element("text", {"children": ""}, ())
-            elif not isinstance(rendered, Element):
-                rendered = Element("text", {"children": str(rendered)}, ())
-            fiber.child = self._reconcile_single(fiber, fiber.child, rendered)
-        else:
-            children = element.children
-            ftype = fiber.type
-            # ★ 性能（PERF-21）：叶子内置 host 快路径——TEXT/SPACER/fragment
-            #   等叶子（内置 host 标签 + 无 children + 无旧子链）永不可能是
-            #   context provider（create_context 生成唯一 ``__ctx_*__`` 标签，
-            #   不属于 ``_BUILTIN_HOSTS``），且无子节点无需调和。跳过
-            #   ``contexts.clear()``（叶子永不写入）/ provider 检查 / 子调和
-            #   ——大组件树每帧数千叶子（1000+ TEXT）省数千次 dict 清空与
-            #   isinstance/注册表检查。仅 ``_host_ref`` 仍须设置（叶子也可
-            #   绑定 useMeasure ref）。
-            # ★ P3-16 说明（review 方向）：叶子快路径不执行
-            #   ``fiber.contexts.clear()``——依赖「内置 host 不可能是 context
-            #   provider」不变量（``_BUILTIN_HOSTS`` 标签无 provider 注册路径，
-            #   create_context 生成唯一 ``__ctx_*__`` 标签，不属于内置集合），
-            #   contexts 永不写入内置 host → 无残留可清（下方常规分支的
-            #   ``fiber.contexts.clear()`` 在叶子快路径被跳过）。若未来允许
-            #   内置 host 成为 provider，须在本快路径补 ``contexts.clear()``。
-            if not children and fiber.child is None and ftype in _BUILTIN_HOSTS:
-                fiber._host_ref = fiber.props.get("ref")
-                fiber._last_children = children
-                fiber._host_only_subtree = True
-                return
-            # ★ 性能（流式帧 bailout）：内置 host 的 children 元组**引用未变**
-            #   且子树仅含 host fiber 时跳过子调和——React bailout 语义：子树
-            #   没有 hook/state（纯 host），元素未变即子树无需更新。
-            #   典型场景：流式开放块的稳定预览行（``OpenBlockLines`` 的
-            #   FRAGMENT 下最多 200 行 TEXT）——use_memo 命中帧返回同一
-            #   children 元组，逐行 ``_set_props`` + ``_begin_work`` 全部省去
-            #   （长段落实测省 ~0.3ms/帧）；memo miss 帧（内容变化）仍正常
-            #   调和。内置 host 标签不可能是 context provider（见下方注释）；
-            #   纯 host 子树无 use_context 消费者 → 跳过不影响 context 语义。
-            if (
-                children
-                and fiber.child is not None
-                and fiber._last_children is children
-                and fiber._host_only_subtree
-                and ftype in _BUILTIN_HOSTS
-            ):
-                fiber._host_ref = fiber.props.get("ref")
-                return
-            # ★ context provider：先重置 contexts（每次渲染不残留旧值），
-            #   再按 host 标签匹配注册的 Context（INK-3）——value 写入
-            #   fiber.contexts（键为 ctx.tag 唯一标签）供子树 use_context
-            #   沿 return_ 链查找。
-            fiber.contexts.clear()
-            # ★ host ref（方向8）：``ref`` prop 绑定（useMeasure 支持）。
-            #   React 语义中 ref 不进入普通 props——本框架经 props 传入
-            #   （``h(BOX, {"ref": my_ref})``），此处存入 fiber 供 layout
-            #   后填充（不参与样式/布局 props 消费）。
-            fiber._host_ref = fiber.props.get("ref")
-            # ★ 性能（方向1）：内置 host 标签（text/box/static/spacer/app/
-            #   fragment）绝不可能是 context provider（create_context 生成
-            #   唯一 ``__ctx_*__`` 标签）——跳过注册表 dict 查找（流式开放
-            #   块每行 TEXT 各省一次 dict miss）。
-            if isinstance(ftype, str) and ftype not in _BUILTIN_HOSTS:
-                ctx = _hooks._context_registry.get(ftype)
-                if ctx is not None:
-                    value = fiber.props.get("value", ctx.default)
-                    fiber.contexts[ctx.tag] = value
-                    # ★ provider 值变更检测（方向B 步骤11，保守版）：
-                    #   与上次记录值比较，变化 → 递增全局版本号 + 清空子树
-                    #   逐 fiber context 缓存（低频遍历）。完整「仅重渲染
-                    #   context 消费者」剪枝评估结论见本方法 docstring——
-                    #   本步仅落地缓存优化 + 清缓存传播，不做消费者级剪枝。
-                    last = fiber._last_provider_value
-                    if last is _MISSING or not _safe_eq(last, value):
-                        fiber._last_provider_value = value
-                        _hooks._bump_context_version()
-                        _clear_context_cache_subtree(fiber.child)
-            if children:
-                # ★ 性能（PERF-24）：不再 ``list(children)`` 复制——children
-                #   为 tuple（Element.children frozen 不变式），``_reconcile_children``
-                #   与 ``_try_reuse_stable`` 均为**只读**遍历（索引/enumerate），
-                #   tuple 原生支持；修复前每帧对 ChatView 等大 children（流式
-                #   开放块 64+ 行 TEXT）复制一次列表（O(n) 分配）。
-                self._reconcile_children(fiber, children)
-            elif fiber.child is not None:
-                # ★ 性能（方向1）：空子元素快路径——叶子/无子节点容器直接
-                #   删除旧子链（修复前无条件 ``_reconcile_children(fiber, [])``
-                #   仍构建空 maps + 遍历旧链，流式开放块每行 TEXT 都走一遍）。
-                #   ★ P3 修复（review 方向）：外层 ``elif fiber.child is not
-                #   None`` 已保证旧子链非 None——删除内层重复 ``if fiber.child
-                #   is not None``（恒真）及过时 PERF-16 注释。
-                self._reconcile_children(fiber, [])
-            # ★ 子调和 bailout 状态维护（见本分支开头的跳过判定）：
-            #   ``_last_children`` 记录本次元素的 children 引用；
-            #   ``_host_only_subtree`` 由调和后的子链聚合（任一函数组件或
-            #   非纯 host 子树 → False）。跳过路径不更新（子树未变）。
-            fiber._last_children = children
-            fiber._host_only_subtree = self._host_only_children(fiber)
+        return Fiber(tag, element.type, _as_props_dict(element.props), return_=return_fiber)
 
     @staticmethod
     def _host_only_children(fiber: Fiber) -> bool:
@@ -998,9 +935,10 @@ class Reconciler:
         if fiber._context_dirty:
             return False
         # 有未处理的 state 更新 → 不能短路（须重渲染应用更新）
-        for hook in fiber.hooks:
-            if isinstance(hook, StateHook) and hook.queue:
-                return False
+        # ★ 2026-10-23：经 ``_hooks.has_pending_state`` 读取（与跨线程 append
+        #   共用同一把锁，避免读到半更新状态）。
+        if _hooks.has_pending_state(fiber):
+            return False
         return True
 
     # ── input router 构建（INK-1） ─────────────────────

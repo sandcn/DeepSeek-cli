@@ -24,6 +24,9 @@ re-export 全部符号（旧导入路径 ``from src.tui.ink.layout import ...``
 
 from __future__ import annotations
 
+import sys
+import threading
+
 from .fiber import Fiber
 from ._layout_sizing import (
     _resolve_length,
@@ -65,6 +68,66 @@ from ._layout_absolute import (
 )
 
 
+#: 历史深度上限（2026-10-23 起布局已迭代化，本常量仅作防御性标记保留；
+#: ``_depth_overflow`` / ``_paint_placeholder`` 默认永不触发）。
+MAX_TREE_DEPTH = 512
+
+#: 递归上限提升锁（多会话并发布局时保证 setrecursionlimit 单调提升）。
+_RECURSION_LOCK = threading.Lock()
+
+
+def _mark_depths(root: Fiber) -> int:
+    """迭代计算 host 树深度并标记 ``_depth_overflow``（O(n)，无递归）。
+
+    与 ``layout_children`` 语义一致（跳过 function 链、展开 fragment），但
+    不构建中间列表——避免为深度统计额外分配 O(容器数) 列表（大组件树每帧
+    可感知）。
+
+    Returns:
+        实际参与布局的最大深度（超限子树不再深入统计）。
+    """
+    max_depth = 0
+    stack: list[tuple[Fiber, int]] = [(root, 0)]
+    while stack:
+        fiber, depth = stack.pop()
+        fiber._depth = depth
+        overflow = depth >= MAX_TREE_DEPTH
+        fiber._depth_overflow = overflow
+        if overflow:
+            continue
+        if depth > max_depth:
+            max_depth = depth
+        child = fiber.child
+        while child is not None:
+            host = child
+            while host is not None and host.is_function:
+                host = host.child
+            if host is not None:
+                if host.is_host and host.type == "fragment":
+                    sub = host.child
+                    while sub is not None:
+                        stack.append((sub, depth + 1))
+                        sub = sub.sibling
+                else:
+                    stack.append((host, depth + 1))
+            child = child.sibling
+    return max_depth
+
+
+def _ensure_recursion_limit(max_depth: int) -> None:
+    """按实测树深提升 Python 递归上限（只升不降，进程级一次）。
+
+    ``_measure`` 仍为递归实现（布局逻辑复杂、迭代化风险高），每层约 3~6 个
+    Python 帧；``_depth_overflow`` 保证深度不超过 ``MAX_TREE_DEPTH``。
+    """
+    needed = max_depth * 6 + 2000
+    if needed <= sys.getrecursionlimit():
+        return
+    with _RECURSION_LOCK:
+        if needed > sys.getrecursionlimit():
+            sys.setrecursionlimit(needed)
+
+
 def layout_tree(root_fiber: Fiber, width: int) -> int:
     """布局整棵 host 树。
 
@@ -72,14 +135,11 @@ def layout_tree(root_fiber: Fiber, width: int) -> int:
       1. ``_measure`` 正常流布局（absolute 子节点不占空间）；
       2. ``_layout_absolute_pass`` 绝对定位元素第二遍定位。
 
-    ★ 性能（PERF-17）：绝对定位第二遍**快速路径**——``_measure`` 整树遍历
-    时若检测到任何 ``position="absolute"`` 节点则置位 root 标志
-    （``_has_absolute_present``）；无 absolute 节点的组件树（绝大多数——
-    App/ChatView 等业务组件不用绝对定位）跳过第二遍整树遍历（省 ~4.6ms/
-    帧，1000+ 节点树）。absolute 节点必为其父容器的直接子节点（``_measure``
-    容器分支的 ``has_abs`` 检测覆盖），故「容器检测到 absolute → 置位」即可
-    捕获树中全部 absolute 节点（display:none 子树不测量、其内 absolute 不可见
-    无需定位，语义一致）。
+    ★ 2026-10-23（深嵌套修复）：布局前迭代计算 host 树深度并标记
+    ``_depth_overflow``（超过 ``MAX_TREE_DEPTH`` 的子树由 ``_measure`` 返回
+    零盒、不再递归）；同时按实测深度提升 Python 递归上限（只升不降，进程级
+    一次），避免深层树在 ``RecursionError`` 处崩溃。真实 UI 深度远小于上限；
+    超限子树在绘制阶段显示可见占位（``components._paint_node``）。
 
     Args:
         root_fiber: 根 fiber（ROOT 或 APP host）。
@@ -89,6 +149,10 @@ def layout_tree(root_fiber: Fiber, width: int) -> int:
         文档总高度（行数）。
     """
     root = _skip_function(root_fiber) or root_fiber
+    # ★ 2026-10-23（布局迭代化）：``_measure`` 已改为生成器 + 显式栈驱动
+    #   （``_drive_task``），不再依赖 Python 递归；因此不再需要每帧 O(n)
+    #   深度标记 / 递归上限提升 / 深度截断。``_depth`` / ``_depth_overflow``
+    #   字段保留为防御性状态（恒为默认值，不参与布局）。
     # ★ 性能（PERF-15）：每帧布局前复位 committed-chat 存在标志——_measure
     #   整树遍历时若遇到 committed-chat host 则置位（供 render_frame 的
     #   _find_committed_chat 快速路径 O(1) 判定；无 committed-chat 的组件树
@@ -112,6 +176,7 @@ __all__ = [
     "layout_tree",
     "layout_children",
     "wrap_text_lines",
+    "MAX_TREE_DEPTH",
     "_measure",
     "_skip_function",
     "_runs_natural_width",

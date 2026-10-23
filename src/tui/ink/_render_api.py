@@ -339,11 +339,31 @@ def render(
     #   状态泄漏（test_react_ink_complete → test_input_metrics 顺序依赖）。
     #   改为独立实例，覆盖只影响本次 render() 会话。
     out_stream = stdout if stdout is not None else stream
+    # ★ 2026-10-23（maxFps 生效）：React Ink 官方「渲染帧率上限」——
+    #   经 ``TuiConfig(render_interval=1/maxFps)`` 注入本会话（默认仍 60Hz）。
+    render_config = None
+    if maxFps is not None:
+        try:
+            fps = float(maxFps)
+        except (TypeError, ValueError, OverflowError):
+            fps = 0.0
+        if fps > 0 and fps != float("inf"):
+            interval = 1.0 / fps
+            from .._config import TuiConfig
+
+            render_config = TuiConfig.defaults().with_overrides(
+                render_interval=interval,
+                drain_lock_timeout=interval,
+                bottom_redraw_interval=interval,
+            )
+        else:
+            _logger.debug("render maxFps=%r 非法（需 >0 有限值），使用默认 60Hz", maxFps)
     session = InkSession(
         model=model,
         build_tree=_build_tree,
         stream=out_stream if out_stream is not None else sys.stdout,
         width_cache=TerminalWidthCache(),
+        config=render_config,
     )
     # 尺寸覆盖（TerminalWidthCache 只读接口——直接写独立缓存字段）
     # ★ P2 review：改用公开入口 ``set_dimensions``——修复前直接写
@@ -379,15 +399,8 @@ def render(
         session.write_terminal_sequence(cursor_shape_sequence(cursorShape))
 
     # ── React Ink render() 扩展 options ──
-    # maxFps：官方语义为「渲染帧率上限」，本框架渲染线程**恒定 60Hz 且不可
-    #   改变**（用户需求 2026-10-20：render 线程跟 input 处理改成 60hz，不能
-    #   降减少和降级）——按官方 API 保留参数签名（兼容调用方），但不再覆盖
-    #   render_interval（``TuiConfig.__post_init__`` 已强制 render_interval 及
-    #   帧率派生节流参数恒为 60Hz 真源，任何路径都无法改变帧率）。
-    if maxFps is not None:
-        _logger.debug(
-            "render maxFps=%r 已忽略：渲染线程恒定 60Hz，帧率不可改变", maxFps,
-        )
+    # maxFps：官方语义为「渲染帧率上限」——2026-10-23 起经 TuiConfig 注入
+    #   本会话（见上方 render_config），默认仍 60Hz。
     # isScreenReaderEnabled：注入屏幕阅读器开关（useIsScreenReaderEnabled）
     # ★ 多会话隔离（P0 架构修复）：写入**本会话** HookContext（修复前写模块
     #   级全局——两个 render() 会话共用，退出还原亦相互覆盖）。

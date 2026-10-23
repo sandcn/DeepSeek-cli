@@ -27,6 +27,7 @@ import logging
 import os
 import select
 import threading
+import time
 from typing import TYPE_CHECKING
 
 from src.core.path_tokens import normalize_dropped_paths
@@ -839,24 +840,28 @@ class InputDispatcher:
     # 事件处理（render 线程调用）
     # ═══════════════════════════════════════════════════════
 
-    def process_events(self) -> None:
-        """处理输入事件（render 线程调用，**单次调用排空全部输入**）。
+    def process_events(self, budget: float | None = None) -> None:
+        """处理输入事件（render 线程调用）。
 
-        ★ 2026-10-23（用户需求：render 线程只有 60Hz 且不能改变；单次调用
-        完成所有工作，像游戏引擎的 game_loop）：移除原「单帧预算」（4096 个
-        输入单元 / 20ms）——一帧内循环 ``read_stdin_once()`` 直到**无可读
-        数据**（包括批量读取后留在 ``InputIO._pending`` 的字节与粘贴内容），
-        本帧输入全部处理完才进入后续阶段。
+        ★ 2026-10-23（输入时间盒）：``budget`` 非 None 时按**时间预算**处理
+        ——每处理一个输入单元后检查耗时，超预算立即返回；剩余字节保留在
+        ``InputIO._pending`` / fd 中，下一帧继续。保证大段粘贴/高速输入不会
+        把单帧拉长到几十~几百 ms（输入处理与布局/绘制共用一个 60Hz 线程，
+        超长帧会直接推迟下一次按键处理）。``budget=None`` 保持旧语义
+        （排空全部输入，兼容测试/独立调用）。
 
-        ``read_stdin_once()`` 每次必然消费至少一个输入单元（pending 字节 /
-        select 到的字节 / Windows 控制台事件），pending 耗尽且 fd 无数据时
-        返回 False —— 循环必然终止，不会空转。大段粘贴会让本帧变长，这是
-        「单帧完成所有工作、不把工作留到下一帧」的既定语义（帧率仍为
-        60Hz 固定节拍，慢帧连续运转，不降频、不丢工作）。
+        顺序与完整性：pending 优先、逐字节消费，跨帧继续不改变按键顺序；
+        粘贴内容按字节流继续解析（解析器状态跨帧保留在 ``_parser``）。
         """
         try:
+            if budget is None:
+                while self.read_stdin_once():
+                    pass
+                return
+            start = time.monotonic()
             while self.read_stdin_once():
-                pass
+                if time.monotonic() - start >= budget:
+                    break
         except Exception:
             _logger.warning("process_events 异常", exc_info=True)
 

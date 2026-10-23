@@ -416,9 +416,13 @@ class Input:
         """单次非阻塞 stdin 读取 + 直接分发（委托 InputDispatcher）。"""
         return self._dispatcher.read_stdin_once()
 
-    def process_events(self) -> None:
-        """处理所有输入事件（委托 InputDispatcher）。"""
-        self._dispatcher.process_events()
+    def process_events(self, budget: float | None = None) -> None:
+        """处理输入事件（委托 InputDispatcher）。
+
+        Args:
+            budget: 单帧处理预算（秒）；None=排空全部输入（兼容旧行为）。
+        """
+        self._dispatcher.process_events(budget=budget)
 
     def _dispatch_key_event(self, event: KeyEvent) -> None:
         """根据 KeyEvent.kind 分发到对应的输入处理器（委托 InputDispatcher）。"""

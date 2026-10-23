@@ -16,6 +16,7 @@ import platform
 import re
 import subprocess
 import sys
+import threading
 import time
 from typing import Any
 
@@ -42,6 +43,12 @@ class _SystemMonitor:
         self._have_prev_cpu: bool = False
         self._mem_percent: float = 0.0
         self._last_mem_time: float = 0.0
+        # ★ 2026-10-23（渲染线程阻塞修复）：后台采集线程状态。
+        #   采集（含无 psutil 平台的子进程调用）不再发生在 60Hz 渲染帧内；
+        #   帧内只读 ``_cpu_percent``/``_mem_percent`` 缓存。
+        self._thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+        self._interval: float = 2.0
 
     @staticmethod
     def _detect_platform() -> str:
@@ -111,20 +118,55 @@ class _SystemMonitor:
         return self._mem_percent
 
     def get_cpu_and_mem(self) -> tuple[float, float]:
-        """采集 CPU/MEM（帧内同步；1s TTL 缓存消峰）。
+        """读取最近一次后台采集的 CPU/MEM（**不触发采集、不阻塞**）。
 
-        ★ 2026-10-23（game_loop）：原本 darwin/windows 无 psutil 时会启动
-        后台线程起子进程采样，现统一由 render 帧的 SYSTEM_STATS 阶段同步
-        采集——单次调用完成本帧所有工作，不再有额外线程/节拍。慢平台首次
-        采集会让该帧变长（固定 60Hz 节拍不降频，慢帧连续运转）。
+        ★ 2026-10-23（渲染线程阻塞修复）：采集由 ``start()`` 启动的后台线程
+        完成；本方法只返回缓存值（首次采集前为 ``(0.0, 0.0)``）。调用方
+        （渲染帧 ``_update_system_stats``）因此不会被 iostat/powershell/
+        sysctl 等子进程（timeout 最长 5s）阻塞。
         """
-        self.get_cpu_percent()
-        self.get_memory_percent()
         return (self._cpu_percent, self._mem_percent)
 
+    def start(self, interval: float = 2.0) -> None:
+        """启动后台采集线程（幂等）。
+
+        Args:
+            interval: 采集间隔（秒）；非有限正数时回退 2.0。
+        """
+        try:
+            value = float(interval)
+        except (TypeError, ValueError, OverflowError):
+            value = 2.0
+        if not (value > 0 and value != float("inf")):
+            value = 2.0
+        self._interval = value
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            return
+        self._stop_event.clear()
+        thread = threading.Thread(
+            target=self._loop, name="ink-system-monitor", daemon=True,
+        )
+        self._thread = thread
+        thread.start()
+
+    def _loop(self) -> None:
+        """后台采集循环（异常不外抛，避免线程静默死亡）。"""
+        while not self._stop_event.is_set():
+            try:
+                self.get_cpu_percent()
+                self.get_memory_percent()
+            except Exception:
+                _logger.warning("系统监控后台采集异常", exc_info=True)
+            self._stop_event.wait(self._interval)
+
     def stop(self) -> None:
-        """停止（帧驱动后无后台线程——保留 API 兼容，幂等 no-op）。"""
-        return
+        """停止后台采集线程（幂等，join 上限 1s）。"""
+        self._stop_event.set()
+        thread = self._thread
+        self._thread = None
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=1.0)
 
 
     def _read_cpu_proc_stat(self) -> float:

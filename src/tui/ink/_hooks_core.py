@@ -28,6 +28,7 @@ from __future__ import annotations
 import itertools
 import logging
 import math
+import threading
 from typing import Any, Callable, TypeVar
 
 from .fiber import (
@@ -180,6 +181,40 @@ def _next_hook(hook_cls: type[_HookT], *init_args: Any) -> _HookT:
 #: 首个渲染期解析一次，后续渲染忽略——React useState 惰性初始化语义）。
 _INIT_PENDING = object()
 
+#: state 更新队列锁（★ 2026-10-23 跨线程 setState 丢更新修复）。
+#:
+#: 背景：``useSyncExternalStore`` 的 store listener 允许在任意线程触发
+#: ``set_state``——原实现 ``hook.queue.append`` 与渲染线程的「遍历后置
+#: None」无同步，渲染线程遍历期间到达的更新可能被 ``hook.queue = None``
+#: 丢弃（该更新不会再触发渲染，界面永久陈旧）。
+#:
+#: 设计：**单一模块级锁**（所有 StateHook 共用，跨线程 setState 频率低、
+#: 临界区极短，无竞争热点）。锁内只做「swap 队列对象」/「append」，
+#: 用户更新函数在锁外应用（避免用户代码持锁、避免锁顺序问题）。
+#: 锁顺序：本文件只获取这一把锁，不嵌套其它锁，无死锁风险。
+_STATE_QUEUE_LOCK = threading.RLock()
+
+
+def _take_state_queue(hook: StateHook) -> list | None:
+    """原子取出并清空 hook 的待处理更新队列（跨线程安全）。
+
+    Returns:
+        待应用更新列表；无待处理更新时返回 None。
+    """
+    with _STATE_QUEUE_LOCK:
+        queue = hook.queue
+        hook.queue = None
+    return queue
+
+
+def has_pending_state(fiber: Fiber) -> bool:
+    """fiber 上是否存在待处理 state 更新（跨线程安全读取）。"""
+    with _STATE_QUEUE_LOCK:
+        for hook in fiber.hooks:
+            if isinstance(hook, StateHook) and hook.queue:
+                return True
+    return False
+
 
 def _next_state_hook(
     reducer: Callable[[Any, Any], Any] | None,
@@ -203,19 +238,22 @@ def _next_state_hook(
         hook.reducer = reducer
     if hook.state is _INIT_PENDING:
         hook.state = initial() if (lazy_init and callable(initial)) else initial
-    if hook.queue:
+    # ★ 2026-10-23（跨线程 setState 丢更新修复）：锁内原子 swap 队列，
+    #   锁外应用更新。swap 之后到达的更新进入新队列，由下一帧应用——不丢失、
+    #   顺序不变（同一队列内保持 append 顺序）。
+    queue = _take_state_queue(hook)
+    if queue:
         if hook.reducer is not None:
             # use_reducer：queue 中为 action，经 reducer 归约
-            for action in hook.queue:
+            for action in queue:
                 hook.state = hook.reducer(hook.state, action)
         else:
             # use_state：queue 中为新值或更新函数
-            for upd in hook.queue:
+            for upd in queue:
                 if callable(upd):
                     hook.state = upd(hook.state)
                 else:
                     hook.state = upd
-        hook.queue = None
     return hook
 
 
@@ -240,9 +278,13 @@ def _make_setter(fiber: Fiber, hook: StateHook) -> Callable[[Any], None]:
     def _set(value: Any) -> None:
         if getattr(fiber, "deleted", False):
             return  # 已卸载组件 set_state：不排队不触发重渲染
-        if hook.queue is None:
-            hook.queue = []
-        hook.queue.append(value)
+        # ★ 2026-10-23（跨线程 setState 丢更新修复）：append 与渲染线程的
+        #   「swap 队列」在同一把锁内互斥——渲染线程不会在 append 与置 None
+        #   之间丢弃更新；swap 之后到达的更新进入新队列，下一帧应用。
+        with _STATE_QUEUE_LOCK:
+            if hook.queue is None:
+                hook.queue = []
+            hook.queue.append(value)
         _schedule()
 
     hook.setter = _set
@@ -258,9 +300,11 @@ def _clear_fiber_state_queues(fiber: Fiber) -> None:
     残留；之后同 key/type 复用该 fiber → ``_next_state_hook`` 把删除前的
     陈旧更新应用到复用后的新渲染（状态回滚到删除前，渲染错误）。
     """
-    for hook in fiber.hooks:
-        if isinstance(hook, StateHook) and hook.queue is not None:
-            hook.queue = None
+    # ★ 2026-10-23：与 set_state 的 append 互斥（跨线程安全）。
+    with _STATE_QUEUE_LOCK:
+        for hook in fiber.hooks:
+            if isinstance(hook, StateHook) and hook.queue is not None:
+                hook.queue = None
 
 
 def use_state(initial: Any) -> tuple[Any, Callable[[Any], None]]:
@@ -607,6 +651,9 @@ __all__ = [
     "_next_state_hook",
     "_make_setter",
     "_clear_fiber_state_queues",
+    "_take_state_queue",
+    "has_pending_state",
+    "_STATE_QUEUE_LOCK",
     "_INIT_PENDING",
     "use_state",
     "use_reducer",

@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import logging
+from collections import deque
 
 from .fiber import Fiber
 from .layout import layout_tree, wrap_text_lines, _skip_function
@@ -110,13 +111,12 @@ def _resolve_clip(fiber: Fiber, box, clip) -> tuple | None:
 
 
 def _paint(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) -> None:
-    """递归绘制一个 host fiber 到画布。
+    """绘制一个 host fiber 子树到画布（迭代入口）。
 
-    方向2 P7（建议7）：函数体 try/except 隔离——单节点 paint 抛异常 →
-    该节点跳过、整帧仍渲染、异常不传播（与自定义 host 一致）。递归调用
-    经本包装各自隔离（子节点异常不影响兄弟节点绘制）。layout 异常仍由
-    session 层退避兜底（本步隔离 paint，不隔离 layout——布局失败影响树
-    结构，保持 session 级处理）。
+    ★ 2026-10-23（深嵌套修复）：递归 ``_paint → _paint_impl → _paint_children
+    → _paint`` 改为 ``_paint_tree`` 显式栈迭代——深层组件树不再触发
+    ``RecursionError``。异常隔离提升到节点级：单节点异常记录结构化日志 +
+    绘制可见占位（不再静默缺失），兄弟/父容器继续绘制。
 
     Args:
         fiber: host fiber。
@@ -124,36 +124,104 @@ def _paint(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) -> None
         clip: 裁剪区域 (x, y, w, h)；None 表示不裁剪。
         inherit_bg: 继承的背景样式（None=无；Box backgroundColor 传递）。
     """
-    # ★ 浮窗只经合成层绘制（2026-10-21 修复）：整树绘制阶段**一律跳过**浮窗
-    #   host——浮窗内容由 ``_overlay_floating`` 按窗口矩形单独绘制并合成。
-    #   修复前此处只跳过隐藏窗口：窗口内容会被画进基础画布，导致
-    #   （1）输出历史（``line_callback``）把窗口边框当成消息文本写入
-    #   scrollback；（2）committed 前缀复用路径下窗口内容被前缀覆盖而残缺；
-    #   （3）嵌套浮窗逃出父窗口。``is not None``（不是真值判定）：空串 id
-    #   也是合法浮窗标记（见 ``_floating._collect_float_fibers`` 同一口径）。
-    if fiber.props.get("dataFloatWindow") is not None:
+    _paint_tree(fiber, canvas, clip, inherit_bg)
+
+
+def _box_repr(box) -> str:
+    """布局盒调试表示（结构化日志用）。"""
+    if box is None:
+        return "None"
+    return f"({getattr(box, 'x', 0)},{getattr(box, 'y', 0)},{getattr(box, 'w', 0)},{getattr(box, 'h', 0)})"
+
+
+def _paint_placeholder(fiber: Fiber, canvas: list, clip, text: str) -> None:
+    """在节点布局盒首行绘制可见占位（异常/深度截断）。"""
+    box = fiber.layout_box
+    if box is None or int(getattr(box, "w", 0) or 0) <= 0:
         return
-    try:
-        _paint_impl(fiber, canvas, clip, inherit_bg)
-    except Exception:
-        # ★ 可观测性修复：单节点 paint 失败 = 该节点内容静默缺失（布局/坐标
-        #   异常、样式解析失败等）——原 debug 级别不可见，提升为 warning。
-        _logger.warning("%s paint 异常", fiber.type, exc_info=True)
+    row = int(getattr(box, "y", 0) or 0)
+    if clip is not None:
+        _cx, cy, cw, ch = clip
+        if cw <= 0 or ch <= 0 or row < cy or row >= cy + ch:
+            return
+    if not (0 <= row < len(canvas)):
+        return
+    width = max(1, int(getattr(box, "w", 0) or 0))
+    line = Line()
+    line.append(text[:width], _placeholder_style())
+    x = max(0, int(getattr(box, "x", 0) or 0))
+    canvas[row] = _merge_line(canvas[row], x, line)
 
 
-def _paint_impl(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) -> None:
-    """递归绘制一个 host fiber 到画布（_paint 内部实现，经 _paint 隔离）。
+def _placeholder_style():
+    """占位文本样式（红色粗体；延迟 import 避免模块顶部新增依赖）。"""
+    from src.tui.core.style import Style
 
-    递归调用 ``_paint(child, canvas)``（经包装）——子节点 paint 异常在
-    子节点层级被捕获，不影响兄弟节点与父容器继续绘制。
+    return Style(fg=196, bold=True)
+
+
+def _paint_tree(
+    fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None, *,
+    _skip_float_root: bool = True,
+) -> None:
+    """迭代绘制子树（显式栈，O(节点数)、无递归深度限制）。
+
+    ``_skip_float_root=False`` 供浮窗合成层使用：允许绘制**根节点自身**
+    是浮窗 host 的窗口（嵌套浮窗仍跳过）。
+    """
+    stack: list[tuple[Fiber, object, object]] = [(fiber, clip, inherit_bg)]
+    first = True
+    while stack:
+        node, node_clip, node_bg = stack.pop()
+        # ★ 浮窗只经合成层绘制（2026-10-21 修复）：整树绘制阶段一律跳过浮窗
+        #   host。``is not None``（不是真值判定）：空串 id 也是合法浮窗标记。
+        if node.props.get("dataFloatWindow") is not None:
+            if not (first and not _skip_float_root):
+                first = False
+                continue
+        first = False
+        # ★ 2026-10-23（深嵌套修复）：超限子树显示可见占位（_measure 返回零盒）。
+        if getattr(node, "_depth_overflow", False):
+            _paint_placeholder(node, canvas, node_clip, "[depth truncated]")
+            continue
+        try:
+            child_tasks = _paint_impl(node, canvas, node_clip, node_bg) or []
+        except Exception as exc:
+            # ★ 2026-10-23（异常可观测性）：保留降级（单节点失败不影响整帧），
+            #   但不再静默——结构化日志 + 可见占位。
+            node._paint_error = f"{type(exc).__name__}: {exc}"
+            _logger.error(
+                "%s paint 异常（已显示占位）",
+                getattr(node, "type", "?"),
+                exc_info=True,
+                extra={
+                    "ink_fiber_type": getattr(node, "type", "?"),
+                    "ink_fiber_key": getattr(node, "key", ""),
+                    "ink_box": _box_repr(node.layout_box),
+                    "ink_error": node._paint_error,
+                },
+            )
+            _paint_placeholder(
+                node, canvas, node_clip, f"[render error: {type(exc).__name__}]",
+            )
+            continue
+        if child_tasks:
+            stack.extend(reversed(child_tasks))
+
+
+def _paint_impl(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) -> list:
+    """绘制单个 host fiber（不递归），返回待绘制的子任务列表。
+
+    子任务为 ``(host_fiber, clip, inherit_bg)``——由 ``_paint_tree`` 按文档
+    顺序迭代处理（逆序压栈）。异常向上抛给 ``_paint_tree`` 统一记录/占位。
     """
     box = fiber.layout_box
     if box is None:
-        return
+        return []
     ftype = fiber.type
     # display: none（完善 react ink）——隐藏组件不绘制（_measure 已返回零盒）。
     if fiber.props.get("display") == "none":
-        return
+        return []
 
     if ftype == "text":
         # ★ BUG-17（review 方向）：零宽/零高 TEXT 不绘制——``_measure`` 中
@@ -162,7 +230,7 @@ def _paint_impl(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) ->
         #   单行）→ 修复前文本照常绘制到画布（row 剩余宽度 0 的子节点文本
         #   溢出容器，如宽 3 的 row 内 "abc"+"def" 渲染出 "abcdef"）。
         if box.w <= 0 or box.h <= 0:
-            return
+            return []
         # ★ 复用 layout 阶段缓存的换行结果（免二次包裹）
         wrapped = fiber._wrapped_lines
         if wrapped is not None:
@@ -225,7 +293,7 @@ def _paint_impl(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) ->
             # ★ P3（review）：裁剪行列数为常量条件，提到循环外一次判断
             #   （修复前每行重复判断与行无关的 ``cw <= 0 or ch <= 0``）。
             if cw <= 0 or ch <= 0:
-                return
+                return []
             for i, line in enumerate(lines):
                 row = box.y + i
                 if row < cy or row >= cy + ch:
@@ -249,7 +317,7 @@ def _paint_impl(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) ->
                     draw_x = s
                 if 0 <= row < len(canvas):
                     canvas[row] = _merge_line(canvas[row], draw_x, line)
-            return
+            return []
         for i, line in enumerate(lines):
             row = box.y + i
             if 0 <= row < len(canvas):
@@ -263,27 +331,24 @@ def _paint_impl(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) ->
                         canvas[row] = _merge_line(canvas[row], 0, line)
                 else:
                     canvas[row] = _merge_line(canvas[row], box.x, line)
-        return
+        return []
 
     if ftype == "spacer":
-        return  # 空行已由画布预置
+        return []  # 空行已由画布预置
 
     if ftype == "fragment":
         # 透明分组容器：直接绘制子节点（无独立 box——layout_children 已将
         # fragment 扁平化；本分支为防御，覆盖 fragment 被直接调度的路径）
-        _paint_children(fiber, canvas, clip, inherit_bg)
-        return
+        return _child_tasks(fiber, clip, inherit_bg)
 
     # ── 自定义 host（注册表） ──
     host = get_host(ftype)
     if host is not None:
         paint_fn = host[1]
-        try:
-            paint_fn(fiber, canvas)
-        except Exception:
-            # ★ 可观测性修复：自定义 host 绘制失败 = 内容静默缺失——warning。
-            _logger.warning("custom host %s paint 异常", ftype, exc_info=True)
-        return
+        # ★ 2026-10-23（异常可观测性）：不再在此吞掉异常——抛给 _paint_tree
+        #   统一记录结构化日志并绘制可见占位（修复前静默跳过该节点内容）。
+        paint_fn(fiber, canvas)
+        return []
 
     # 容器：BOX / STATIC / APP
     border = fiber.props.get("border", 0)
@@ -310,26 +375,40 @@ def _paint_impl(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) ->
     # overflow 裁剪（完善 react ink v6）：容器有 overflow hidden 时压入
     # 裁剪区域，子节点绘制受限（_resolve_clip 处理父裁剪合并）。
     new_clip = _resolve_clip(fiber, box, clip)
-    _paint_children(fiber, canvas, new_clip, child_bg)
+    return _child_tasks(fiber, new_clip, child_bg)
+
+
+def _child_tasks(fiber: Fiber, clip=None, inherit_bg=None) -> list:
+    """收集直接 host 子任务（跳过 function 链、扁平化 fragment，迭代无递归）。
+
+    返回 ``[(host_fiber, clip, inherit_bg), ...]``，保持文档顺序；由
+    ``_paint_tree`` 逆序压栈后按序绘制。
+    """
+    tasks: list[tuple[Fiber, object, object]] = []
+    pending: deque[Fiber] = deque()
+    child = fiber.child
+    while child is not None:
+        pending.append(child)
+        child = child.sibling
+    while pending:
+        node = pending.popleft()
+        host = _skip_function(node)
+        if host is None:
+            continue
+        if host.is_host and host.type == "fragment":
+            c = host.child
+            while c is not None:
+                pending.append(c)
+                c = c.sibling
+        else:
+            tasks.append((host, clip, inherit_bg))
+    return tasks
 
 
 def _paint_children(fiber: Fiber, canvas: list, clip=None, inherit_bg=None) -> None:
-    """绘制 fiber 的直接 host 子节点（跳过 function 链、扁平化 fragment）。
-
-    方向4 性能优化：与 ``layout_children`` 遍历语义一致（跳过 function 链 +
-    fragment 递归展开），但**不构建中间列表**——容器绘制时直接沿 child/sibling
-    链递归调用 ``_paint``（大组件树如 ChatView 1000+ 子 TEXT 每帧少构建一次
-    layout_children 结果列表，避免 O(n) 列表分配）。
-    """
-    child = fiber.child
-    while child is not None:
-        host = _skip_function(child)
-        if host is not None:
-            if host.is_host and host.type == "fragment":
-                _paint_children(host, canvas, clip, inherit_bg)
-            else:
-                _paint(host, canvas, clip, inherit_bg)
-        child = child.sibling
+    """绘制 fiber 的直接 host 子节点（兼容入口，内部走 ``_paint_tree``）。"""
+    for task in _child_tasks(fiber, clip, inherit_bg):
+        _paint_tree(*task)
 
 
 def _find_committed_chat(root: Fiber):
@@ -840,10 +919,10 @@ def _overlay_floating(root: Fiber, frame: Frame, width: int) -> Frame:
             if win_y + src_row:
                 _translate_subtree_y(fiber, -(win_y + src_row))
             try:
-                # ★ 直接调 ``_paint_impl``（不是 ``_paint``）：``_paint`` 会跳过
-                #   浮窗 host（主树绘制用），而这里是**要**绘制窗口自身。
-                #   窗口内容里的嵌套浮窗仍经 ``_paint`` 递归 → 被忽略。
-                _paint_impl(fiber, canvas)
+                # ★ 直接绘制窗口自身（``_skip_float_root=False``）：主树绘制
+                #   会跳过浮窗 host，这里**要**绘制窗口自身；窗口内容里的
+                #   嵌套浮窗仍跳过（_paint_tree 对非根节点一律跳过）。
+                _paint_tree(fiber, canvas, _skip_float_root=False)
             finally:
                 if win_y + src_row:
                     _translate_subtree_y(fiber, win_y + src_row)

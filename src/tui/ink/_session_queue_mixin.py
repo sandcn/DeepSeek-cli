@@ -406,6 +406,17 @@ class _SessionQueueMixin:
             丢弃的命令条数。
         """
         dropped = 0
+        # ★ 2026-10-23（命令时间盒）：清空/过滤 deferred 命令（已出队但未应用）。
+        deferred = getattr(self, "_deferred_commands", None)
+        if deferred:
+            if keep_content:
+                self._deferred_commands = [
+                    cmd for cmd in deferred
+                    if _get_cmd_id(cmd) in _KEEP_CONTENT_CMDS
+                ]
+            else:
+                self._deferred_commands = []
+            dropped += len(deferred) - len(getattr(self, "_deferred_commands", []))
         if keep_content:
             # ★ 保留内容命令：**不 get/put 重放**（会破坏 unfinished_tasks——
             # get_nowait+task_done 后 put 回去，resume 后 _drain_queue 的
@@ -423,7 +434,7 @@ class _SessionQueueMixin:
                 # ★ BUG-31 同族：heapq 数组任意修改后须 heapify 恢复堆序
                 #   （否则后续 heappush/heappop 在损坏堆上操作可能返回非最小项）。
                 heapq.heapify(self._cmd_queue.queue)
-                dropped = len(drop_items)
+                dropped += len(drop_items)
                 # ★ P3（review）：容量释放后唤醒 not_full 等待者——修复前直接
                 #   替换 ``queue.queue[:]`` 未 notify，并发 ``push_cmd(block=True)``
                 #   /``_put_no_drop`` 可能虚假超时（关键命令走紧急直写、内容

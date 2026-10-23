@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from src.tui.ink import Box, Row, Text, h
+from src.tui.ink import Box, Text, h
 from src.tui.ink._render_api import renderToString
 from src.tui.ink.fiber import Fiber
 from src.tui.ink.hooks import use_effect, use_input, useFocus

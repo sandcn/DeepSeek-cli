@@ -139,23 +139,34 @@ class _SessionFrameMixin:
 
     # ── 命令应用 ─────────────────────────────────────
 
-    def _apply_commands(self, commands: list) -> None:
+    def _apply_commands(self, commands: list, budget: float | None = None) -> list:
         """批量应用命令到模型。
 
         ★ 性能（流式超长单行）：先经 ``coalesce_commands`` 合并本批内相邻的
         CONTENT / REASONING 增量命令——同一帧内多条增量只触发一次 markdown
         预览刷新（超长单行每次刷新都要重渲染 + 重新换行整个尾部窗口）。合并
         为纯追加语义，渲染结果与逐条应用等价。
+
+        ★ 2026-10-23（命令时间盒）：``budget`` 非 None 时按时间预算应用，
+        超出预算的**剩余命令原样返回**（调用方存入 deferred 队列，下一帧优先
+        应用）——单条命令（markdown 全量重渲染）仍可能超预算，但不会让数百条
+        历史回放命令在一帧内全部执行把输入处理推迟数百 ms。
+
+        Returns:
+            未应用的剩余命令（顺序不变）；全部应用时为空列表。
         """
         if self._apply_fn is None:
-            return
+            return []
         try:
             from src.tui.app.apply import coalesce_commands
             merged = coalesce_commands(commands)
         except Exception:
             _logger.debug("命令合并失败，按原批应用", exc_info=True)
             merged = commands
-        for cmd in merged:
+        start = time.monotonic()
+        for index, cmd in enumerate(merged):
+            if budget is not None and index > 0 and time.monotonic() - start >= budget:
+                return list(merged[index:])
             try:
                 self._apply_fn(self._model, cmd)
                 # ★ 2026-08-15（/editmsg 后渲染错乱修复）：CLEAR_MSGS
@@ -179,6 +190,7 @@ class _SessionFrameMixin:
                         _logger.debug("reset_content_lines 异常", exc_info=True)
             except Exception:
                 _logger.warning("应用命令 %s 失败", _cmd_name(_get_cmd_id(cmd)), exc_info=True)
+        return []
 
     # ── 渲染帧 ───────────────────────────────────────
 
@@ -201,6 +213,8 @@ class _SessionFrameMixin:
             self._frame_active = True
             try:
                 self._render_frame_impl()
+            except Exception as exc:
+                self._render_failure_frame(exc)
             finally:
                 self._frame_active = False
             return
@@ -208,8 +222,52 @@ class _SessionFrameMixin:
             self._frame_active = True
             try:
                 self._render_frame_impl()
+            except Exception as exc:
+                self._render_failure_frame(exc)
             finally:
                 self._frame_active = False
+
+    def _render_failure_frame(self, exc: Exception) -> None:
+        """渲染/布局异常 → 绘制可见错误帧（不静默、不阻塞输入线程）。
+
+        ★ 2026-10-23（异常可观测性）：修复前帧构建异常由 session 层按指数
+        退避 ``time.sleep(0.1~1.0)`` 重试——界面冻结且用户无任何提示。现在
+        在本层收口：记录结构化日志（限频 5s）+ 直接把错误帧写到终端，
+        渲染线程继续按 60Hz 运转（下一帧重试正常路径）。错误帧内容含异常
+        类型与消息，便于用户/开发者定位。
+        """
+        now = time.monotonic()
+        last = float(getattr(self, "_last_render_fault_log", 0.0) or 0.0)
+        if now - last >= 5.0:
+            self._last_render_fault_log = now
+            _logger.error(
+                "渲染帧构建异常（已输出可见错误帧）",
+                exc_info=True,
+                extra={
+                    "ink_error_type": type(exc).__name__,
+                    "ink_error": str(exc),
+                },
+            )
+        try:
+            from .output import Frame, Line
+            from src.tui.core.style import Style
+
+            text = f"[render error: {type(exc).__name__}: {exc}]"
+            width = 0
+            try:
+                width = int(self._width_cache.get_width())
+            except Exception:
+                width = 80
+            if width > 0:
+                text = text[:width]
+            line = Line()
+            line.append(text, Style(fg=196, bold=True))
+            frame = Frame([line])
+            self._ink_renderer.render(frame)
+            self._last_frame = frame
+            self._last_frame_lines = len(frame.lines)
+        except Exception:
+            _logger.debug("错误帧输出失败", exc_info=True)
 
     def _poll_terminal_size(self) -> None:
         """SIGWINCH 兜底：定期主动重探终端尺寸（刷新 ``_width_cache``）。
@@ -240,15 +298,15 @@ class _SessionFrameMixin:
         结果来维护 ``_last_frame_idle_static``（见该属性说明），而复用判定
         还需要额外的前置条件。预测异常按「非静态」处理（宁可多渲染一帧）。
 
-        ★ P1 修复（无谓 60Hz 全量重建）：未注入预测函数时，默认按「静态」
-        处理——没有命令、没有脏标记、没有动画时，React 语义下组件不会自行
-        变化；时间驱动内容应使用 ``useAnimation``/``useSyncExternalStore``
-        或宿主注入预测函数。此前未注入即恒不复用，render() 独立会话和未接线
-        的宿主会每 16.7ms 全树重建一次。
+        ★ 2026-10-23（idle 默认动态）：未注入预测函数时**默认按动态处理**
+        ——每帧重建。修复前默认「静态」会让时间/外部数据驱动但未声明的
+        第三方组件冻结在旧帧（且静态态下没有脏事件纠正）。自带 App 会话
+        注入 ``set_idle_frame_predicate``，不受影响；独立 ``render()`` 会话
+        改为安全默认（多渲染一帧，不冻结）。
         """
         predicate = getattr(self, "_idle_frame_predicate", None)
         if predicate is None:
-            return True
+            return False
         try:
             return bool(predicate())
         except Exception:
@@ -260,7 +318,7 @@ class _SessionFrameMixin:
 
         全部条件满足才复用（任一不满足 → 正常重建，零行为变化）：
           1. 宿主空闲预测（``set_idle_frame_predicate``）返回 True；未注入时
-             默认静态（React 语义：无 state/命令/动画不自行变化）；
+             默认动态（安全：每帧重建）；
           2. 已有上一帧（``_last_frame``）且该帧**也是在静态态下构建的**
              （``_last_frame_idle_static``）；
           3. 无待处理命令（``_cmd_queue`` 为空——命令应用会改模型且置脏）；
@@ -296,6 +354,10 @@ class _SessionFrameMixin:
         #   ——否则计时/进度条冻结在上一帧内容上。
         if self._float_refresh_due():
             return False
+        # ★ 2026-10-23（全屏视图定时刷新）：声明 refresh_interval 的视图
+        #   （如 TraceView 每秒更新实时耗时）到期必须重建一帧。
+        if self._view_refresh_due():
+            return False
         # 本拍有变更（输入/命令/请求重绘，由 ``_should_render`` 落位）→ 重建
         if not getattr(self, "_idle_ok", False):
             return False
@@ -316,6 +378,46 @@ class _SessionFrameMixin:
             _logger.debug("has_active_animations 探测异常", exc_info=True)
             return False
         return True
+
+    def _view_refresh_due(self) -> bool:
+        """当前模态视图的「定时刷新」是否到期（2026-10-23 全屏视图脏驱动）。
+
+        视图经 ``ViewSpec.refresh_interval`` 声明（``view_registry._refresh``
+        挂到组件 ``_ink_refresh_interval``）——空闲复用期间到期强制重建一帧，
+        兼顾「空闲不每帧重建」与「实时耗时/计时每秒更新」。
+        """
+        model = getattr(self, "_model", None)
+        if model is None:
+            return False
+        try:
+            from src.tui.app.app import BOTTOM_VIEWS, FULLSCREEN_VIEWS
+        except Exception:
+            return False
+        view = None
+        fullscreen_id = getattr(model, "fullscreen", "") or ""
+        if fullscreen_id:
+            view = FULLSCREEN_VIEWS.get(fullscreen_id)
+        else:
+            bottom_id = getattr(model, "bottom_view", "") or ""
+            if bottom_id:
+                entry = BOTTOM_VIEWS.get(bottom_id)
+                view = entry[0] if isinstance(entry, tuple) else entry
+        if view is None:
+            return False
+        raw = getattr(view, "_ink_refresh_interval", None)
+        try:
+            interval = float(raw)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if not (interval > 0 and interval != float("inf")):
+            return False
+        try:
+            elapsed = time.monotonic() - float(
+                getattr(self, "_last_frame_built_at", 0.0) or 0.0
+            )
+        except (TypeError, ValueError):
+            return True
+        return elapsed >= interval
 
     def _float_refresh_due(self) -> bool:
         """浮窗「定时刷新」是否到期（到期 → 本拍必须重建，禁止复用上一帧）。
@@ -537,10 +639,16 @@ class _SessionFrameMixin:
             if pending_update:
                 from .reconciler import _MAX_PRE_PAINT_PASSES
 
-                _logger.warning(
-                    "layout effect 更新超过 %d 轮，剩余更新延后到下一帧",
-                    _MAX_PRE_PAINT_PASSES,
-                )
+                # ★ 2026-10-23（日志刷屏修复）：组件在 layout effect 中每帧
+                #   setState 时原实现每帧一条 warning（60 条/秒）。限频 5s。
+                now = time.monotonic()
+                last = float(getattr(self, "_last_prepaint_warn", 0.0) or 0.0)
+                if now - last >= 5.0:
+                    self._last_prepaint_warn = now
+                    _logger.warning(
+                        "layout effect 更新超过 %d 轮，剩余更新延后到下一帧",
+                        _MAX_PRE_PAINT_PASSES,
+                    )
             # ★ 浮窗定位已收敛到 ``render_frame`` 内部（2026-10-21 统一入口）：
             #   此前只在本分支调用 ``apply_floating_layout``——``renderToString``
             #   / ``render()`` 等其它帧构建路径渲染 App 树时浮窗不定位（粘在
@@ -744,10 +852,17 @@ class _SessionFrameMixin:
         if self._system_monitor is None:
             from src.tui._system_monitor import _SystemMonitor
             self._system_monitor = _SystemMonitor()
+        # ★ 2026-10-23（渲染线程阻塞修复）：系统监控改为**后台线程**采集，
+        #   帧内只读缓存——无 psutil 平台的子进程采样（iostat/powershell/
+        #   sysctl，timeout=5s）不再阻塞 60Hz 渲染线程/输入处理。
+        try:
+            self._system_monitor.start(self._sys_stats_interval)
+        except Exception:
+            _logger.debug("系统监控后台线程启动异常", exc_info=True)
         try:
             cpu, mem = self._system_monitor.get_cpu_and_mem()
         except Exception:
-            _logger.debug("系统监控采集异常", exc_info=True)
+            _logger.debug("系统监控缓存读取异常", exc_info=True)
             return
         # ★ P2-5（review 方向）：int() 转换纳入防御——``get_cpu_and_mem()``
         #   异常时返回 0.0，但平台差异/子进程解析可能返回非数字（如 "N/A"），

@@ -200,14 +200,14 @@ def _apply_text_align(lines: list[Line], width: int, align: str) -> list[Line]:
     return out
 
 
-def _shrink_row_children(
+def _shrink_row_children_gen(
     children: list[Fiber],
     used_w: int,
     target_w: int,
     spacing: int,
     inner_x: int,
     inner_y: int,
-) -> None:
+):
     """row 内容超宽时按 flexShrink 权重收缩子节点宽度（E-ROW-OVERFLOW 根因修复）。
 
     row 内容自然宽超容器内宽时（``used_w > target_w``）触发：按 flexShrink
@@ -297,9 +297,8 @@ def _shrink_row_children(
                     avail_for_remeasure = mn_resolved
             cb.w = new_w
             child.layout_box = cb
-            _measure(
-                child, inner_x, inner_y, avail_for_remeasure, fill=True,
-                percent_base=target_w,
+            yield (
+                "m", child, inner_x, inner_y, avail_for_remeasure, True, target_w,
             )
     # ★ L4 舍入预算内补偿（2026-08-15，行宽不变量）：写回后核算实际总宽
     #   （含 spacing），若仍 > target_w（多子节点各自 round 偏大——如两子
@@ -353,6 +352,22 @@ def _shrink_row_children(
         cx += cb.w
         if i < len(children) - 1:
             cx += spacing
+
+
+def _shrink_row_children(
+    children: list[Fiber],
+    used_w: int,
+    target_w: int,
+    spacing: int,
+    inner_x: int,
+    inner_y: int,
+) -> None:
+    """同步包装（供外部/测试调用；内部经 ``_drive_task`` 显式栈驱动）。"""
+    _drive_task(
+        _shrink_row_children_gen(
+            children, used_w, target_w, spacing, inner_x, inner_y,
+        ),
+    )
 
 
 def _measure_text(
@@ -788,11 +803,55 @@ def _container_geometry(fiber: Fiber) -> tuple:
     return result
 
 
+def _drive_task(root_gen):
+    """驱动 ``_measure_gen`` 类生成器（显式栈，任意深度无递归）。
+
+    生成器 ``yield`` 子任务元组：
+      - ``("m", fiber, x, y, avail_w, fill, percent_base)`` — 测量子节点；
+      - ``("s", children, used_w, target_w, spacing, inner_x, inner_y)`` — row 收缩；
+      - ``("w", fiber, x, y, ...)`` — wrap 行测量。
+    子生成器完成后其返回值经 ``send`` 回传父生成器。
+    """
+    stack = [root_gen]
+    result = None
+    while stack:
+        gen = stack[-1]
+        try:
+            task = gen.send(result)
+        except StopIteration as stop:
+            stack.pop()
+            result = stop.value
+            continue
+        kind = task[0]
+        if kind == "m":
+            stack.append(_measure_gen(*task[1:]))
+        elif kind == "s":
+            stack.append(_shrink_row_children_gen(*task[1:]))
+        else:
+            stack.append(_measure_wrap_row_gen(*task[1:]))
+        result = None
+    return result
+
+
 def _measure(
     fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True,
     percent_base: int | None = None,
 ) -> LayoutBox:
-    """递归测量并赋值 layout_box。返回该 fiber 的 LayoutBox。
+    """布局测量入口（同步包装）。
+
+    ★ 2026-10-23（深嵌套修复）：实际递归逻辑在 ``_measure_gen`` 中，由
+    ``_drive_task`` 用显式栈驱动——与树深无关，不再触发 ``RecursionError``。
+    """
+    return _drive_task(
+        _measure_gen(fiber, x, y, avail_w, fill, percent_base),
+    )
+
+
+def _measure_gen(
+    fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True,
+    percent_base: int | None = None,
+):
+    """测量并赋值 layout_box（生成器版本）。返回该 fiber 的 LayoutBox。
 
     Args:
         fiber: host fiber。
@@ -802,6 +861,13 @@ def _measure(
         percent_base: 百分比宽度解析基准（父容器内容宽度）；None=avail_w。
             修复 row 内 ``width="50%"`` 按剩余宽度解析的问题。
     """
+    # ★ 2026-10-23（深嵌套修复）：超过 ``layout.MAX_TREE_DEPTH`` 的子树
+    #   返回**单行占位盒**（高度 1、宽度受父可用宽度约束）且不再递归——
+    #   避免 RecursionError，同时让 ``_paint`` 能绘制可见占位（零盒会被
+    #   ``_paint_placeholder`` 跳过，用户只看到空白）。
+    if getattr(fiber, "_depth_overflow", False):
+        fiber.layout_box = LayoutBox(x, y, max(1, min(avail_w, 48)), 1)
+        return fiber.layout_box
     # ★ P2-1 修复（review 方向）：**通用** ``_measure_cache`` 提前检查分支已
     #   删除——原分支要求 ``ftype != "text"`` 但**只有 TEXT 分支写缓存**
     #   （容器/自定义 host 不缓存，见 TEXT 写回处），``ftype != "text"`` 条件
@@ -924,11 +990,11 @@ def _measure(
     else:
         spacing = row_gap
     if direction == "row" and flex_wrap and children:
-        return _measure_wrap_row(
-            fiber, x, y, avail_w, explicit_w, children, inner_x, inner_y,
+        return (yield (
+            "w", fiber, x, y, avail_w, explicit_w, children, inner_x, inner_y,
             pad_h, pad_v, border, col_gap, row_gap, flex_wrap_reverse,
-            percent_base=percent_base,
-        )
+            percent_base,
+        ))
 
     if direction == "row":
         # 子节点横向排列（内容自适应宽度），高度为最大子高
@@ -949,9 +1015,8 @@ def _measure(
             m_l, m_r, m_t, m_b = _resolve_margin(child)
             cursor_x += m_l
             remaining = max(0, row_inner_w - (cursor_x - inner_x) - m_r)
-            cbox = _measure(
-                child, cursor_x, inner_y + m_t, remaining, fill=False,
-                percent_base=row_inner_w,
+            cbox = yield (
+                "m", child, cursor_x, inner_y + m_t, remaining, False, row_inner_w,
             )
             # ★ flexBasis（完善 react ink flexbox）：row 主轴=横向——
             #   子节点 ``flexBasis`` 作为初始宽度（覆盖内容自适应宽度）。
@@ -968,9 +1033,8 @@ def _measure(
                     # ★ P0 修复：只改 box.w 会让 Text 继续按旧换行结果绘制
                     #   （覆盖后续兄弟/溢出容器）。以 flexBasis 为可用宽度
                     #   重新测量，让内部内容按最终宽度换行。
-                    cbox = _measure(
-                        child, cursor_x, inner_y + m_t, fb_w, fill=True,
-                        percent_base=row_inner_w,
+                    cbox = yield (
+                        "m", child, cursor_x, inner_y + m_t, fb_w, True, row_inner_w,
                     )
             cursor_x += cbox.w + m_r
             if i < n_children - 1:
@@ -992,8 +1056,8 @@ def _measure(
         #   边框等容器子节点常见）。收缩后重新测量子节点（fill=True 约束内部
         #   内容 wrap/截断）→ 行内总宽恒 <= 容器内宽。
         if used_w > inner_w_row and children:
-            _shrink_row_children(
-                children, used_w, inner_w_row, spacing, inner_x, inner_y,
+            yield (
+                "s", children, used_w, inner_w_row, spacing, inner_x, inner_y,
             )
             used_w = inner_w_row
             # 收缩后子节点高度可能变化（重测量 wrap）——row_h 同步更新
@@ -1021,7 +1085,7 @@ def _measure(
                     #   （paint 侧截断兜底），不中断布局；异常记 debug 便于排查
                     #   （修复前静默 ``pass``，reflow 失败完全不可观测）。
                     try:
-                        _measure(child, inner_x, inner_y, cb.w, fill=True)
+                        yield ("m", child, inner_x, inner_y, cb.w, True, None)
                     except Exception:
                         _logger.debug(
                             "row grow reflow 测量失败 type=%s", child.type, exc_info=True,
@@ -1123,10 +1187,9 @@ def _measure(
             probe_base = max(0, avail_w - (pad_h + 2 * border))
             for child in children:
                 p_l, p_r, p_t, _p_b = _resolve_margin(child)
-                probe_box = _measure(
-                    child, inner_x + p_l, inner_y + p_t,
-                    max(0, probe_base - p_l - p_r), fill=False,
-                    percent_base=probe_base,
+                probe_box = yield (
+                    "m", child, inner_x + p_l, inner_y + p_t,
+                    max(0, probe_base - p_l - p_r), False, probe_base,
                 )
                 if probe_box.w + p_l + p_r > probe_w:
                     probe_w = probe_box.w + p_l + p_r
@@ -1145,10 +1208,9 @@ def _measure(
                 inner_w_probe = max(0, width - (pad_h + 2 * border))
                 for child in children:
                     p_l, p_r, p_t, _p_b = _resolve_margin(child)
-                    _measure(
-                        child, inner_x + p_l, inner_y + p_t,
-                        max(0, inner_w_probe - p_l - p_r), fill=True,
-                        percent_base=inner_w_probe,
+                    yield (
+                        "m", child, inner_x + p_l, inner_y + p_t,
+                        max(0, inner_w_probe - p_l - p_r), True, inner_w_probe,
                     )
         inner_w = max(0, width - (pad_h + 2 * border))
         cursor_y = inner_y
@@ -1192,9 +1254,9 @@ def _measure(
                     _translate_subtree_y(child, delta_y)
                 cbox = child.layout_box
             else:
-                cbox = _measure(
-                    child, inner_x + p_l, cursor_y, child_avail,
-                    fill=child_fill, percent_base=inner_w,
+                cbox = yield (
+                    "m", child, inner_x + p_l, cursor_y, child_avail,
+                    child_fill, inner_w,
                 )
             # ★ flexBasis（完善 react ink flexbox）：column 主轴=纵向——
             #   子节点 ``flexBasis`` 作为初始高度（覆盖内容自适应高度）。
@@ -1358,13 +1420,13 @@ def _measure_container_finish(
     return box
 
 
-def _measure_wrap_row(
+def _measure_wrap_row_gen(
     fiber: Fiber, x: int, y: int, avail_w: int, explicit_w, children: list,
     inner_x: int, inner_y: int, pad_h: int, pad_v: int, border: int,
     col_gap: int, row_gap: int, flex_wrap_reverse: bool,
     percent_base: int | None = None,
-) -> LayoutBox:
-    """flexWrap="wrap" 分支测量（row 容器换行流式布局）。
+):
+    """flexWrap="wrap" 分支测量（生成器版本，经 ``_drive_task`` 驱动）。
 
     从 ``_measure`` 提取（巨型函数拆分）：行内贪心填充（子节点按自然宽测量 +
     flexBasis 覆盖 + 超宽换行）、行高汇总、alignContent 行分布
@@ -1380,21 +1442,10 @@ def _measure_wrap_row(
     wrap_heights: list[int] = []
     cur_x = inner_x
 
-    def _apply_wrap_flex_basis(
+    def _apply_wrap_flex_basis_gen(
         child: Fiber, cbox: LayoutBox, child_x: int,
-    ) -> LayoutBox:
-        """wrap 分支 flexBasis 应用（与 row 分支同逻辑）。
-
-        L4（2026-08-15）：wrap 场景测量后应用 ``flexBasis`` 覆盖测量
-        宽度——修复前 wrap 分支漏应用（row 分支有、wrap 场景静默失效），
-        flexWrap 容器子节点 ``flexBasis`` 不生效（测量宽度恒覆盖）。
-        换行判断基于应用后宽度（flexBasis 使子节点超宽时正确换行）；
-        flexBasis 超 wrap_inner_w 时子节点单独成行（与 row 分支超宽
-        语义一致）。
-
-        ★ P0 修复：以 flexBasis 重新测量（此前只改 ``cbox.w``，Text 仍按
-        旧换行结果绘制，会覆盖后续兄弟/溢出）。
-        """
+    ):
+        """wrap 分支 flexBasis 应用（生成器版本）。"""
         fb = child.props.get("flexBasis")
         if fb is not None:
             try:
@@ -1402,22 +1453,20 @@ def _measure_wrap_row(
             except (TypeError, ValueError, OverflowError):
                 fb_w = 0
             if fb_w > 0 and fb_w != cbox.w:
-                return _measure(
-                    child, child_x, inner_y, fb_w, fill=True,
-                    percent_base=wrap_inner_w,
-                )
+                return (yield (
+                    "m", child, child_x, inner_y, fb_w, True, wrap_inner_w,
+                ))
         return cbox
 
     for child in children:
         # 先以整行内宽测量（内容自然宽，不被剩余宽度截断——换行判断须
         # 用自然宽：剩余宽为 0 时测量宽为 0，换行判断恒 False）
-        cbox = _measure(
-            child, cur_x, inner_y, wrap_inner_w, fill=False,
-            percent_base=wrap_inner_w,
+        cbox = yield (
+            "m", child, cur_x, inner_y, wrap_inner_w, False, wrap_inner_w,
         )
         # L4：测量后应用 flexBasis（与 row 分支同逻辑；换行判断基于
         # 应用后宽度——flexBasis 使子节点超宽时正确换行）
-        cbox = _apply_wrap_flex_basis(child, cbox, cur_x)
+        cbox = yield from _apply_wrap_flex_basis_gen(child, cbox, cur_x)
         if wrap_lines[-1] and (cur_x - inner_x) + cbox.w > wrap_inner_w:
             wrap_heights.append(
                 max((c.layout_box.h for c in wrap_lines[-1]), default=0)
@@ -1426,12 +1475,11 @@ def _measure_wrap_row(
             cur_x = inner_x
             # 换行后重新测量（y 不影响宽度；x 影响嵌套 relative/绝对定位
             # 后代坐标——统一以最终 x 测量保证后代坐标正确）
-            cbox = _measure(
-                child, cur_x, inner_y, wrap_inner_w, fill=False,
-                percent_base=wrap_inner_w,
+            cbox = yield (
+                "m", child, cur_x, inner_y, wrap_inner_w, False, wrap_inner_w,
             )
             # L4：换行后重测同样应用 flexBasis（两次测量点一致）
-            cbox = _apply_wrap_flex_basis(child, cbox, cur_x)
+            cbox = yield from _apply_wrap_flex_basis_gen(child, cbox, cur_x)
         wrap_lines[-1].append(child)
         cur_x += cbox.w + col_gap
     wrap_heights.append(
@@ -1546,6 +1594,21 @@ def _measure_wrap_row(
                 _translate_subtree_y(child, line_y - cb.y)
         line_y += lh + row_gap
     return _wrap_box(fiber, x, y, width, row_h, pad_v, border)
+
+
+def _measure_wrap_row(
+    fiber, x, y, avail_w, explicit_w, children, inner_x, inner_y,
+    pad_h, pad_v, border, col_gap, row_gap, flex_wrap_reverse,
+    percent_base=None,
+) -> LayoutBox:
+    """同步包装（供外部/测试调用；内部经 ``_drive_task`` 显式栈驱动）。"""
+    return _drive_task(
+        _measure_wrap_row_gen(
+            fiber, x, y, avail_w, explicit_w, children, inner_x, inner_y,
+            pad_h, pad_v, border, col_gap, row_gap, flex_wrap_reverse,
+            percent_base,
+        ),
+    )
 
 
 def _wrap_box(

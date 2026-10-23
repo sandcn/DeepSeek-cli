@@ -827,6 +827,11 @@ chat_ui.clear_floating_windows()                            # 关闭全部
 - 嵌套浮窗（窗口内容里再声明 `dataFloatWindow`）不支持，内层会被忽略。
 - `allow_cover_bottom=True` 且覆盖输入区时，终端光标仍按输入区定位，会落在窗口内容上——非必要不要打开。
 - 浮窗只在合成层绘制：不进入输出历史（scrollback 记录的是底层消息内容）。
+- 调和 / 布局 / 绘制均为显式栈迭代实现（`_reconcile_tree` / `_measure_gen` + `_drive_task` / `_paint_tree`），不受 Python 递归深度限制；实际可承载深度仅受内存限制（`Fiber._depth_overflow` / `MAX_TREE_DEPTH` 保留为防御性状态，默认不触发）。
+- 单帧输入处理预算 8ms、命令应用预算 10ms（`src/tui/ink/session.py`）：超预算的输入字节/命令留到下一帧继续（顺序不变），避免大段粘贴或历史回放把单帧拉长到阻塞键盘。
+- 系统监控（CPU/内存）在后台线程采集（`ink-system-monitor`），帧内只读缓存；无 psutil 平台的子进程采样（iostat/powershell/sysctl）不再阻塞渲染线程，首次采集前状态栏显示 0。
+- 全屏/底部视图默认每帧重建（保守）；`ViewSpec.idle_static=True` 的视图才允许空闲帧复用。TraceView 含实时耗时，声明 `refresh_interval=1.0`（空闲 1Hz 刷新）；若新增视图引入时间驱动渲染，必须显式声明 `idle_static=False` 或 `refresh_interval`。
+- 帧率默认 60Hz，可用 `render(maxFps=...)` / `TuiConfig(render_interval=...)` 配置；`TuiConfig.idle_reduce_rate=True` 时静态态按 `idle_render_interval`（默认 10Hz）降频。渲染循环不再 1ms 忙等；空闲无变化帧不重复写光标/终端。
 
 ---
 
@@ -1135,12 +1140,12 @@ Pipeline 将 Agent 对话循环编排为可插拔中间件链。中间件按注�
 | 领域 | 能力 |
 |---|---|
 | 渲染 | 增量流式 Markdown（CommonMark / GFM 主体 + Pandoc 扩展，含行内代码属性 / 独立属性块 / 定义列表（块级正文）/ 脚注 / 表格表注 / 自动编号列表（`#.`）/ 定义标记 `~`）、LaTeX 公式终端排版、Mermaid 17 类图 ASCII 渲染（流程图 / 时序 / 类 / 状态 / 甘特 / 饼图 / ER / Git / 思维导图 / 时间线 / 旅程 / 数据包位域 / 块图 / 象限 / 需求 / XY 图表 / 桑基，支持 `%%` 注释）、HTML 块与行内元素（datalist / hgroup / map / slot / ruby / strike 等，含行内背景色）、Front Matter、代码高亮与行号、TOC、Diff 高亮；自绘 ANSI 渲染路径与共享解析层 |
-| TUI | React Ink 风格自研框架（调和器 / flexbox / hooks / 帧差异渲染 / 标准控件库）、恒定 60Hz 渲染与输入处理、行级增量与 committed 前缀复用、全屏视图族（轨迹 / 日志 / 配置 / 插件 / 模型 / 文件沙盒 / 变更审查 / MCP / 技能 / 用量 / 搜索 / 键位 / 通知 / 导出 / 命令面板）、模态与底部视图机制、vim 风格导航与搜索、模糊命令面板与工作区状态段、8 套配色主题 |
+| TUI | React Ink 风格自研框架（调和器 / flexbox / hooks / 帧差异渲染 / 标准控件库）、默认 60Hz 渲染与输入处理（`render(maxFps=...)` / `TuiConfig` 可配置；可选空闲自适应降频）、行级增量与 committed 前缀复用、全屏视图族（轨迹 / 日志 / 配置 / 插件 / 模型 / 文件沙盒 / 变更审查 / MCP / 技能 / 用量 / 搜索 / 键位 / 通知 / 导出 / 命令面板）、模态与底部视图机制、vim 风格导航与搜索、模糊命令面板与工作区状态段、8 套配色主题 |
 | Agent | Pipeline 中间件链、上下文自动压缩（dsh 同款）、工具调用 DAG 并行调度（显式引用 / 路径重叠 / user_select 独占 / 类别约束四层依赖 + Kahn 分层）、SubAgent 并发派发（plan / map / review / execute）、会话日志与投影、断点与恢复 |
 | 内核 | 无特权插件内核（Fiber 生命周期 / 服务容器 / 五模式事件分发 / 作用域与拦截）、Profile / Bundle / Patch 三层组装、热重载与依赖诊断、运行时不变量自检 |
 | 能力接缝 | 六边形端口-适配器（配置 / 模型 / 持久化 / 事件 / 中断 / 可观测性 / 工具注册表）、三段式 seam（`ctx.fs` / `shell` / `subprocess` / `terminals` / `jobs` / `sandbox`，Provider 可整体替换） |
 | 工具 | bash / bash_opt（后台任务与 GUI 操作：截图、窗口、键鼠、宏、像素、OCR 定位）、文件读写与检索、Web 搜索与抓取、MCP 外部工具、技能、SubAgent 调度 |
-| 工程 | 全量测试 + 覆盖率门槛、ruff（F/E9 阻塞，`src` 与 `tests` 零缺陷）/ mypy 基线、CI（3.9 与 3.13 双版本）、pre-commit、依赖锁定与打包元数据守卫、架构分层与无环守卫测试、静态检查卫生守卫（`tests/test_lint_hygiene.py`） |
+| 工程 | 全量测试 + 覆盖率门槛（`pyproject.toml`）、ruff（F/E9 阻塞，`src` 与 `tests` 零缺陷）/ mypy 基线、CI（3.9 与 3.13 双版本）、pre-commit、依赖锁定与打包元数据守卫、架构分层与无环守卫测试、静态检查卫生守卫（`tests/test_lint_hygiene.py`，ruff 缺失时回退 pyflakes） |
 
 ### 尚未实现的方向
 

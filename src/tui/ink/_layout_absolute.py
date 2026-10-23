@@ -187,19 +187,25 @@ def _layout_absolute_pass(root: Fiber) -> None:
     整树测量完成后沿树遍历，对每个 absolute 节点按其 top/left/right/bottom
     相对**最近的 ``position="relative"`` 祖先**（缺省 root）的内容区定位。
     容器自身 ``position="relative"`` 时作为其子节点的定位基准；嵌套
-    absolute 容器内的 relative/absolute 孙节点经递归自然处理。
-    """
+    absolute 容器内的 relative/absolute 孙节点经迭代遍历自然处理。
 
-    def _visit(fiber: Fiber, base: Fiber | None) -> None:
+    ★ 2026-10-23（深嵌套修复）：递归 ``_visit`` → 显式栈迭代——深层组件树
+    不再触发 RecursionError；``_depth_overflow`` 子树跳过（_measure 未布局，
+    无坐标可放置）。
+    """
+    stack: list[tuple[Fiber, Fiber | None]] = [(root, root)]
+    while stack:
+        fiber, base = stack.pop()
+        if getattr(fiber, "_depth_overflow", False):
+            continue
         base_for_children = (
             fiber if fiber.props.get("position") == "relative" else base
         )
-        for child in layout_children(fiber):
-            _visit(child, base_for_children)
         if fiber.props.get("position") == "absolute" and base is not None:
             _place_absolute(fiber, base)
-
-    _visit(root, root)
+        children = layout_children(fiber)
+        for child in reversed(children):
+            stack.append((child, base_for_children))
 
 
 __all__ = ["_place_absolute", "_layout_absolute_pass"]

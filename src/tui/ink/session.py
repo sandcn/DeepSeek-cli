@@ -98,7 +98,14 @@ _FLUSH_HARD_CEILING = 60.0
 #: 节拍尾段自旋保护（秒）——Windows/Cygwin 的 ``Event.wait`` 粒度在
 #: ``timeBeginPeriod(1)`` 后仍约 1ms；等待到「还剩 ≤1ms」后自旋补齐，
 #: 避免 wait 粒度把 16.67ms 的 60Hz 节拍拉低到 ~58Hz。
+#: 尾段自旋保留常量（2026-10-23 起渲染循环不再自旋，仅保持旧导入/测试兼容）。
 _TICK_SPIN_GUARD = 0.001
+
+#: 单帧输入处理预算（秒，2026-10-23 输入时间盒）：剩余字节留待下一帧。
+_INPUT_FRAME_BUDGET = 0.008
+
+#: 单帧命令应用预算（秒，2026-10-23 命令时间盒）：剩余命令留待下一帧。
+_APPLY_FRAME_BUDGET = 0.010
 #: 高分辨率定时器请求（仅 Windows/Cygwin）：线程所有者集合 + winmm 句柄。
 #: 每个渲染线程在进入 ``_render`` 时申请、退出时释放；多个渲染线程/会话
 #: 并存时只申请一次，最后一个线程退出时恢复系统默认分辨率。
@@ -248,6 +255,12 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
 
         # ── 队列 / 线程 ──
         self._cmd_queue: queue.PriorityQueue = queue.PriorityQueue(maxsize=self._config.cmd_queue_maxsize)
+        # ★ 2026-10-23（命令时间盒）：本帧未应用完的命令（已出队/task_done，
+        #   下一帧 DRAIN 阶段优先取回，保持原顺序）。
+        self._deferred_commands: list = []
+        #: APPLY 阶段进行中标志（flush 等待方据此避免「命令已出队但未应用」
+        #: 时提前返回）。
+        self._apply_in_progress = False
         self._cmd_event = threading.Event()
         self._render_thread: threading.Thread | None = None
         self._render_running = False
@@ -550,6 +563,11 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
     def write_terminal_sequence(self, data: str) -> None:
         """写入一次性终端序列（窗口标题/光标形状等）。"""
         self._terminal_modes.write_raw(data)
+        # ★ 2026-10-23：外部序列可能移动光标——失效 place_cursor 缓存。
+        try:
+            self._ink_renderer._placed_cursor = None
+        except Exception:
+            pass
 
     def set_interactive(self, enabled: bool, stdin_fd: int | None = None) -> None:
         """声明本会话是否交互模式（render() ``interactive`` 选项解析结果）。
@@ -1343,7 +1361,22 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   进程退出不等待本线程（渲染线程停止时 ``_drain_queue_safe`` 兜底
         #   已清理队列；线程随进程退出自然终止，无资源泄漏）。flush() 其余
         #   创建线程处（start/resume/崩溃恢复）均已 daemon=True，仅此一处遗漏。
-        drain_waiter = threading.Thread(target=self._cmd_queue.join, daemon=True)
+        def _drain_done() -> None:
+            """等待命令队列 + deferred 命令全部应用完成。
+
+            ★ 2026-10-23（命令时间盒）：deferred 命令已 task_done 但未应用，
+            仅 ``queue.join()`` 会提前返回——循环直到队列空、无 deferred、
+            且 APPLY 阶段结束。
+            """
+            while True:
+                self._cmd_queue.join()
+                if not getattr(self, "_deferred_commands", None) and not getattr(
+                    self, "_apply_in_progress", False,
+                ):
+                    return
+                time.sleep(0.002)
+
+        drain_waiter = threading.Thread(target=_drain_done, daemon=True)
         drain_waiter.start()
         # ★ P1（review）：timeout 为 None/非正时用硬上限——修复前
         #   ``join(timeout=None)`` 无限等待（渲染线程停滞时调用方永久阻塞）。
@@ -1520,38 +1553,28 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             _hooks.push_context(_ctx)
         try:
             while self._render_running:
-                # ── 节流等待（PERF-8）：等待到 next_loop 才处理 ──
-                # event 被高频命令 set 唤醒后**消费并继续等剩余时间**（防
-                # 忙循环）；已到 next_loop 或 _drain_queue 本身耗时超间隔时
-                # 立即进入处理（渲染跟不上时保持连续运转，不额外等待）。
+                # ── 节流等待（PERF-8 / 2026-10-23 去忙等）：等待到 next_loop ──
+                # ★ 2026-10-23（去 1ms 忙等）：原实现尾段 ≤1ms 用
+                #   ``while time.monotonic() < next_loop: pass`` 自旋，60Hz 下
+                #   最高约 6% 单核常驻。改为纯 Event.wait（1ms 定时器分辨率
+                #   已由 ``_acquire_high_resolution_timer`` 申请）；event 被
+                #   高频命令唤醒时重新计算剩余时间继续等待，不忙循环。
                 now = time.monotonic()
-                if now < next_loop:
-                    remaining = next_loop - now
-                    while remaining > 0:
-                        # ★ 尾段 ≤1ms 自旋（2026-10-20 用户需求：60Hz）：Windows/
-                        #   Cygwin 的 Event.wait 粒度约 1ms（timeBeginPeriod(1)
-                        #   后），纯 wait 会把 16.67ms 节拍拉低；仅最后 1ms 忙等，
-                        #   CPU 开销可控，且不减少任何渲染/输入处理工作。
-                        if remaining <= _TICK_SPIN_GUARD:
-                            while time.monotonic() < next_loop:
-                                pass
-                            break
-                        self._cmd_event.wait(
-                            timeout=remaining - _TICK_SPIN_GUARD,
-                        )
-                        self._cmd_event.clear()
-                        now = time.monotonic()
-                        remaining = next_loop - now
-                        # ★ 恒定 60Hz（2026-10-20 用户需求）：不因重绘请求提前
-                        #   退出节流——任何请求都等到下一 60Hz 拍处理（帧率恒
-                        #   定不超频）；用户可感知更新在 ≤1/60s 内完成。
-                # ★ 固定节拍（2026-10-20）：下一拍 = 上一拍 deadline + 帧间隔，
-                #   不把本帧处理耗时叠加到周期上（旧实现
-                #   ``max(next_loop, now)+interval`` 使每帧周期 = interval +
-                #   帧耗时，60Hz 实际只有 ~50Hz）。若本帧处理已越过下一拍
-                #   （渲染跟不上），下一次循环的 ``now < next_loop`` 为假 →
-                #   不等待、连续运转，不丢帧也不降级。
-                next_loop += self._config.render_interval
+                while now < next_loop and self._render_running:
+                    self._cmd_event.wait(timeout=next_loop - now)
+                    self._cmd_event.clear()
+                    now = time.monotonic()
+                # ★ 2026-10-23（空闲自适应降频，默认关闭）：宿主静态预测为真
+                #   时按 ``idle_render_interval`` 降频；输入/命令仍每拍处理。
+                interval = self._config.render_interval
+                if getattr(self._config, "idle_reduce_rate", False):
+                    try:
+                        if self._idle_static_now():
+                            idle_interval = float(self._config.idle_render_interval)
+                            interval = max(interval, idle_interval)
+                    except Exception:
+                        pass
+                next_loop += interval
                 try:
                     # 方向5（死代码清理）：返回值未使用——has_content 删除。
                     self._drain_queue()
@@ -1677,11 +1700,20 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                     #   的 flush_input_router/request_bottom_redraw 同步渲染
                     #   不会在模型半更新时取帧。
                     _apply_lock = getattr(self, "_render_lock", None)
-                    if _apply_lock is None:
-                        self._apply_commands(commands)
-                    else:
-                        with _apply_lock:
-                            self._apply_commands(commands)
+                    self._apply_in_progress = True
+                    try:
+                        if _apply_lock is None:
+                            deferred = self._apply_commands(commands, budget=_APPLY_FRAME_BUDGET)
+                        else:
+                            with _apply_lock:
+                                deferred = self._apply_commands(commands, budget=_APPLY_FRAME_BUDGET)
+                    finally:
+                        self._apply_in_progress = False
+                    if deferred:
+                        # ★ 2026-10-23（命令时间盒）：未应用完的命令留待下一帧
+                        #   优先处理（顺序不变；已出队命令的 task_done 已由
+                        #   DRAIN 阶段完成）。
+                        self._deferred_commands = deferred + self._deferred_commands
                     # ★ BUG（2026-10-07 空闲帧复用引入）：命令即模型变更，必须
                     #   置脏——``_should_render`` 据此落位 ``_idle_ok=False``，
                     #   禁止本拍复用上一帧。修复前命令在 DRAIN_COMMANDS 阶段已
@@ -1777,6 +1809,12 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         ) as locked:
             if not locked:
                 return [], False, False
+            # ★ 2026-10-23（命令时间盒）：上一帧未应用完的命令优先取回
+            #   （顺序先于本帧新命令）。
+            deferred = getattr(self, "_deferred_commands", None)
+            if deferred:
+                commands.extend(deferred)
+                self._deferred_commands = []
             while True:
                 try:
                     _, _, cmd = self._cmd_queue.get_nowait()
@@ -1861,7 +1899,20 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         """
         if self._input is not None:
             try:
-                self._input.process_events()
+                # ★ 2026-10-23（输入时间盒）：单帧最多 8ms 处理输入，剩余
+                #   字节留给下一帧——大段粘贴/高速输入不再把单帧拉长到
+                #   几十~几百 ms（会推迟下一次按键处理）。
+                self._input.process_events(budget=_INPUT_FRAME_BUDGET)
+            except TypeError as exc:
+                # 仅当 TypeError 明确来自「不接受 budget 参数」时才回退无参
+                # 调用（内部逻辑 TypeError 不能重复执行一次）。
+                if "budget" in str(exc):
+                    try:
+                        self._input.process_events()
+                    except Exception:
+                        _logger.warning("_phase_process_input 兼容调用异常", exc_info=True)
+                else:
+                    _logger.warning("_phase_process_input 异常", exc_info=True)
             except Exception:
                 _logger.warning("_phase_process_input 异常", exc_info=True)
 

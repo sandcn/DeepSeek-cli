@@ -24,7 +24,7 @@ from src.tui.ink._paint_canvas import (
 )
 from src.tui.ink.components import render_frame
 from src.tui.ink.diff import first_diff_line
-from src.tui.ink.output import Frame, Line, StyledRun
+from src.tui.ink.output import Frame, Line
 from src.tui.ink.reconciler import Reconciler
 
 
