@@ -759,6 +759,15 @@ def _merge_window_row(base_line, rowdata, win_x: int, win_w: int,
         screen_col = win_x + local
         if screen_col < 0 or screen_col >= width:
             continue  # 出屏列丢弃（终端写不到，也与行宽不变量冲突）
+        ch, style, _link = _entry3(value)
+        if not opaque and ch == " " and style is None:
+            # ★ 2026-10-23（pet 透视背景修复）：透明窗口的**无样式空格**只是
+            #   布局补白（``_merge_line`` 为 marginLeft 补的前导空格 / 段间
+            #   空隙），不是窗口内容——跳过它，底层原内容才透得出来。修复前
+            #   这些空格被当作窗口单元格覆盖底层，宠物周围出现过一条「挖空」
+            #   底层文本的矩形带（用户报障「pet 没有透视背景」）。
+            #   带样式（含背景色）的空格仍occupied——那是窗口刻意绘制的色块。
+            continue
         cells[screen_col] = value
     if not cells:
         return None
@@ -947,15 +956,25 @@ def _overlay_floating(root: Fiber, frame: Frame, width: int) -> Frame:
             if row < 0 or row >= len(lines):
                 continue
             rowdata = canvas[i]
-            if not rowdata:
-                continue
-            merged = _merge_window_row(
-                lines[row], rowdata, win_x, win_w, width, opaque,
-            )
-            if merged is None:
-                continue
-            lines[row] = merged
-            touched.append(row)
+            if rowdata:
+                merged = _merge_window_row(
+                    lines[row], rowdata, win_x, win_w, width, opaque,
+                )
+                if merged is not None:
+                    lines[row] = merged
+                    touched.append(row)
+            # ★ 2026-10-23（pet 渲染闪烁修复）：窗口矩形内的行补足到终端
+            #   宽度——行宽不足时 ``renderer._line_needs_clear`` 会先写 EL
+            #   （\033[K）清整行再重写，逐字节渲染的终端上该行（含宠物与
+            #   底层文本）会先消失、再随同一次写入出现，宠物动画期间就表现
+            #   为「闪」。补满整行后直接覆盖，写入过程中没有空白中间态；
+            #   空格只追加在行内容之后（该区域本就无底层内容，视觉不变）。
+            current = lines[row]
+            if current.width < width:
+                padded = current.clone()
+                padded.append(" " * (width - current.width))
+                lines[row] = padded
+                touched.append(row)
     if not touched:
         return frame
     prefix = frame._stable_prefix

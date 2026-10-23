@@ -476,3 +476,124 @@ def _window(model, window_id: str):
     raise AssertionError(f"未找到浮窗: {window_id}")
 
 
+# ── 透视背景 / 动画闪烁（2026-10-23 用户报障） ─────────────
+
+def test_pet_transparent_overlay_and_animation_does_not_clear_rows() -> None:
+    """完整渲染链路：宠物透明区透出底层文本；动画帧不对宠物行写 EL（防闪）。
+
+    用户报障：「pet 没有透视背景，并且渲染会闪」。
+
+      - 透明背景：``/pet`` 的 ``background=None``，窗口空隙必须保留底层内容；
+        修复前 ``_merge_line`` 为 marginLeft 补的无样式空格被当成窗口单元格，
+        覆盖底层文本形成「挖空矩形带」；
+      - 闪烁：宠物行宽不足时渲染器先写 ``\\033[K`` 清整行再重写，30fps 动画
+        期间整行（含宠物）反复消失再出现。修复后浮窗矩形内整行补足终端宽度，
+        直接覆盖、无 EL。
+    """
+    import io
+    import re
+
+    pyte = pytest.importorskip("pyte")
+    from src.tui._config import TuiConfig
+    from src.tui._const import DisplayMsgsCmd
+    from src.tui._screen import TerminalWidthCache
+    from src.tui.app.app import build_app_element
+    from src.tui.app.apply import apply_cmd
+    from src.tui.app.model import AppModel
+    from src.tui.ink import components
+    from src.tui.ink.session import InkSession
+
+    width, height = 80, 24
+    clock = {"t": 0.0}
+    spec = pet_window_spec(started_at=0.0)
+
+    def _render(props):
+        return PetFloatingWindow({**props, "started_at": 0.0, "now": clock["t"]})
+
+    spec = spec.copy_with(render=_render)
+    cache = TerminalWidthCache(ttl=60)
+    cache.set_dimensions(width, height)
+    model = AppModel()
+    model.status.status_active = False
+    model.floating_windows = [spec]
+    stream = io.StringIO()
+    session = InkSession(
+        model=model, apply_cmd=apply_cmd, build_tree=build_app_element,
+        width_cache=cache, config=TuiConfig.defaults(), stream=stream,
+    )
+    screen = pyte.Screen(width, height)
+    parser = pyte.Stream(screen)
+    apply_cmd(model, DisplayMsgsCmd(messages=[
+        {"role": "user", "content": f"消息 {index} " + "内容" * 30}
+        for index in range(10)
+    ]))
+
+    def step(t: float) -> tuple[list[int], object]:
+        clock["t"] = t
+        session._dirty = True
+        session._idle_ok = False
+        before = stream.tell()
+        session._render_frame()
+        stream.seek(before)
+        data = stream.read()
+        stream.seek(0)
+        stream.truncate(0)
+        el_rows: list[int] = []
+        for token in re.split(r"(\x1b\[[0-9;?]*[A-Za-z]|\r|\n)", data):
+            if not token:
+                continue
+            parser.feed(token)
+            if token == "\x1b[K":
+                el_rows.append(screen.cursor.y)
+        return el_rows, session._last_frame
+
+    step(0.0)
+    petf = session._root_fiber._float_frame_windows[0]
+    pet_y = int(petf.layout_box.y)
+    pet_h = int(petf._float_visible_h)
+    pet_x = int(petf.layout_box.x)
+    frame = session._last_frame
+    offset = frame.height - height  # 底部对齐：屏幕行 = 文档行 - offset
+    pet_rows = {
+        row - offset for row in range(pet_y, pet_y + pet_h)
+        if 0 <= row - offset < height
+    }
+    assert pet_rows
+
+    # 动画时间点（idle 浮沉 / 眨眼 / 动作切换）逐帧渲染：宠物行不得被 EL 清行。
+    for t in (0.4, 1.15, 2.4, 3.7, 6.0):
+        el_rows, frame = step(t)
+        bad = [row for row in el_rows if row in pet_rows]
+        assert not bad, f"宠物行被 EL 清行（会闪）：t={t} rows={bad}"
+
+    with_pet = frame
+    with_pet_screen = [line.rstrip() for line in screen.display]
+    # 浮窗矩形内整行补足终端宽度（渲染器不需要 EL 清行）。
+    for row in range(pet_y, pet_y + pet_h):
+        assert with_pet.lines[row].width == width, (
+            row, with_pet.lines[row].width,
+        )
+
+    # 透明背景：宠物矩形左侧（宠物未覆盖列）的底层文本与无宠物帧逐行一致。
+    model.floating_windows = []
+    step(6.0)
+    base = session._last_frame
+    assert base.height == with_pet.height
+
+    def text_range(line, start, end):
+        out = type(line)()
+        components._append_line_range(out, line, start, end)
+        return out.plain
+
+    left_w = max(0, min(pet_x, width))
+    for row in range(pet_y, pet_y + pet_h):
+        assert text_range(with_pet.lines[row], 0, left_w).rstrip() == (
+            text_range(base.lines[row], 0, left_w).rstrip()
+        ), f"宠物覆盖了左侧底层内容：row={row}"
+
+    # 最终屏幕与帧内容一致（底部对齐）。
+    got = [line.rstrip() for line in with_pet_screen]
+    want = [line.plain.rstrip() for line in with_pet.lines[-height:]]
+    assert got == want
+
+

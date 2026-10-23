@@ -77,6 +77,36 @@ def test_merge_transparent_only_occupies_drawn_cells() -> None:
     assert merged.plain == "abcWefghij"
 
 
+def test_merge_transparent_skips_unstyled_padding_spaces() -> None:
+    """透明窗口：无样式空格只是布局补白，不得覆盖底层内容（pet 透视背景）。
+
+    ``_merge_line`` 为 marginLeft 补的前导空格在画布行里是 ``(ch, None)``——
+    修复前它们被当作窗口单元格占用底层列，宠物周围出现「挖空底层文本」的
+    矩形带（用户报障「pet 没有透视背景」）。
+    """
+    merged = components._merge_window_row(
+        _line("abcdef"),
+        {0: (" ", None), 1: ("W", None), 2: (" ", None)},
+        0, 3, 6, False,
+    )
+    assert merged is not None
+    # 首列底层 'a' 与第三列底层 'c' 保留，只有实际字符 'W' 占用第 1 列。
+    assert merged.plain == "aWcdef"
+
+
+def test_merge_transparent_styled_space_still_occupies() -> None:
+    """透明窗口：**带样式**的空格是窗口刻意绘制的内容，仍占用底层列。"""
+    from src.tui.core.style import Style
+
+    merged = components._merge_window_row(
+        _line("abcdef"),
+        {0: (" ", Style(fg=196)), 1: ("W", None)},
+        0, 3, 6, False,
+    )
+    assert merged is not None
+    assert merged.plain == " Wcdef"
+
+
 def test_merge_cjk_boundary_keeps_alignment() -> None:
     # 窗口矩形 [3,5) 落在第二个「中」（占 2-3 列）与第三个「中」（占 4-5 列）
     # 的边界上——宽字符不能被切一半，左侧留白 1 列、右侧从第 6 列继续。
