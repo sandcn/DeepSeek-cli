@@ -76,10 +76,12 @@ def test_large_growth_does_not_clear_or_rewrite_whole_document() -> None:
     data = _feed(stream, parser, screen)
 
     # 核心断言：不再清屏、不再整篇重写（修复前会写 700+ 行）。
+    # ★ 2026-10-23（底部滚动快路径）：大增量帧现在先滚动 delta 行、再只重写
+    #   可见区变化行——写入行数上限 = 屏幕高度（20），不再与新增行数同阶。
     assert "\x1b[2J" not in data
     rows = data.count("\x1b[K")
-    assert 300 <= rows < len(base), (
-        f"大增量帧重写行数异常：{rows}（不应达到整篇文档 {len(base)} 行）"
+    assert rows <= height, (
+        f"大增量帧重写行数异常：{rows}（应不超过可见区 {height} 行）"
     )
 
     # 屏幕内容 == 新帧最后 height 行（pyte 逐行核对）。
@@ -89,23 +91,27 @@ def test_large_growth_does_not_clear_or_rewrite_whole_document() -> None:
 
 
 def test_large_tail_append_stays_incremental() -> None:
-    """纯尾部大追加：走平移快路径，只写新增行（不清屏、不重复历史）。"""
+    """纯尾部大追加：滚动 + 只重写可见区（不清屏、不重复历史）。"""
+    pyte = pytest.importorskip("pyte")
     height = 20
     stream = io.StringIO()
+    screen = pyte.Screen(40, height)
+    parser = pyte.Stream(screen)
     renderer = InkRenderer(stream=stream, height=height)
 
     base = [f"L{i:03d}" for i in range(300)]
     renderer.render(_frame(base))
-    stream.seek(0)
-    stream.truncate(0)
+    _feed(stream, parser, screen)
 
     grown = base + [f"N{i:03d}" for i in range(250)]
     frame = _frame(grown)
     renderer.render(frame)
-    data = stream.getvalue()
+    data = _feed(stream, parser, screen)
 
     assert "\x1b[2J" not in data
-    assert data.count("\x1b[K") == 250
+    # 滚动 250 行由终端原生完成；内容只重写可见区 20 行。
+    assert data.count("\x1b[K") <= height
+    assert _screen_lines(screen) == [t.rstrip() for t in grown[-height:]]
     assert renderer._prev is frame
     assert renderer._buf_h == len(grown)
     assert renderer.cursor_row == height

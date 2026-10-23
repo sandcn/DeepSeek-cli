@@ -718,6 +718,26 @@ class _SessionFrameMixin:
             start=content_start,
             resync=size_changed,
         )
+        # ★ 2026-10-23（增长闪烁修复）：注入文档末尾固定底栏行数——渲染器
+        #   增长时把滚动区域限制在内容区（DECSTBM），状态栏/输入区不随滚动
+        #   上移、无需每帧写回底部，消除「增长时底栏上下跳一下」的闪。
+        #   底栏 = 下屏 fiber（``dataFloatAnchor="bottom_area"``）起始行到文档
+        #   末尾；补白/浮窗平移后 layout_box.y 已是本帧行号。无下屏（全屏视图）
+        #   注入 0 → 回退整屏滚动（既有行为）。
+        bottom_reserved = 0
+        bottom_area = self._find_bottom_area_fiber()
+        bottom_box = getattr(bottom_area, "layout_box", None)
+        if bottom_box is not None:
+            try:
+                bottom_y = int(getattr(bottom_box, "y", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                bottom_y = -1
+            if 0 <= bottom_y <= frame.height:
+                bottom_reserved = frame.height - bottom_y
+        try:
+            self._ink_renderer.set_bottom_reserved(bottom_reserved)
+        except Exception:
+            _logger.debug("注入底栏保留行数异常", exc_info=True)
         self._ink_renderer.render(frame)
         # ★ render({onRender})：每帧渲染后回调（官方 RenderMetrics 语义）——
         #   回调异常仅记录日志，不中断渲染循环。

@@ -75,12 +75,20 @@ def test_painted_top_initialised_from_bottom_anchor() -> None:
 
 
 def test_painted_top_shrinks_when_document_grows_to_fill_screen() -> None:
-    """文档增长到填满屏幕：写入范围顶部收缩到 0（整屏都属会话）。"""
+    """文档增长到填满屏幕：写入范围顶部收缩到可见区首物理行。
+
+    ★ 2026-10-23（滚动增长适配）：增长走「底部滚动 + 局部重写」快路径后，
+    终端物理缓冲随滚动增长 4 行（``_buf_h`` 10 → 14）——文档仍贴底，其首行
+    物理行号保持 4（``_painted_top``），可见区 = 物理行 4..13 全部属于会话。
+    修复前的不增长实现里 ``_buf_h`` 恒为屏幕高度、``_painted_top`` 收缩到 0；
+    滚动路径下物理行号语义不变（本会话写过的最高物理行），故断言 4。
+    """
     renderer = InkRenderer(stream=io.StringIO(), height=10)
     renderer.render(_frame(*[f"L{i}" for i in range(6)]))
     assert renderer._painted_top == 4
     renderer.render(_frame(*[f"L{i}" for i in range(10)]))
-    assert renderer._painted_top == 0
+    assert renderer._buf_h == 14
+    assert renderer._painted_top == 4
 
 
 def test_painted_top_reset_on_full_clear() -> None:
