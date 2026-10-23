@@ -7,7 +7,10 @@
   3. ``find_bottom_area``：返回**host** fiber（不是无 layout_box 的
      ``Box`` 函数 fiber）；
   4. InkSession 集成：解析进度行出现→消失时，文档高度保持、下屏位置不变、
-     上方内容不移动，仅解析行变为空行；流式结束后释放锁定。
+     上方内容不移动，仅解析行变为空行；流式结束后释放锁定；
+  5. 2026-10-23「流式输出时浮动窗口抖动」：补白帧的浮窗可见几何必须按
+     **含补白的文档总高**重新解析（修复前按补白前高度解析，窗口顶部被多裁
+     一行——顶部边框/标题行在补白帧消失、下一帧又出现）。
 """
 
 from __future__ import annotations
@@ -432,3 +435,61 @@ def test_small_screen_cropped_window_stable() -> None:
         if "Edit" in left or "╭" in left or "│" in left or "╰" in left:
             continue
         assert left == right, row
+
+
+# ── 6. 补白帧浮窗几何重算（2026-10-23 用户报障：流式输出时浮窗抖动） ──
+
+
+def test_pad_frame_recomputes_window_geometry_with_padded_height() -> None:
+    """短文档：浮窗顶部本就贴到文档首行（可见高度被裁 1 行）。
+
+    解析进度行消失 → 高度锁定补 1 行空白，文档总高与上一帧相同。补白帧的
+    浮窗几何必须按**含补白的总高**重新解析；修复前按补白前高度解析，窗口
+    顶部被多裁一行——标题行/顶部边框在补白帧消失、下一帧又出现（抖动）。
+    """
+    from src.tui._const import ContentCmd, DisplayMsgsCmd, ParseInfoCmd
+
+    model, session, step = _make_loop_session(80, 24)
+    step()
+    step(DisplayMsgsCmd(messages=[{"role": "user", "content": "你好"}], speed=0))
+    step(ContentCmd(text="第0段流式内容"))
+    with_parse = step(ParseInfoCmd(tool_names="Edit", tokens=100, elapsed=1.0))
+    geometry_with = dict(model.floating_windows[0].geometry)
+    assert _rows_with(with_parse, "⟳ /loop"), "前置：带解析行时浮窗应完整可见"
+
+    without_parse = step(ParseInfoCmd(tool_names="", tokens=-1, elapsed=0.0))
+    geometry_without = dict(model.floating_windows[0].geometry)
+    assert session._frame_bottom_pad == 1
+
+    # 浮窗标题行 / 底边框在补白帧与原帧完全同位置
+    assert _rows_with(without_parse, "⟳ /loop") == _rows_with(with_parse, "⟳ /loop")
+    assert _rows_with(without_parse, "╰") == _rows_with(with_parse, "╰")
+    # 运行时几何（可见高度 / 屏幕坐标）也必须一致（鼠标命中依赖）
+    assert geometry_without["height"] == geometry_with["height"]
+    assert geometry_without["screen_y"] == geometry_with["screen_y"]
+
+
+def test_streaming_pad_frames_keep_window_rows_stable() -> None:
+    """连续流式输出 + 解析行反复出现/消失：浮窗屏幕行号逐帧稳定。"""
+    from src.tui._const import ContentCmd, DisplayMsgsCmd, ParseInfoCmd
+
+    model, session, step = _make_loop_session(80, 24)
+    step()
+    step(DisplayMsgsCmd(messages=[{"role": "user", "content": "你好"}], speed=0))
+    step(ContentCmd(text="起始内容"))
+    stable: list | None = None
+    parse_on = False
+    for index in range(10):
+        step(ContentCmd(text=f"第{index}段流式内容，内容内容"))
+        parse_on = not parse_on
+        display = step(ParseInfoCmd(
+            tool_names="Edit" if parse_on else "",
+            tokens=index if parse_on else -1,
+            elapsed=1.0 if parse_on else 0.0,
+        ))
+        rows = _rows_with(display, "⟳ /loop")
+        assert rows, f"第 {index} 帧浮窗标题行消失"
+        if stable is None:
+            stable = rows
+        else:
+            assert rows == stable, f"第 {index} 帧浮窗抖动: {stable} -> {rows}"

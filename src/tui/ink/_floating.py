@@ -513,12 +513,21 @@ def _anchor_kind(props) -> str:
     return "doc"
 
 
-def apply_floating_layout(root_fiber, width: int, viewport_height: int = 0) -> int:
+def apply_floating_layout(root_fiber, width: int, viewport_height: int = 0,
+                          *, doc_height: int | None = None) -> int:
     """布局后修正全部浮窗坐标（就地平移子树 + 记录运行时矩形）。返回定位数量。
 
     **幂等**：目标坐标只由 props + 文档几何决定（不读当前 ``layout_box``），
     重复调用只是再算一次同样的 ``(x, y)`` → 位移为 0。因此所有帧构建入口
     （``components.render_frame`` 内部统一调用 + 直接调用）都能安全重复执行。
+
+    ``doc_height``（2026-10-23 补白帧浮窗抖动修复）：文档总行数覆盖值。
+    流式高度锁定会在布局之后向帧内补白（``render_frame`` 的 ``stream_pad``
+    钩子）——补白行会让文档总高变化，但 host 根 fiber 的布局盒仍是补白前
+    高度。补白后重新调用本函数时必须传入**含补白的总高**，否则浮窗仍按
+    补白前高度解析，窗口顶部被多裁一行（屏幕表现为顶部边框/标题行在补白帧
+    消失、下一帧又出现——即用户报障的「流式输出时浮窗抖动」）。None（默认）
+    = 读 host 根布局盒高度（既有行为）。
 
     只修改 ``layout_box`` 坐标（不重新测量、不改变文档高度）。窗口内容超出
     可用空间时按 ``max_height`` / 底部框 / 可视区**裁剪**（``_float_visible_h``
@@ -549,6 +558,8 @@ def apply_floating_layout(root_fiber, width: int, viewport_height: int = 0) -> i
             渲染器只能重写可见行（``renderer`` 把首差异行钳到
             ``_screen_offset``），文档坐标落在可视区上方的窗口否则永不显示。
             0（默认，headless 整帧渲染）表示不钳制。
+        doc_height: 文档总行数覆盖值（含流式补白）；None = 读 host 根
+            布局盒高度。
 
     异常安全：单个窗口解析/平移失败只记 debug，不影响其它窗口与主界面。
     """
@@ -564,7 +575,15 @@ def apply_floating_layout(root_fiber, width: int, viewport_height: int = 0) -> i
     if not windows:
         return 0
     width = max(1, int(width or 0))
-    doc_height = _document_height(root_fiber)
+    if doc_height is None:
+        doc_height = _document_height(root_fiber)
+    else:
+        # ★ 2026-10-23（补白帧浮窗抖动修复）：补白后的文档总高由调用方注入
+        #   ——布局盒高度不含补白行，误用会让浮窗顶部被多裁一行。
+        try:
+            doc_height = max(0, int(doc_height))
+        except (TypeError, ValueError, OverflowError):
+            doc_height = _document_height(root_fiber)
     input_top, input_bottom = _input_row_range(root_fiber)
     has_input = input_top >= 0
     bottom_area_top = _bottom_area_top(root_fiber)

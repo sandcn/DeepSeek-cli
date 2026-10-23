@@ -607,7 +607,8 @@ def _has_floating_layer(root: Fiber) -> bool:
 
 
 def _apply_float_positions(root: Fiber, width: int,
-                           viewport_height: int = 0) -> None:
+                           viewport_height: int = 0,
+                           *, doc_height: int | None = None) -> None:
     """布局完成后修正浮窗坐标（幂等；异常只记 debug，不影响主界面）。
 
     ★ 2026-10-21（公共渲染 API 缺浮窗定位修复）：此前只有 InkSession 的渲染
@@ -616,13 +617,19 @@ def _apply_float_positions(root: Fiber, width: int,
     规则也不生效。现由 ``render_frame`` 统一调用，所有帧构建入口一致。
     ``apply_floating_layout`` 的目标坐标只由 props 与文档几何决定，重复调用
     位移恒为 0（幂等），调用方额外再调一次也安全。
+
+    ``doc_height`` 透传文档总行数覆盖值（流式补白后重定位用，见
+    ``render_frame``）。
     """
     if not _has_floating_layer(root):
         return
     from ._floating import apply_floating_layout
 
     try:
-        apply_floating_layout(root, width, viewport_height=viewport_height)
+        apply_floating_layout(
+            root, width, viewport_height=viewport_height,
+            doc_height=doc_height,
+        )
     except Exception:  # pragma: no cover - 防御：单帧失败不影响主界面
         _logger.debug("浮窗定位异常（本帧保持原坐标）", exc_info=True)
 
@@ -987,8 +994,11 @@ def render_frame(root: Fiber, width: int, viewport_height: int = 0,
     ``stream_pad(root, total_h) -> pad``；返回 pad>0 时由钩子自行把下屏
     （``dataFloatAnchor="bottom_area"``）与底部锚定浮窗的布局盒下移 pad
     行，本函数只把文档总高同步增加 pad——补白行因此落在下屏之前，内容、
-    浮窗、状态栏/输入区三者在屏幕上都不移动。默认 None 时零行为变化
-    （独立 ``renderToString`` / ``render()`` / 测试路径不补白）。
+    浮窗、状态栏/输入区三者在屏幕上都不移动。补白生效后还会按**含补白的
+    总高**重新执行一次浮窗定位（2026-10-23 浮窗抖动修复：否则窗口可见
+    高度/顶部裁剪仍按补白前高度解析，顶部边框/标题行会在补白帧消失）。
+    默认 None 时零行为变化（独立 ``renderToString`` / ``render()`` / 测试
+    路径不补白）。
 
     Args:
         root: 根 fiber（ROOT 或 APP host）。
@@ -1030,6 +1040,17 @@ def render_frame(root: Fiber, width: int, viewport_height: int = 0,
             pad = 0
         if pad > 0:
             total_h += pad
+            # ★ 2026-10-23（补白帧浮窗抖动修复）：补白行改变了文档总高——
+            #   浮窗的文档坐标 / 可见高度 / 源行全部依赖总高（底部框锚点按
+            #   ``doc_height - bottom_h`` 推算、顶部裁剪按可用行数计算）。
+            #   补白前那次定位用的是补白前高度，会让窗口顶部多裁一行：
+            #   屏幕表现为补白帧浮窗顶部边框/标题行消失、下一帧又出现
+            #   （用户报障「流式输出时浮动窗口抖动」）。此处按**含补白的
+            #   总高**重新解析一次（幂等；仅在补白生效时执行，额外开销只
+            #   落在需要补白的帧上）。
+            _apply_float_positions(
+                root, width, viewport_height, doc_height=total_h,
+            )
     # ★ 画布惰性行（方向4）：初始 None——仅未命中行创建 dict（行级缓存优化；
     #   TEXT 命中行直接放 Line 对象，免逐字符重绘）。
     canvas: list = [None] * max(1, total_h)
