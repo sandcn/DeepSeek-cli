@@ -66,8 +66,6 @@ _MISC_SYMBOLS: Dict[str, str] = {
     "ss": "ß",
     "bigtriangleup": "△",
     "bigtriangledown": "▽",
-    "blacktriangle": "▲",
-    "blacktriangledown": "▼",
     "vartriangle": "△",
     "triangledown": "▽",
     "blacktriangleright": "▶",
@@ -90,7 +88,6 @@ _MISC_SYMBOLS: Dict[str, str] = {
     "daleth": "ℸ",
     "maltese": "✠",
     "backprime": "‵",
-    "circledS": "Ⓢ",
     "textregistered": "®",
     "textsection": "§",
     "textparagraph": "¶",
@@ -178,7 +175,6 @@ _ACCENT_MAP: Dict[str, str] = {
     "grave": "\u0300",
     "acute": "\u0301",
     "mathring": "\u030A",
-    "tilde": "\u0303",
 }
 
 # 运算符字符（在普通文本中检测为运算符样式）

@@ -89,7 +89,7 @@ TAG_LABELS: dict[str, str] = {
     # 空元素（单行时通常不显示标签行，此处供无状态入口/异常序列使用）
     "img": "img 图片", "br": "br 换行", "wbr": "wbr 断行",
     "area": "area 热区", "base": "base 基地址", "col": "col 列",
-    "meta": "meta 元信息", "link": "link 外部资源", "param": "param 参数",
+    "meta": "meta 元信息", "link": "link 外部资源",
 }
 
 #: 无内容容器的标签（内容仅作占位说明，不逐行显示）

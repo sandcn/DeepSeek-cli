@@ -31,12 +31,6 @@ _OPERATOR_SYMBOLS: Dict[str, str] = {
     "smalltriangleleft": "◂", # 小三角左
     "Cap": "⋒",               # 双交
     "Cup": "⋓",               # 双并
-    "barwedge": "⊼",          # 楔形带横
-    "veebar": "⊻",            # 异或
-    "boxdot": "⊡",            # 盒点
-    "boxminus": "⊟",          # 盒减
-    "boxplus": "⊞",           # 盒加
-    "boxtimes": "⊠",          # 盒乘
     "uplus": "⊎",             # 并集加
     "sqcap": "⊓",             # 方帽
     "sqcup": "⊔",             # 方杯

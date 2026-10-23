@@ -7,6 +7,10 @@
 同时锁定两处已修复的规则文本矛盾（防回归）：
   - 「零落盘时不得声明完成」与「纯问答/审查轮以结论完整为标准」互相否定；
   - 条款自述「裁决层级次于安全红线」与唯一阶梯（含第零条/实现完整性红线）不一致。
+
+并锁定空模式第二轮审计的修复项：空选择以 `action` 字段裁决、计划项跨轮口径、
+回滚与基线可执行、提问口子覆盖版本控制写操作、元文件注入事实、无图形证据形态、
+输出按改动规模分级。
 """
 
 from __future__ import annotations
@@ -89,18 +93,21 @@ def test_prompt_contradictions_fixed_in_empty_mode() -> None:
     """锁定空模式提词本轮修复的授权、元文件与配置测试口径。"""
     content = builder._load_prompt("prompts_export_main_empty")
 
-    # 空选择不得被当成默认全选授权；拒绝语义统一为 cancel / 空选择。
+    # 空选择语义以 action 字段为准；不得再出现「空选择按默认全选」的自相矛盾写法。
     assert "主动拒绝或取消" not in content
     assert "`selected` 为空时按默认全选" not in content
+    assert "空选择按默认全选" not in content
+    assert "以 `action` 字段为准" in content
     assert "`selected` 为空视为未授权" in content
     assert "法定拟制授权" in content
 
     # 互斥选项不得同时全选。
     assert "不因方案互斥而少勾" not in content
 
-    # 提词文件按配置跑受影响测试，不强制图形界面实操。
-    assert "`prompts/*.md` 提词文件按配置处理" in content
+    # 提词文件以受影响测试替代图形实操；不得再引用不存在的「配置项」。
+    assert "`tests/core/test_prompt_modes.py`" in content
     assert "不要求图形界面实操" in content
+    assert "按配置处理" not in content
 
     # 元文件注入事实必须与实现一致。
     assert "7 个运行时元文件" not in content
@@ -144,6 +151,46 @@ def test_empty_prompt_allows_graded_delivery() -> None:
     assert "如实报告 ≠ 失败" in content
     assert "分级交付" in content
     assert "只有以下情况判失败" in content
+
+
+def test_empty_prompt_invariants_after_conflict_fix() -> None:
+    """锁定本轮修复的硬冲突与悬空引用（防回退）。
+
+    对应审计结论：条款互斥（计划延后 / 空选择 / 回滚 / 提问口子）、
+    判据不可观测、与实现不符（配置项、元文件注入、截图证据）、成本失控。
+    """
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    # 计划延后口径统一：允许本轮分批，禁止跨轮延后。
+    assert "不得跨轮延后" in content
+    assert "本轮内分批不视为延后" in content
+
+    # 回滚与基线可执行：写前快照、误改恢复、改动前基线。
+    assert "写前快照" in content
+    assert "git restore -- <path>" in content
+    assert "基线例外" in content
+
+    # 提问口子覆盖版本控制写操作；扩权「申请与执行」不得两缺。
+    assert "④ 版本控制写操作" in content
+    assert "不得两缺" in content
+
+    # 不可观测判据与悬空引用必须消失。
+    assert "模型自我说服" not in content
+    assert "按配置处理" not in content
+    assert "7 个运行时元文件" not in content
+
+    # 无图形环境与输出成本有明确口径；路径例外与 5.5 对齐。
+    assert "无图形环境" in content
+    assert "按改动规模分级" in content
+    assert "~/.chat/plan/*.md" in content
+
+    # 判据覆盖非中文指令、「本轮」有定义、测试范围收敛。
+    assert "措辞清单是示例不是穷举" in content
+    assert "「本轮」= 用户当前这条消息" in content
+    assert "受影响测试集合" in content
+
+    # git 三问不得因「最多一轮」而失效。
+    assert "不占用新一轮提问" in content
 
 
 def test_simple_prompt_has_positive_authorization_and_graded_delivery() -> None:
