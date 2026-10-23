@@ -31,11 +31,11 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from dataclasses import dataclass
 from typing import Any
 
-from src.tui._screen import TerminalWidthCache
 from .element import Element
-from .terminal import cursor_shape_sequence
+from .terminal import TerminalSizeCache, cursor_shape_sequence
 
 _logger = logging.getLogger(__name__)
 
@@ -238,6 +238,35 @@ def detect_interactive(stdin: Any, out_stream: Any) -> bool:
     return _is_tty_fd(stdin_fd) and _is_tty_fd(out_fd)
 
 
+@dataclass
+class RenderOptions:
+    """``render()`` 的会话选项（React Ink ``render(tree, options)`` 语义）。
+
+    存在理由：``render()`` 历史上靠 19 个关键字参数传递配置，调用方（测试 /
+    嵌入式 UI）只能逐个拼参数，且在签名里看不出「哪些是一组终端能力」。本
+    dataclass 把这些选项收成一个可复用、可序列化、可默认化的对象；散参数
+    仍保留（React Ink API 兼容），两者同时给出时**散参数优先**（显式 > 批量）。
+    """
+
+    stdout: Any = None
+    stdin: Any = None
+    stderr: Any = None
+    width: int | None = None
+    height: int | None = None
+    debug: bool = False
+    exitOnCtrlC: bool = True
+    patchConsole: bool = False
+    maxFps: float | None = None
+    isScreenReaderEnabled: bool = False
+    kittyKeyboard: Any = None
+    onRender: Any = None
+    alternateScreen: bool = False
+    interactive: bool | None = None
+    mouse: bool = False
+    windowTitle: str | None = None
+    cursorShape: Any = None
+
+
 def render(
     element: Element,
     stream=None,
@@ -259,6 +288,7 @@ def render(
     mouse: bool = False,
     windowTitle: str | None = None,
     cursorShape: Any = None,
+    options: RenderOptions | None = None,
 ) -> dict:
     """React Ink ``render()`` 等价物（轻量入口）：渲染组件树到终端。
 
@@ -316,6 +346,28 @@ def render(
         dict：控制对象（waitUntilExit/unmount/cleanup/rerender/clear/
         waitUntilRenderFlush）。
     """
+    # ── options 归一（散参数优先：显式传入的关键字覆盖 options 中的值）──
+    if options is not None:
+        stdout = options.stdout if stdout is None else stdout
+        stdin = options.stdin if stdin is None else stdin
+        stderr = options.stderr if stderr is None else stderr
+        width = options.width if width is None else width
+        height = options.height if height is None else height
+        debug = options.debug or debug
+        exitOnCtrlC = options.exitOnCtrlC if not exitOnCtrlC else exitOnCtrlC
+        patchConsole = options.patchConsole or patchConsole
+        maxFps = options.maxFps if maxFps is None else maxFps
+        isScreenReaderEnabled = (
+            options.isScreenReaderEnabled or isScreenReaderEnabled
+        )
+        kittyKeyboard = options.kittyKeyboard if kittyKeyboard is None else kittyKeyboard
+        onRender = options.onRender if onRender is None else onRender
+        alternateScreen = options.alternateScreen or alternateScreen
+        interactive = options.interactive if interactive is None else interactive
+        mouse = options.mouse or mouse
+        windowTitle = options.windowTitle if windowTitle is None else windowTitle
+        cursorShape = options.cursorShape if cursorShape is None else cursorShape
+
     InkSession = _session_cls
     if InkSession is None:
         raise RuntimeError(
@@ -349,12 +401,11 @@ def render(
             fps = 0.0
         if fps > 0 and fps != float("inf"):
             interval = 1.0 / fps
-            from .._config import TuiConfig
+            from .options import InkOptions
 
-            render_config = TuiConfig.defaults().with_overrides(
+            render_config = InkOptions(
                 render_interval=interval,
                 drain_lock_timeout=interval,
-                bottom_redraw_interval=interval,
             )
         else:
             _logger.debug("render maxFps=%r 非法（需 >0 有限值），使用默认 60Hz", maxFps)
@@ -362,7 +413,7 @@ def render(
         model=model,
         build_tree=_build_tree,
         stream=out_stream if out_stream is not None else sys.stdout,
-        width_cache=TerminalWidthCache(),
+        width_cache=TerminalSizeCache(),
         config=render_config,
     )
     # 尺寸覆盖（TerminalWidthCache 只读接口——直接写独立缓存字段）

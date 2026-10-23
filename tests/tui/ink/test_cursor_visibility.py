@@ -20,7 +20,7 @@ from __future__ import annotations
 import io
 from types import SimpleNamespace
 
-from src.tui.ink import _cursor
+from src.tui import _input_cursor as _cursor
 from src.tui.ink._session_frame_mixin import _SessionFrameMixin
 from src.tui.ink.output import Frame, Line
 from src.tui.ink.renderer import InkRenderer
@@ -163,6 +163,8 @@ class _Session(_SessionFrameMixin):
         )
         self._ink_renderer = renderer
         self._width_cache = SimpleNamespace(get_width=lambda: width)
+        # 2026-10 架构演进：光标定位策略由装配注入（框架不再 import 应用输入层）。
+        self._cursor_provider = _cursor.position_cursor
 
 
 def test_position_cursor_places_then_shows() -> None:
@@ -203,6 +205,9 @@ class _FakeWidthCache:
     def get_height(self) -> int:
         return 24
 
+    def get_dimensions(self) -> tuple[int, int]:
+        return (80, 24)
+
     def poll(self, ttl: float = 60.0) -> None:  # pragma: no cover - 本测试不用
         pass
 
@@ -228,10 +233,8 @@ def test_stop_restores_cursor_visible(monkeypatch) -> None:
 
 
 def test_suspend_restores_cursor_visible(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "src.tui.ink.session._get_terminal_size", lambda: (80, 24),
-    )
     session, stream = _make_session()
+    session._width_cache = _FakeWidthCache()
     session._ink_renderer.set_cursor_visible(False)
     stream.seek(0)
     stream.truncate(0)

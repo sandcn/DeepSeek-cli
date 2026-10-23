@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import logging
 
-from ._cursor import find_input_fiber
+from ._fiber_utils import find_input_fiber
 from ._layout_transform import _translate_subtree_x, _translate_subtree_y
 from ._layout_tree import _skip_function
 

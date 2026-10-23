@@ -35,7 +35,7 @@ def create_display_proxy(source: str = "", max_history: int = 3):
 
 def emit_display_event(event: Any) -> None:
     """发布显示事件到默认 DisplayEventBus。"""
-    from ...tui.events.publish import emit as _fn
+    from ...core.events.publish import emit as _fn
     _fn(event)
 
 

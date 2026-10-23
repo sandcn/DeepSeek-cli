@@ -14,7 +14,7 @@
     DisplayEventBus.get_default().subscribe(my_handler)
 """
 
-from .event_types import (
+from ...core.events.display_types import (
     DisplayEvent,
     SessionStarted, SessionStopped,
     ToolParsingEvent, ToolStartedEvent, ToolDoneEvent, ToolOutputChunkEvent, ToolBatchStartedEvent, ToolNoticeEvent,
@@ -27,8 +27,8 @@ from .event_types import (
     BackgroundTaskChangedEvent,
     ALL_EVENT_TYPES,
 )
-from .event_bus import DisplayEventBus, EventHandler
-from .publish import emit, default_bus
+from ...core.events.display_bus import DisplayEventBus, EventHandler
+from ...core.events.publish import emit, default_bus
 from .consumers import (
     OutputConsumer,
     publish_output,

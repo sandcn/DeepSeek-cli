@@ -29,8 +29,8 @@ import logging
 from typing import Any, Dict, List, Optional, Set, Type
 
 from .._base_display import BaseDisplay as _BaseDisplay
-from .event_bus import DisplayEventBus, EventHandler
-from .event_types import (
+from ...core.events.display_bus import DisplayEventBus, EventHandler
+from ...core.events.display_types import (
     DisplayEvent,
     SessionStarted, SessionStopped,
     ToolParsingEvent, ToolStartedEvent, ToolDoneEvent, ToolBatchStartedEvent,

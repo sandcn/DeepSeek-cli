@@ -12,8 +12,12 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Mapping
 
-from src.presentation_data import LiveMapping
 from src.tui.core.style import Style
+from ._data import (
+    BORDER_CHARS_FALLBACK,
+    BORDER_OBJECT_DEFAULT_FALLBACK,
+    DataTableMapping,
+)
 from .fiber import Fiber
 from .output import Line
 from ._paint_canvas import (
@@ -137,11 +141,15 @@ def _border_style(props: dict, edge: str | None = None) -> Style:
 #: 边框（``┄``/``┆``，视觉更轻）。
 #: singleDouble：顶/底双线、左右单线（``╓ ╖ ╙ ╜ ═ ║``）；doubleSingle：
 #: 顶/底单线、左右双线（``╒ ╕ ╘ ╛ ─ ╞`` 类）——react-ink 完整变体。
-_BORDER_CHARS: Mapping[str, tuple] = LiveMapping("border_chars")
+_BORDER_CHARS: Mapping[str, tuple] = DataTableMapping(
+    "border_chars", BORDER_CHARS_FALLBACK,
+)
 
 #: 自定义 borderStyle 对象缺省值（React Ink v6：``{topLeft, top, topRight,
 #: left, bottomLeft, bottom, bottomRight, right}``——缺省项回退 "single"）。
-_DEFAULT_BORDER_OBJECT: Mapping[str, str] = LiveMapping("border_object_default")
+_DEFAULT_BORDER_OBJECT: Mapping[str, str] = DataTableMapping(
+    "border_object_default", BORDER_OBJECT_DEFAULT_FALLBACK,
+)
 
 #: 边框字符兜底（注册表缺席/被禁用时使用，与 single 变体一致）。
 _FALLBACK_BORDER = ("┌", "┐", "└", "┘", "─", "│")

@@ -36,12 +36,8 @@ import queue
 import threading
 import time
 
-from src.tui._const import (
-    RenderCmd,
-    RenderCommand,
-    ANSI_EMERGENCY_RED,
-    ANSI_EMERGENCY_RESET,
-)
+from .ansi import ANSI_EMERGENCY_RED, ANSI_EMERGENCY_RESET
+from .command import RenderCmd, RenderCommand
 # ★ 命令优先级策略（方向B 拆分）：优先级常量/映射自 ._cmd_priority 导入
 from src.tui.ink._cmd_priority import (
     _CMD_PRIORITY_CRITICAL,

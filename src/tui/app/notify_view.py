@@ -21,23 +21,21 @@ import time
 from src.tui.core.style import Style
 from src.tui.ink import TEXT, Column, Row, StyledRun, h, use_input
 from src.tui.ink.helpers import truncate_runs, wrap_runs_by_width
-from src.tui.ink.hooks import use_memo
 from src.tui.ink.widgets.listview import ListView
 
-from ._inspector_pane import PaneState, handle_nav, resolve
+from ._inspector_pane import handle_nav
+from ._list_view import use_list_view
 from ._modal_view import empty_modal_frame, is_modal_close_key, use_modal_scope
 from ._view_common import (
     SEARCH_QUERY_MAX,
     build_header_runs,
     char_of,
     handle_search_input,
+    help_panel_rows,
     jump_match,
-    memo_key,
     pane_divider,
     run_search,
-    split_panes,
     status_runs,
-    viewport_rows,
 )
 
 __all__ = ["NotifyView", "_notify_search_text", "_detail_rows", "format_time"]
@@ -181,85 +179,41 @@ def NotifyView(props) -> object:
     model = props["model"]
     width = props.get("width", 0) or 0
     nv = getattr(model, "notify_view", None)
-    visible = bool(nv is not None and nv.visible and not nv.done)
-    entries = list(getattr(nv, "entries", None) or []) if nv is not None else []
-    help_open = bool(getattr(nv, "help_open", False)) if nv is not None else False
-    search_mode = bool(getattr(nv, "search_mode", False)) if nv is not None else False
-    pattern = (getattr(nv, "search_pattern", "") or "") if nv is not None else ""
-    filter_on = bool(getattr(nv, "search_filter", False)) if nv is not None else False
+    # 状态推导 / 分栏 / 视口 / 右栏 memo / 滚动夹紧统一由 use_list_view 提供
+    # （2026-10 架构演进：列表型视图的同一段样板收敛到单一实现）。
+    ctx = use_list_view(
+        model,
+        "notify_view",
+        width=width,
+        search_text=_notify_search_text,
+        detail_rows=_detail_rows,
+        help_rows=lambda w: help_panel_rows(
+            _KEYMAP, w, key_style=_S_WARN, group_style=_S_TIME,
+            desc_style=_S_NAME, sep_style=_S_SEP,
+        ),
+        fallback=(36, 46),
+    )
+    visible = ctx.visible
+    entries = ctx.entries
+    help_open = ctx.help_open
+    search_mode = ctx.search_mode
+    pattern = ctx.pattern
+    filter_on = ctx.filter_on
     matches = list(getattr(nv, "search_matches", None) or []) if nv is not None else []
-    status_message = (getattr(nv, "status_message", "") or "") if nv is not None else ""
-
-    allowed = None
-    if filter_on and pattern and matches:
-        allowed = set(matches)
-    index_map = [i for i in range(len(entries)) if allowed is None or i in allowed]
-    items = [entries[i] for i in index_map]
-    total = len(items)
-    sel = 0
-    if total:
-        try:
-            sel = max(0, min(int(getattr(nv, "selected", 0) or 0), total - 1))
-        except (TypeError, ValueError):
-            sel = 0
-    if nv is not None and sel != getattr(nv, "selected", None):
-        nv.selected = sel
-    entry = items[sel] if total else None
-
-    pane = getattr(nv, "pane", "list") if nv is not None else "list"
-    if pane not in ("list", "detail"):
-        pane = "list"
-    if help_open:
-        pane = "detail"
-
-    left_w, right_w = split_panes(width, fallback=(36, 46))
-    extra_rows = (1 if search_mode else 0) + (1 if status_message else 0)
-    vh = max(4, viewport_rows() - extra_rows)
-
-    # ── 右栏内容（**单一** use_memo：hook 调用必须无条件且数量恒定）──
-    # ★ 修复（2026-10）：修复前帮助面板分支跳过 ``use_memo``——按 ``?`` 打开
-    #   帮助时 hook 序列变化 → ``HookStateError``（视图渲染异常）。
-    def _content_rows() -> list:
-        if help_open:
-            from ._view_common import help_panel_rows
-
-            return help_panel_rows(
-                _KEYMAP, right_w, key_style=_S_WARN, group_style=_S_TIME,
-                desc_style=_S_NAME, sep_style=_S_SEP,
-            )
-        return _detail_rows(entry, right_w)
-
-    content_rows = use_memo(
-        _content_rows, (help_open, right_w, memo_key(entry)),
-    )
+    status_message = ctx.status_message
+    index_map = ctx.index_map
+    items = ctx.items
+    total = ctx.total
+    sel = ctx.selected
+    pane = ctx.pane
+    left_w, right_w = ctx.left_w, ctx.right_w
+    vh = ctx.viewport
+    content_rows = ctx.content_rows
     total_content = len(content_rows)
-    cursor, scroll = resolve(
-        getattr(nv, "cursor", 0) or 0, getattr(nv, "scroll", 0) or 0,
-        total_content, max(1, vh),
-    )
-    if nv is not None:
-        nv.cursor = cursor
-        nv.scroll = scroll
-
-    _pane_state = PaneState(
-        lambda: getattr(nv, "cursor", 0) or 0,
-        lambda v: setattr(nv, "cursor", v),
-        lambda: getattr(nv, "scroll", 0) or 0,
-        lambda v: setattr(nv, "scroll", v),
-    )
-
-    def _row_of(orig: int) -> int:
-        try:
-            return index_map.index(orig)
-        except ValueError:
-            return 0
-
-    def _select_row(row: int) -> None:
-        if nv is None:
-            return
-        nv.selected = row
-        nv.cursor = 0
-        nv.scroll = 0
+    cursor, scroll = ctx.cursor, ctx.scroll
+    _pane_state = ctx.pane_state()
+    _row_of = ctx.row_of
+    _select_row = ctx.select_row
 
     def _handle(event) -> bool:
         if not visible or nv is None:

@@ -46,12 +46,11 @@ import logging
 import math
 import time
 
-from src.tui._const import RenderCommand
-from src.tui.ink._cmd_priority import _get_cmd_id, _cmd_name
-from src.tui.ink import components as _components
-from src.tui.ink import hooks as _hooks
-from src.tui.ink import _cursor
-from src.tui.ink import _stream_height
+from .command import RenderCommand
+from ._cmd_priority import _get_cmd_id, _cmd_name
+from . import components as _components
+from . import hooks as _hooks
+from . import _stream_height
 from src.tui.ink._animation import advance_animation, has_active_animations
 
 _logger = logging.getLogger(__name__)
@@ -123,7 +122,18 @@ class _SessionFrameMixin:
     _first_frame_pending: bool
     _dirty: bool
     _frame_active: bool
+    #: 系统监控探针（应用注入；None = 框架独立使用，不做系统监控）
+    _system_stats_probe: Any
+    #: 兼容字段（历史名字；生产不再使用，保留以兼容测试桩）
     _system_monitor: Any
+    #: 光标定位策略与输入区 finder（应用注入；None = 框架独立使用）
+    _cursor_provider: Any
+    _input_fiber_finder: Any
+    #: 命令合并器 / 视图刷新间隔提供者 / 输出锁 / 帧 tick 注册表
+    _command_coalescer: Any
+    _view_refresh_provider: Any
+    _output_lock: Any
+    _frame_tick_registry: Any
     _last_sys_stats_time: float
     _sys_stats_interval: float
     _hook_ctx: Any
@@ -159,12 +169,15 @@ class _SessionFrameMixin:
         """
         if self._apply_fn is None:
             return []
-        try:
-            from src.tui.app.apply import coalesce_commands
-            merged = coalesce_commands(commands)
-        except Exception:
-            _logger.debug("命令合并失败，按原批应用", exc_info=True)
+        coalescer = getattr(self, "_command_coalescer", None)
+        if coalescer is None:
             merged = commands
+        else:
+            try:
+                merged = coalescer(commands)
+            except Exception:
+                _logger.debug("命令合并失败，按原批应用", exc_info=True)
+                merged = commands
         start = time.monotonic()
         for index, cmd in enumerate(merged):
             if budget is not None and index > 0 and time.monotonic() - start >= budget:
@@ -404,22 +417,14 @@ class _SessionFrameMixin:
         model = getattr(self, "_model", None)
         if model is None:
             return False
+        provider = getattr(self, "_view_refresh_provider", None)
+        if provider is None:
+            return False
         try:
-            from src.tui.app.app import BOTTOM_VIEWS, FULLSCREEN_VIEWS
+            raw = provider(model)
         except Exception:
+            _logger.debug("视图刷新间隔提供者异常", exc_info=True)
             return False
-        view = None
-        fullscreen_id = getattr(model, "fullscreen", "") or ""
-        if fullscreen_id:
-            view = FULLSCREEN_VIEWS.get(fullscreen_id)
-        else:
-            bottom_id = getattr(model, "bottom_view", "") or ""
-            if bottom_id:
-                entry = BOTTOM_VIEWS.get(bottom_id)
-                view = entry[0] if isinstance(entry, tuple) else entry
-        if view is None:
-            return False
-        raw = getattr(view, "_ink_refresh_interval", None)
         if raw is None:
             return False
         try:
@@ -1062,18 +1067,20 @@ class _SessionFrameMixin:
         if status is None:
             return  # 测试桩模型无 status
         self._last_sys_stats_time = now
-        if self._system_monitor is None:
-            from src.tui._system_monitor import _SystemMonitor
-            self._system_monitor = _SystemMonitor()
+        probe = getattr(self, "_system_stats_probe", None)
+        if probe is None:
+            # 未注入探针（框架独立使用）：不做系统监控——框架不 import 应用层
+            # 的 _SystemMonitor（生产装配注入）。
+            return
         # ★ 2026-10-23（渲染线程阻塞修复）：系统监控改为**后台线程**采集，
         #   帧内只读缓存——无 psutil 平台的子进程采样（iostat/powershell/
         #   sysctl，timeout=5s）不再阻塞 60Hz 渲染线程/输入处理。
         try:
-            self._system_monitor.start(self._sys_stats_interval)
+            probe.start(self._sys_stats_interval)
         except Exception:
             _logger.debug("系统监控后台线程启动异常", exc_info=True)
         try:
-            cpu, mem = self._system_monitor.get_cpu_and_mem()
+            cpu, mem = probe.get_cpu_and_mem()
         except Exception:
             _logger.debug("系统监控缓存读取异常", exc_info=True)
             return
@@ -1127,7 +1134,7 @@ class _SessionFrameMixin:
         #   None 时回退全树查找——如测试直接构造 root 的场景）
         fiber = self._input_fiber
         if fiber is None:
-            fiber = _cursor.find_input_fiber(self._root_fiber)
+            fiber = self._find_input_fiber(self._root_fiber)
         if fiber is None:
             try:
                 self._ink_renderer.set_cursor_visible(False)
@@ -1135,8 +1142,13 @@ class _SessionFrameMixin:
                 _logger.debug("hide_cursor 异常", exc_info=True)
             return
         placed = False
+        provider = getattr(self, "_cursor_provider", None)
+        if provider is None:
+            # 未注入光标定位策略（框架独立使用）：不显示光标——框架不知道
+            # 「输入区在哪」，任意定位都可能停在错误位置。
+            return
         try:
-            placed = _cursor.position_cursor(
+            placed = provider(
                 self._ink_renderer, self._width_cache.get_width(), fiber,
             )
         except Exception:
@@ -1151,13 +1163,18 @@ class _SessionFrameMixin:
             _logger.debug("show_cursor 异常", exc_info=True)
 
     def _find_input_fiber(self, root_fiber):
-        """在 host 树中查找输入区 fiber（委托 ``_cursor.find_input_fiber``）。
+        """在 host 树中查找输入区 fiber。
 
-        ★ 标准 React Ink 组件化：InputArea 标准组件返回 Column（props 含
-        ``dataInputArea=True`` 标记 + 透传输入区状态）——查找条件为
-        ``props.dataInputArea`` 或旧 ``type == "input-area"``（兼容）。
+        ``dataInputArea`` props 标记属框架可理解的组件契约（见
+        ``_fiber_utils.find_input_fiber``）；应用可经 ``input_fiber_finder``
+        注入自定义查找（如测试桩/替代布局）。
         """
-        return _cursor.find_input_fiber(root_fiber)
+        finder = getattr(self, "_input_fiber_finder", None)
+        if finder is not None:
+            return finder(root_fiber)
+        from ._fiber_utils import find_input_fiber
+
+        return find_input_fiber(root_fiber)
 
 
 __all__ = ["_SessionFrameMixin", "_safe_int", "_SIZE_POLL_INTERVAL"]

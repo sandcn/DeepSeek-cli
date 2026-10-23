@@ -45,7 +45,7 @@ from src.tui._const import (
     RenderCmd,
     SubagentFrameCmd,
 )
-from src.tui.events.event_types import (
+from src.core.events.display_types import (
     AgentAddedEvent, AgentStatusChanged, ModelPhaseEvent,
     ToolParsingEvent, ToolStartedEvent, ToolDoneEvent,
     ParseInfoEvent, ParseInfoDoneEvent,

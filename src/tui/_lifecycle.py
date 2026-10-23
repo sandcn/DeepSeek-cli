@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from src.tui._dispatcher import EventDispatcher
     from src.tui._ink_bridge import InkBridge
     from src.tui.app.model import AppModel
-    from src.tui.events.event_bus import DisplayEventBus
+    from src.core.events.display_bus import DisplayEventBus
 
 from src.tui._history_disk import flush_history_disk
 from src.renderer.locks import render_lock

@@ -1,15 +1,15 @@
-"""输入光标定位 — 计算输入区光标的视觉行列并放置（模块边界优化 2026-08-05）。
+"""输入光标定位 — 计算输入区光标的视觉行列并放置（应用层）。
 
-从 ``ink/session.py`` 提取（方向B：InkSession 职责拆分）——``_position_cursor``
-/``_find_input_fiber`` 的光标定位计算独立成纯函数模块：session 的渲染循环只
-负责「找 fiber → 调 position_cursor」，布局/坐标计算独立可测。
+历史：本模块原位于 ``src/tui/ink/_cursor.py``（框架包内），但它编码的是
+**聊天输入区**的布局知识（prompt / 补全弹窗高度 / 反向搜索行）。框架因此
+反向依赖应用输入层（``_input_layout`` / ``_input_metrics``）。
 
-依赖方向（与 ink 框架约束一致）：
-  - ``_input_metrics``（补全弹窗高度/反向搜索状态）— 度量层
-  - ``_input_layout``（输入布局/光标可视位置）— 纯函数布局层
-  本模块不得 import ``_input`` 门面 / ``app.*``（防 ink → 输入门面/app 反向
-  依赖；2026-08-05 重构：布局函数经 ``_input_layout`` 直接引用，不再绕经
-  ``_input`` re-export）。
+2026-10 架构演进：整模块移出框架包，由装配层经 ``InkSession(cursor_provider=...)``
+与 ``input_fiber_finder=...`` 注入；``ink`` 只保留「回调 + 默认隐藏光标」的
+通用语义，不再知道输入区长什么样。
+
+依赖方向：``_input_layout``（布局纯函数）/ ``_input_metrics``（补全弹窗度量）/
+``ink._ansi_utils.visual_width``（视觉宽度）。本模块不得 import ``app.*``。
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from src.tui._input_layout import (
     _prompt_of,
 )
 from src.tui._input_metrics import _completion_height, _is_search_active
-from ._ansi_utils import visual_width
+from src.tui.ink._ansi_utils import visual_width
 
 _logger = logging.getLogger(__name__)
 

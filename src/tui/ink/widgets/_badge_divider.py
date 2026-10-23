@@ -55,7 +55,7 @@ def _badge_params() -> dict:
     来自 ``presentation_data`` → ``badge_metrics`` 表，可按 Patch/Overlay
     覆盖或禁用。
     """
-    from src.presentation_data import badge_metrics
+    from .._data import badge_metrics
 
     data = badge_metrics()
 
@@ -154,7 +154,7 @@ _DIVIDER_DEFAULT_WIDTH = 40
 
 def _divider_default_width() -> int:
     """Divider 无标题时的默认宽度（数据注册表优先，非法时回退兜底快照）。"""
-    from src.presentation_data import ui_default
+    from .._data import ui_default
 
     value = ui_default("divider_width", _DIVIDER_DEFAULT_WIDTH)
     try:

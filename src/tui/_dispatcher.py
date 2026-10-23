@@ -28,10 +28,10 @@ from src.tui._const import (
     truncate_error_message,
 )
 from src.tui._config import TuiConfig
-from src.tui.events.event_types import DisplayEvent
+from src.core.events.display_types import DisplayEvent
 
 if TYPE_CHECKING:
-    from src.tui.events.event_types import (
+    from src.core.events.display_types import (
         ContentChunkEvent,
         ModelPhaseEvent,
         OutputEvent,
@@ -168,7 +168,7 @@ class EventDispatcher:
         """
         if self._handlers_cache is not None:
             return dict(self._handlers_cache)
-        from src.tui.events import event_types as _ET
+        from src.core.events import display_types as _ET
         result: dict[type, Callable] = {
             _ET.ReasoningChunkEvent: self._on_reasoning_chunk,
             _ET.ContentChunkEvent: self._on_content_chunk,

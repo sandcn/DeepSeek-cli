@@ -251,19 +251,79 @@ def _make_idle_frame_predicate(model, session):
     return _is_static
 
 
+def _make_view_refresh_provider():
+    """构造「当前模态视图刷新间隔」提供者（注入 InkSession）。
+
+    ★ 2026-10 架构演进（ink 框架解耦）：框架不再 import ``app.app`` 的视图
+    注册表字典；「哪个视图、要不要定时刷新」属于应用知识，经本闭包注入。
+    """
+    def _provider(model):
+        from src.tui.app.app import BOTTOM_VIEWS, FULLSCREEN_VIEWS
+
+        view = None
+        fullscreen_id = getattr(model, "fullscreen", "") or ""
+        if fullscreen_id:
+            view = FULLSCREEN_VIEWS.get(fullscreen_id)
+        else:
+            bottom_id = getattr(model, "bottom_view", "") or ""
+            if bottom_id:
+                entry = BOTTOM_VIEWS.get(bottom_id)
+                view = entry[0] if isinstance(entry, tuple) else entry
+        if view is None:
+            return None
+        raw = getattr(view, "_ink_refresh_interval", None)
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    return _provider
+
+
 def create_framework(model, tui_config, line_tracker, input_instance):
     """创建框架：session + bridge + renderer。"""
-    from src.tui.ink.session import InkSession
-    from src.tui.app.apply import apply_cmd
+    from src.api._sync_bridge import run_coroutine_blocking
+    from src.core.frame_tick import get_frame_tick_registry
+    from src.renderer.locks import _try_acquire_output_lock
+    from src.tui._input_cursor import position_cursor
+    from src.tui._screen import (
+        TerminalWidthCache,
+        process_sigwinch,
+        register_sigwinch_callback,
+        unregister_sigwinch_callback,
+    )
+    from src.tui._system_monitor import _SystemMonitor
     from src.tui.app.app import build_app_element
+    from src.tui.app.apply import apply_cmd, coalesce_commands
+    from src.tui.ink import _data as _ink_data
+    from src.tui.ink.session import InkSession
     from src.tui._ink_bridge import InkBridge
-    from src.tui._screen import register_sigwinch_callback
+
+    # 表现层数据表（边框字符 / UI 默认值 / Badge 度量）：真源在
+    # ``src.presentation_data``（插件可 Patch/Overlay），经协议注入框架——
+    # ink 不再 import 应用层（无注入时用内置兜底）。
+    import src.presentation_data as _presentation_data
+
+    _ink_data.set_data_provider(_presentation_data)
 
     session = InkSession(
         model=model,
         apply_cmd=apply_cmd,
         build_tree=build_app_element,
         config=tui_config,
+        # ── 应用侧能力注入（2026-10 架构演进：ink 不再 import app/core/renderer/api）──
+        width_cache=TerminalWidthCache.get_default(),
+        output_lock=_try_acquire_output_lock,
+        sigwinch_processor=process_sigwinch,
+        sigwinch_unregister=unregister_sigwinch_callback,
+        blocking_runner=run_coroutine_blocking,
+        frame_tick_registry=get_frame_tick_registry(),
+        system_stats_probe=_SystemMonitor(),
+        command_coalescer=coalesce_commands,
+        view_refresh_provider=_make_view_refresh_provider(),
+        cursor_provider=position_cursor,
     )
     # ★ 2026-08-05 装配层重构：输出历史接线收敛为公开方法 set_line_tracker
     #   （取代对 ``session._ink_renderer.set_line_callback`` + 私有字段

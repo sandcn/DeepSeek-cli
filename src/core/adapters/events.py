@@ -23,7 +23,7 @@ class DisplayEventBusAdapter(EventPort):
 
     def __init__(self, source: str = "core", bus=None):
         if bus is None:
-            from ...tui.events.event_bus import DisplayEventBus
+            from ...core.events.display_bus import DisplayEventBus
             bus = DisplayEventBus.get_default()
         self._bus = bus
         self._source = source

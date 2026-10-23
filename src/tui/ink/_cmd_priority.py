@@ -10,7 +10,7 @@ Layer 0 约束：仅依赖 ``_const``（RenderCommand/RenderCmd），零内部�
 
 from __future__ import annotations
 
-from src.tui._const import RenderCommand, RenderCmd
+from .command import RenderCommand, RenderCmd
 
 # ── 命令优先级（值越小越优先） ──────────────────────────────
 _CMD_PRIORITY_CRITICAL = 0

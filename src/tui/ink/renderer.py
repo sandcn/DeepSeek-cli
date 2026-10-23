@@ -80,7 +80,7 @@ import sys
 import time
 from typing import cast
 
-from src.tui._screen import (
+from .ansi import (
     cursor_up, cursor_down, clear_line, cursor_forward, clear_screen,
     cursor_hide, cursor_show, cursor_goto, insert_lines,
     set_scroll_region, reset_scroll_region,

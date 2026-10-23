@@ -86,7 +86,7 @@ class ChatUIConsumer:
                 ``set_message_source`` 注入（会话创建晚于 UI 装配）。
         """
         if event_bus is None:
-            from src.tui.events.event_bus import DisplayEventBus
+            from src.core.events.display_bus import DisplayEventBus
             event_bus = DisplayEventBus.get_default()
         self._bus = event_bus
 
@@ -155,7 +155,7 @@ class ChatUIConsumer:
             新的 ChatUIConsumer 实例。
         """
         if event_bus is None:
-            from src.tui.events.event_bus import DisplayEventBus
+            from src.core.events.display_bus import DisplayEventBus
             event_bus = DisplayEventBus.get_default()
         instance = cls.__new__(cls)
         instance._bus = event_bus

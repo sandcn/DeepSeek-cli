@@ -21,20 +21,13 @@ import sys
 import threading
 import time
 from enum import Enum
-from typing import Callable
+from typing import Any, Callable
 
-from src.tui._const import (
-    CONTENT_COMMANDS,
-    ANSI_EMERGENCY_RED,
-    ANSI_EMERGENCY_RESET,
-)
-from src.tui._config import TuiConfig
-from src.renderer.locks import _try_acquire_output_lock
-from src.tui._screen import (
-    TerminalWidthCache,
-    _get_terminal_size,
-    process_sigwinch,
-)
+from .ansi import ANSI_EMERGENCY_RED, ANSI_EMERGENCY_RESET
+from .command import CONTENT_COMMANDS
+from .options import InkOptions
+from .terminal import TerminalSizeCache
+from ._locks import default_output_lock
 from .reconciler import Reconciler
 from .renderer import InkRenderer
 from ._stream_height import StreamHeightLock
@@ -231,15 +224,52 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         model,
         apply_cmd: Callable | None = None,
         build_tree: Callable | None = None,
-        width_cache: TerminalWidthCache | None = None,
-        config: TuiConfig | None = None,
+        width_cache: Any | None = None,
+        config: Any | None = None,
         stream=None,
+        *,
+        command_coalescer: Callable[[list], list] | None = None,
+        view_refresh_provider: Callable[[Any], float | None] | None = None,
+        system_stats_probe: Any | None = None,
+        frame_tick_registry: Any | None = None,
+        blocking_runner: Callable[[Any], Any] | None = None,
+        cursor_provider: Callable[[Any, int, Any], bool] | None = None,
+        output_lock: Callable[..., Any] | None = None,
+        sigwinch_processor: Callable[[], Any] | None = None,
+        sigwinch_unregister: Callable[[Any], None] | None = None,
+        input_fiber_finder: Callable[[Any], Any] | None = None,
     ):
         self._model = model
         self._apply_fn = apply_cmd
         self._build_tree = build_tree
-        self._config: TuiConfig = config or TuiConfig.defaults()
-        self._width_cache = width_cache or TerminalWidthCache.get_default()
+        #: 会话选项：应用注入 ``TuiConfig``（字段超集）或使用框架默认
+        #: ``InkOptions``——框架不再 import 应用配置模块（见 options.py）。
+        self._config: Any = config or InkOptions()
+        self._width_cache = width_cache or TerminalSizeCache.get_default()
+
+        # ── 应用侧能力注入（框架不 import app/core/renderer/api）──
+        #: 命令合并器（同帧相邻增量合并；None = 不合并，逐条应用）。
+        self._command_coalescer = command_coalescer
+        #: 视图定时刷新间隔提供者（``model -> float | None``）。
+        self._view_refresh_provider = view_refresh_provider
+        #: 系统监控探针（``start(interval)`` / ``get_cpu_and_mem()``）。
+        self._system_stats_probe = system_stats_probe
+        #: 帧 tick 注册表（``run()``，由应用把周期任务挂进来）。
+        self._frame_tick_registry = frame_tick_registry
+        #: 协程阻塞桥（suspend 回调返回 awaitable 时使用）。
+        self._blocking_runner = blocking_runner
+        #: 光标定位策略（``(renderer, width, root_fiber) -> bool``）。
+        self._cursor_provider = cursor_provider
+        #: 输出锁工厂（contextmanager，yield 是否获取成功）。
+        self._output_lock = output_lock or default_output_lock
+        #: SIGWINCH 消费函数（每帧调用一次；None = 无信号集成）。
+        self._sigwinch_processor = sigwinch_processor
+        #: SIGWINCH 回调注销（stop 时调用；None = 未注册过）。
+        self._sigwinch_unregister = sigwinch_unregister
+        #: 输入区 fiber 查找器（应用注入；None = 无输入区概念）。
+        self._input_fiber_finder = input_fiber_finder
+        #: 兼容字段（历史名字；生产不再使用）。
+        self._system_monitor = None
 
         self._reconciler = Reconciler(schedule_callback=self._schedule_render)
         #: 本会话的 hooks 上下文（P0 架构修复·多会话隔离）：注入接线写入它，
@@ -949,7 +979,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   历史注释「彻底消除需独立渲染互斥（未来方向）」已过时——该互斥
         #   已由 ``_render_lock`` 落地。
         if not self._render_running:
-            with _try_acquire_output_lock(
+            with self._output_lock(
                 name="ink_session.sync_render",
                 timeout=self._config.drain_lock_timeout,
             ) as locked:
@@ -1213,9 +1243,15 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                     #   事件循环再 close」的写法：既消除 ``get_event_loop()``
                     #   的线程绑定/弃用问题（原 BUG），也不再为每次回调复制
                     #   事件循环与绑定循环的资源（httpx.AsyncClient 等）。
-                    from src.api._sync_bridge import run_coroutine_blocking
+                    # ★ 协程经注入的阻塞桥执行（生产装配注入 ``src.api._sync_bridge``
+                    #   的共享事件循环桥）；未注入时用 ``asyncio.run`` 兜底——
+                    #   框架不再 import API 层。
+                    if self._blocking_runner is not None:
+                        self._blocking_runner(result)
+                    else:
+                        import asyncio as _asyncio
 
-                    run_coroutine_blocking(result)
+                        _asyncio.run(result)
             except Exception:
                 _logger.debug("suspend_terminal callback 异常", exc_info=True)
             self.request_clear()
@@ -1361,8 +1397,9 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   幂等：未注册/已注销时无操作。stop 后再次 start 会经装配层重新
         #   注册（InkSession 生命周期为「装配注册一次，stop 注销」）。
         try:
-            from src.tui._screen import unregister_sigwinch_callback
-            unregister_sigwinch_callback(self)
+            unregister = self._sigwinch_unregister
+            if unregister is not None:
+                unregister(self)
         except Exception:
             _logger.debug("stop 注销 SIGWINCH 回调异常", exc_info=True)
         # ★ 终端能力还原：退出 raw 模式 + 关闭备用屏/括号粘贴/鼠标上报
@@ -1539,7 +1576,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         # ★ P3（review）：经 InkRenderer 公开 API（``goto_bottom``）——修复前
         #   跨对象直写私有成员 ``_ink_renderer._stream``。
         try:
-            _, h = _get_terminal_size()
+            _, h = self._width_cache.get_dimensions()
             self._ink_renderer.goto_bottom(max(1, h))
         except Exception:
             _logger.debug("suspend 光标定位异常", exc_info=True)
@@ -1928,7 +1965,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             # ★ 2026-10-23（跨线程竞态修复）：先原子取回 deferred（独立锁，**不**
             #   与 _cmd_queue 锁嵌套）；取不到输出锁时原样放回，避免命令丢失。
             deferred = self._swap_deferred()
-            with _try_acquire_output_lock(
+            with self._output_lock(
                 name="ink_session.drain_queue",
                 timeout=self._config.drain_lock_timeout,
             ) as locked:
@@ -1988,7 +2025,9 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         无需额外置脏。
         """
         try:
-            process_sigwinch()
+            processor = self._sigwinch_processor
+            if processor is not None:
+                processor()
         except Exception:
             _logger.debug("_phase_process_sigwinch 异常", exc_info=True)
 
@@ -2051,9 +2090,9 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         由本阶段每拍调用一次——不再有多套独立节拍。
         """
         try:
-            from src.core.frame_tick import get_frame_tick_registry
-
-            get_frame_tick_registry().run()
+            registry = self._frame_tick_registry
+            if registry is not None:
+                registry.run()
         except Exception:
             _logger.warning("帧驱动回调阶段异常", exc_info=True)
 

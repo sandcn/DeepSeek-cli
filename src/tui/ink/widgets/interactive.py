@@ -1,8 +1,8 @@
 """interactive 门面 — React Ink 风格交互控件（SelectInput / TextInput /
-MultiSelect / ConfirmInput / Toggle）。
+MultiSelect）。
 
-模块边界（2026-08-05 架构优化）：原单一 interactive.py（623 行）按控件拆分
-为独立模块，本文件作为公共门面 re-export 全部符号（旧导入路径
+模块边界（2026-08-05 架构优化）：原单一 interactive.py 按控件拆分为独立模块，
+本文件作为公共门面 re-export 剩余符号（旧导入路径
 ``from src.tui.ink.widgets.interactive import ...`` 保持不变，测试/外部
 调用面兼容）：
 
@@ -11,7 +11,10 @@ MultiSelect / ConfirmInput / Toggle）。
   - ``_select_input.py``       — SelectInput（单选列表）
   - ``_text_input.py``         — TextInput（单行文本输入）
   - ``_multi_select.py``       — MultiSelect（多选列表）
-  - ``_confirm_toggle.py``     — ConfirmInput（y/n 确认）+ Toggle（开关）
+
+**2026-10 架构演进（清理未消费控件）**：ConfirmInput / Toggle 在生产代码与
+测试中均零引用，其实现模块 ``_confirm_toggle.py`` 已删除（理由见
+``widgets/__init__.py`` docstring）。
 
 基于 ``use_input`` + ``use_state`` 实现，按键事件结构对齐框架 KeyEvent：
   - kind: "char" | "enter" | "backspace" | "delete" | "arrow_up" | "arrow_down"
@@ -42,10 +45,9 @@ from ._interactive_common import (  # noqa: F401 — 兼容 re-export（历史�
 from ._select_input import SelectInput
 from ._text_input import TextInput
 from ._multi_select import MultiSelect
-from ._confirm_toggle import ConfirmInput, Toggle
 
 __all__ = [
-    "SelectInput", "TextInput", "MultiSelect", "ConfirmInput", "Toggle",
+    "SelectInput", "TextInput", "MultiSelect",
     # 兼容面：_interactive_common 辅助函数 re-export
     "_call", "_color", "_normalize_items", "_visible_window", "_clamp_index", "_hashable",
 ]

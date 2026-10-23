@@ -14,7 +14,7 @@ from .style import (
     ANSI_EMERGENCY_RESET, ANSI_EMERGENCY_CURSOR_BOTTOM,
 )
 from .color import TrueColor
-from .singleton import SingletonMeta
+from ...core.singleton import SingletonMeta
 
 
 __all__ = [

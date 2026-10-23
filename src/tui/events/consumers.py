@@ -14,11 +14,11 @@ import logging
 import sys
 from typing import Optional
 
-from .event_bus import DisplayEventBus
+from ...core.events.display_bus import DisplayEventBus
 from ...core.events.publish import publish_output, publish_tool_summary
 from src.renderer.locks import _try_acquire_output_lock
 from src.tui.ink.output import Line
-from .event_types import (
+from ...core.events.display_types import (
     DisplayEvent,
     OutputEvent,
 )

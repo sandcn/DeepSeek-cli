@@ -712,8 +712,29 @@ def pad_line(line: Line, width: int) -> Line:
     return out
 
 
+def wrap_text_hard(text: str, max_width: int, tab_width: int = 4) -> list[str]:
+    """按显示宽度把纯文本字符级硬拆为多行（不保留词完整性）。
+
+    供**定宽内容**使用（代码块 / 表格单元格等）：代码行不应按词断行，
+    超宽即硬拆。制表符先按 ``tab_width`` 展开（终端列宽语义）。
+
+    与 ``src.tui._input_layout._wrap_by_width``（输入区换行，含 tab 起始列
+    与 grapheme cluster 语义）的关系：本函数是「渲染侧最小实现」，复用
+    ``wrap_runs_by_width(hard=True)``，不重复实现宽度算法。
+    """
+    if max_width <= 0:
+        return []
+    if not text:
+        return [""]
+    runs = [StyledRun(text.expandtabs(tab_width))]
+    lines = wrap_runs_by_width(runs, max_width, hard=True)
+    out = ["".join(run.text for run in line.runs) for line in lines]
+    return out or [""]
+
+
 __all__ = [
     "wrap_runs_by_width",
+    "wrap_text_hard",
     "_first_logical_line_runs",
     "truncate_runs",
     "truncate_runs_ellipsis",

@@ -73,6 +73,10 @@ def test_view_refresh_due_uses_last_build_time() -> None:
         bottom_view = ""
 
     mixin._model = _Model()
+    # 2026-10 架构演进：视图刷新间隔由装配注入（框架不读视图注册表）。
+    mixin._view_refresh_provider = (
+        lambda model: 1.0 if getattr(model, "fullscreen", "") == "trace" else None
+    )
     mixin._last_frame_built_at = 0.0
     assert mixin._view_refresh_due() is True
     import time

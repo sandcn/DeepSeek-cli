@@ -348,273 +348,62 @@ def detect_truecolor() -> bool:
 
 
 # ═══════════════════════════════════════════════════════════
-# 滚动区域 (DECSTBM)
+# ANSI 序列原语 — 真源已下沉 ``_ansi_sequences.py``（2026-10 架构演进）
 # ═══════════════════════════════════════════════════════════
+# 框架（InkRenderer / InkSession / render()）与终端工具都需要这些纯字符串
+# 序列，历史实现放在本模块导致「框架 → 应用终端模块」的反向依赖。真源迁到
+# ``src/tui/_ansi_sequences.py``（零内部依赖）后本模块 re-export，既有导入
+# 路径（含测试）零改动。
+from ._ansi_sequences import (  # noqa: F401  （显式重导出，见 __all__）
+    ANSI_EMERGENCY_CURSOR_BOTTOM,
+    ANSI_EMERGENCY_RED,
+    ANSI_EMERGENCY_RESET,
+    ANSI_EMERGENCY_YELLOW,
+    bg_256,
+    clear_line,
+    clear_screen,
+    clear_screen_from_cursor,
+    cursor_down,
+    cursor_forward,
+    cursor_goto,
+    cursor_hide,
+    cursor_save,
+    cursor_restore,
+    cursor_show,
+    cursor_up,
+    fg_256,
+    insert_lines,
+    move_clear,
+    reset_scroll_region,
+    scroll_down,
+    scroll_up,
+    set_scroll_region,
+    sgr,
+    sgr_reset,
+)
 
-def set_scroll_region(top: int, bottom: int) -> str:
-    """设置滚动区域。
-
-    Args:
-        top: 顶部行号（1-based）。
-        bottom: 底部行号（1-based）。
-
-    Returns:
-        ANSI DECSTBM 序列。
-    """
-    return f"\033[{top};{bottom}r"
-
-
-def reset_scroll_region() -> str:
-    """重置滚动区域为全屏。
-
-    Returns:
-        ANSI 序列。
-    """
-    return "\033[r"
-
-
-# ═══════════════════════════════════════════════════════════
-# 光标控制
-# ═══════════════════════════════════════════════════════════
-
-def cursor_save() -> str:
-    """保存光标位置 (SCOSC)。
-
-    Returns:
-        ANSI SCOSC 序列。
-    """
-    return "\033[s"
-
-
-def cursor_restore() -> str:
-    """恢复光标位置 (SCRC)。
-
-    Returns:
-        ANSI SCRC 序列。
-    """
-    return "\033[u"
-
-
-def cursor_goto(row: int, col: int) -> str:
-    """移动光标到指定位置 (CUP, 1-based)。
-
-    Args:
-        row: 目标行号（1-based）。
-        col: 目标列号（1-based）。
-
-    Returns:
-        ANSI CUP 序列。
-    """
-    return f"\033[{row};{col}H"
-
-
-def cursor_up(n: int = 1) -> str:
-    """光标上移 n 行 (CUU)。
-
-    Args:
-        n: 移动行数。
-
-    Returns:
-        ANSI CUU 序列。
-    """
-    return f"\033[{n}A"
-
-
-def cursor_down(n: int = 1) -> str:
-    """光标下移 n 行 (CUD)。
-
-    Args:
-        n: 移动行数。
-
-    Returns:
-        ANSI CUD 序列。
-    """
-    return f"\033[{n}B"
-
-
-def cursor_forward(n: int = 1) -> str:
-    """光标右移 n 列 (CUF)。
-
-    Args:
-        n: 移动列数。
-
-    Returns:
-        ANSI CUF 序列。
-    """
-    return f"\033[{n}C"
-
-
-def cursor_hide() -> str:
-    """隐藏终端光标（DECTCEM DECSET ?25l）。
-
-    两处使用（均由 ``InkRenderer.set_cursor_visible`` 收口）：
-      - **写帧前**（``_hide_cursor_for_write``）：渲染过程会大量移动光标
-        （cursor_up/down/forward、逐区间重写、滚屏），可见光标会随写入跳动；
-      - **模态全屏视图**（``model.fullscreen`` 非空——App 整屏渲染全屏视图
-        组件、无输入区）帧写完后保持隐藏，避免光标停留在残留位置闪烁。
-
-    Returns:
-        ANSI DECTCEM 隐藏序列。
-    """
-    return "\033[?25l"
-
-
-def cursor_show() -> str:
-    """显示终端光标（DECTCEM DECRST ?25h）。
-
-    仅在**有输入界面**且已把光标定位到输入位置后由会话调用
-    （``InkSession._position_cursor`` → ``set_cursor_visible(True)``）；
-    无输入界面不显示。
-
-    Returns:
-        ANSI DECTCEM 显示序列。
-    """
-    return "\033[?25h"
+__all__ = [
+    # ANSI 序列（re-export 自 ink/ansi.py）
+    "ANSI_EMERGENCY_RED", "ANSI_EMERGENCY_YELLOW", "ANSI_EMERGENCY_RESET",
+    "ANSI_EMERGENCY_CURSOR_BOTTOM",
+    "set_scroll_region", "reset_scroll_region",
+    "cursor_save", "cursor_restore", "cursor_goto", "cursor_up", "cursor_down",
+    "cursor_forward", "cursor_hide", "cursor_show",
+    "clear_line", "clear_screen_from_cursor", "clear_screen", "move_clear",
+    "scroll_up", "scroll_down", "insert_lines",
+    "sgr", "sgr_reset", "fg_256", "bg_256",
+    # 本模块（终端 I/O 与有状态设施）
+    "_get_terminal_size", "query_cursor_row", "detect_truecolor",
+    "set_window_title", "set_clipboard", "take_startup_input",
+    "register_sigwinch_callback", "unregister_sigwinch_callback",
+    "process_sigwinch", "TerminalWidthCache", "narrow_sep_width",
+    "wcswidth_simple",
+]
 
 
 # ═══════════════════════════════════════════════════════════
-# 清屏/清行
+# 光标控制 / 清屏 / 滚动 / SGR — 实现见 ``ink/ansi.py``（上方 re-export）
 # ═══════════════════════════════════════════════════════════
-
-def clear_line() -> str:
-    """清除从光标到行尾的内容 (EL 0)。
-
-    Returns:
-        ANSI EL 序列。
-    """
-    return "\r\033[K"
-
-
-def clear_screen_from_cursor() -> str:
-    """清除从光标到屏幕末尾 (ED 0)。
-
-    Returns:
-        ANSI ED 序列。
-    """
-    return "\033[0J"
-
-
-def clear_screen() -> str:
-    """清除整个屏幕 (ED 2) 并归位光标。
-
-    Returns:
-        ANSI ED + CUP 序列。
-    """
-    return "\033[2J\033[H"
-
-
-def move_clear(row: int) -> str:
-    """组合光标定位 + 清行。
-
-    Args:
-        row: 目标行号（1-based）。
-
-    Returns:
-        CUP + EL 组合序列。
-    """
-    return f"\033[{row};1H\033[K"
-
-
-# ═══════════════════════════════════════════════════════════
-# 滚动
-# ═══════════════════════════════════════════════════════════
-
-def scroll_up(n: int = 1) -> str:
-    """向上滚动 n 行 (SU)。
-
-    Args:
-        n: 滚动行数。
-
-    Returns:
-        ANSI SU 序列。
-    """
-    return f"\033[{n}S"
-
-
-def scroll_down(n: int = 1) -> str:
-    """向下滚动 n 行 (SD)。
-
-    Args:
-        n: 滚动行数。
-
-    Returns:
-        ANSI SD 序列。
-    """
-    return f"\033[{n}T"
-
-
-def insert_lines(n: int = 1) -> str:
-    """在当前光标行插入 n 个空行 (IL)，下方内容整体下移、滚动区底部 n 行丢弃。
-
-    ★ 2026-10-23（TUI 整屏重写闪烁修复）：增量渲染器在**底部对齐且文档变矮**
-    时需要把整篇可见内容下移 ``|delta|`` 行（状态栏/输入区贴屏幕底部）。
-    终端没有「整体下移已有行」的拷贝语义，修复前只能逐行重写整个可见区
-    （屏幕 30 行 → 每帧 30 次 ``\\r``+EL+内容），视觉上就是整屏闪一下。
-    IL 由终端原生完成「插入空行 + 内容下移 + 底部丢弃」，随后只重写真正
-    变化/被丢弃的行，写入量从 O(屏幕高度) 降到 O(|delta| + 变化行)。
-
-    IL 只影响光标行及其下方内容——文档上方（矮文档时的终端历史）保持不动；
-    高文档（文档首行在屏幕外上方）时由调用方在屏幕第 1 行插入。
-
-    Args:
-        n: 插入行数（至少 1；``<=0`` 按 1 处理）。
-
-    Returns:
-        ANSI IL 序列。
-    """
-    n = max(1, int(n))
-    return f"\033[{n}L"
-
-
-# ═══════════════════════════════════════════════════════════
-# 颜色 / SGR
-# ═══════════════════════════════════════════════════════════
-
-def sgr(*codes: int) -> str:
-    """构建 SGR 序列。
-
-    Args:
-        codes: SGR 参数码。
-
-    Returns:
-        ANSI SGR 序列。
-    """
-    if not codes:
-        return "\033[0m"
-    return f"\033[{';'.join(str(c) for c in codes)}m"
-
-
-def sgr_reset() -> str:
-    """SGR 重置。
-
-    Returns:
-        ANSI SGR 重置序列。
-    """
-    return "\033[0m"
-
-
-def fg_256(color: int) -> str:
-    """设置 256 色前景色。
-
-    Args:
-        color: 256 色号 (0-255)。
-
-    Returns:
-        ANSI SGR 序列。
-    """
-    return f"\033[38;5;{color}m"
-
-
-def bg_256(color: int) -> str:
-    """设置 256 色背景色。
-
-    Args:
-        color: 256 色号 (0-255)。
-
-    Returns:
-        ANSI SGR 序列。
-    """
-    return f"\033[48;5;{color}m"
 
 
 # ═══════════════════════════════════════════════════════════

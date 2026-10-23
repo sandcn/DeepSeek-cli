@@ -23,6 +23,9 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
+import threading
+import time
 from typing import Any, Callable, Iterable
 
 from .output import StyledRun, hyperlink as _hyperlink
@@ -430,11 +433,139 @@ def capability_report(modes: Iterable[str]) -> dict[str, bool]:
     return {name: name in MODES for name in modes}
 
 
+# ═══════════════════════════════════════════════════════════
+# 终端尺寸缓存（框架默认实现；应用可注入 TerminalWidthCache 替换）
+# ═══════════════════════════════════════════════════════════
+
+class TerminalSizeCache:
+    """终端尺寸 TTL 缓存 — 框架侧默认实现（零应用依赖）。
+
+    接口与 ``src/tui/_screen.TerminalWidthCache`` 一致（duck typing），因此
+    生产装配可直接注入后者（它多了内核服务单例与 SIGWINCH 联动），测试/独立
+    ``render()`` 会话用本实现即可——框架不再 import 应用终端模块。
+
+    语义：
+      - TTL 内返回缓存值；过期后重新探测（``shutil.get_terminal_size``）；
+      - ``set_dimensions`` 置覆盖标志：覆盖期间 TTL 到期不重新探测
+        （``render(width=..., height=...)`` 语义：本会话尺寸固定）；
+      - ``poll(max_age)`` 陈旧超阈值时主动重探，返回是否发生变化。
+    """
+
+    _instance: "TerminalSizeCache | None" = None
+    _instance_lock = threading.Lock()
+
+    def __init__(self, ttl: float = 60.0) -> None:
+        self._ttl = ttl
+        self._width = 0
+        self._height = 0
+        self._last_fetch = 0.0
+        self._override = False
+        self._lock = threading.Lock()
+        self._fetch()
+
+    # ── 尺寸探测 ─────────────────────────────────────
+    @staticmethod
+    def _read_size() -> tuple[int, int]:
+        try:
+            size = shutil.get_terminal_size(fallback=(80, 24))
+            if size.columns > 0 and size.lines > 0:
+                return (size.columns, size.lines)
+        except (OSError, ValueError):
+            _logger.debug("get_terminal_size 失败，回退 (80, 24)", exc_info=True)
+        return (80, 24)
+
+    def _fetch(self) -> None:
+        with self._lock:
+            if self._override:
+                self._last_fetch = time.monotonic()
+                return
+            width, height = self._read_size()
+            self._width = width
+            self._height = height
+            self._last_fetch = time.monotonic()
+
+    # ── 公共接口（与 TerminalWidthCache 对齐）──────────
+    def set_dimensions(self, width: int | None = None, height: int | None = None) -> None:
+        """显式覆盖尺寸（覆盖期间 TTL 到期不重新探测）。"""
+        with self._lock:
+            if width is not None:
+                self._width = max(0, int(width))
+            if height is not None:
+                self._height = max(0, int(height))
+            self._override = True
+            self._last_fetch = time.monotonic()
+
+    def clear_override(self) -> None:
+        """解除尺寸覆盖（恢复 TTL 探测）。"""
+        with self._lock:
+            self._override = False
+            self._last_fetch = 0.0
+
+    def get_width(self) -> int:
+        """终端宽度（TTL 缓存）。"""
+        self._maybe_refresh()
+        with self._lock:
+            return self._width
+
+    def get_height(self) -> int:
+        """终端高度（TTL 缓存）。"""
+        self._maybe_refresh()
+        with self._lock:
+            return self._height
+
+    def get_dimensions(self) -> tuple[int, int]:
+        """终端尺寸 (宽度, 高度)。"""
+        return (self.get_width(), self.get_height())
+
+    def refresh_height(self) -> int:
+        """强制刷新（宽高同时刷新）后返回高度。"""
+        self._fetch()
+        with self._lock:
+            return self._height
+
+    def force_refresh(self) -> None:
+        """绕过 TTL 立即刷新。"""
+        self._fetch()
+
+    def clear(self) -> None:
+        """清空缓存（下次查询强制刷新）。"""
+        with self._lock:
+            self._last_fetch = 0.0
+
+    def poll(self, max_age: float) -> bool:
+        """陈旧超过 ``max_age`` 秒时重探；返回尺寸是否变化。"""
+        if self._override:
+            return False
+        with self._lock:
+            if max_age > 0 and (time.monotonic() - self._last_fetch) <= max_age:
+                return False
+            old = (self._width, self._height)
+        self._fetch()
+        with self._lock:
+            return (self._width, self._height) != old
+
+    def _maybe_refresh(self) -> None:
+        with self._lock:
+            expired = (time.monotonic() - self._last_fetch) > self._ttl
+        if expired:
+            self._fetch()
+
+    @classmethod
+    def get_default(cls) -> "TerminalSizeCache":
+        """进程级默认实例（双检锁）。"""
+        if cls._instance is None:
+            with cls._instance_lock:
+                if cls._instance is None:
+                    cls._instance = cls()
+        return cls._instance
+
+
 __all__ = [
     "MODES",
     "CURSOR_SHAPES",
     "TerminalModeManager",
     "RawModeController",
+    "TerminalSizeCache",
     "hyperlink",
     "linkify_runs",
     "linkify_text",

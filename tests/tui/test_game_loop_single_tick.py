@@ -57,6 +57,8 @@ def _make_session() -> tuple[InkSession, _Model, dict]:
 def test_single_drain_completes_all_phases_in_one_call() -> None:
     session, _model, calls = _make_session()
     registry = get_frame_tick_registry()
+    # 2026-10 架构演进：帧 tick 注册表由装配注入（框架不 import core.frame_tick）。
+    session._frame_tick_registry = registry
     ticks: list[int] = []
     tick = lambda: ticks.append(1)  # noqa: E731 - 测试回调
     registry.register(tick)
