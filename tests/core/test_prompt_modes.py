@@ -1,7 +1,7 @@
 """主 Agent 运行模式与静态提词契约测试。
 
 守护「空 / 简单 / 标准」三模式的真实语义：三者是**三种提词范式**，不是
-规则量递增的三档——`empty` 为单体完整规则集（规则完整、禁止子代理）、`simple` 为
+规则量递增的三档——`empty` 为单体完整规则集（规则完整、默认禁止子代理）、`simple` 为
 命令式精简规则集（最小）、`standard` 为子代理编排范式。
 
 同时锁定两处已修复的规则文本矛盾（防回归）：
@@ -11,9 +11,24 @@
 并锁定空模式第二轮审计的修复项：空选择以 `action` 字段裁决、计划项跨轮口径、
 回滚与基线可执行、提问口子覆盖版本控制写操作、元文件注入事实、无图形证据形态、
 输出按改动规模分级。
+
+并锁定空模式后续审计的修复项：提问口子收敛为唯一清单、`action=empty` 属调用错误、
+补测试作为受控第二次落盘、基线可选、git / 远程命令的 bash 通道、提词例外范围、
+元文件注入事实细化，以及行号型交叉引用改为章节名。
+
+并锁定空模式章节命名口径：标题不带数字编号（不用「2.1」式命名），
+交叉引用一律按章节名称闭环，避免编号随改稿漂移。
+
+并锁定空模式第三轮审计的修复项：跨层阶梯、`push` 显式确认、安全侧选项与
+`custom` 语义、新建文件写前检查、破坏性修复项拆分、测试框架完成口径、
+悬空章节引用与 `.bak` 快照提交边界。
+
+并锁定空模式第七章「正例 / 反例对照」与正文判据的一致性（示例不得顶掉条款）。
 """
 
 from __future__ import annotations
+
+import re
 
 import pytest
 
@@ -128,6 +143,9 @@ def test_empty_prompt_has_positive_authorization_path() -> None:
     assert "视为已获明确授权" in content
     assert "这是授权确认" in content
     assert "原地重复提问" in content
+    # 催促只对「修改请求」构成授权；必要提问是默认执行的显式例外。
+    assert "同一修改请求" in content
+    assert "〈提问规则〉列明的必要提问" in content
     # 提问必须收敛：只在互斥方向 / 破坏性 / 对象无法定位时问，且最多一轮
     assert "最多一轮" in content
     assert "纯文本答复与弹窗选择同等有效" in content
@@ -167,7 +185,7 @@ def test_empty_prompt_invariants_after_conflict_fix() -> None:
 
     # 回滚与基线可执行：写前快照、误改恢复、改动前基线。
     assert "写前快照" in content
-    assert "git restore -- <path>" in content
+    assert "git restore --source=HEAD --staged --worktree -- <path>" in content
     assert "基线例外" in content
 
     # 提问口子覆盖版本控制写操作；扩权「申请与执行」不得两缺。
@@ -179,7 +197,7 @@ def test_empty_prompt_invariants_after_conflict_fix() -> None:
     assert "按配置处理" not in content
     assert "7 个运行时元文件" not in content
 
-    # 无图形环境与输出成本有明确口径；路径例外与 5.5 对齐。
+    # 无图形环境与输出成本有明确口径；路径例外与〈运行时元文件〉对齐。
     assert "无图形环境" in content
     assert "按改动规模分级" in content
     assert "~/.chat/plan/*.md" in content
@@ -201,3 +219,209 @@ def test_simple_prompt_has_positive_authorization_and_graded_delivery() -> None:
     assert "未回答 ≠ 拒绝" in content
     assert "如实报告未完成项不判失败" in content
     assert "仅在必要时提问" in content
+
+
+def test_empty_prompt_question_gate_has_single_authority_list() -> None:
+    """所有要求用户拍板 / 确认的条款都必须回引〈提问规则〉的唯一清单。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    assert "允许先提问的情形（唯一清单" in content
+    assert "⑤ 授权范围外的缺陷修复扩权" in content
+    assert "属〈提问规则〉⑤" in content
+    assert "属〈提问规则〉②" in content
+    assert "属〈提问规则〉④" in content
+    assert "〈提问规则〉①" in content
+    assert "若修复项互斥则按〈提问规则〉① 改单选" in content
+    assert "①：按〈决策与默认项〉的默认项（分析中给出的推荐方案）执行" in content
+    assert "④：改用一句纯文本说明 + 按〈版本控制（Git）〉的默认项执行" in content
+    assert "②：按〈安全红线〉必须显式确认，不适用默认项回退" in content
+    assert "③：不得猜测，只做可执行部分并如实报告受阻" in content
+    assert "普通本地 `commit` 按 ④ / 〈版本控制（Git）〉" in content
+    assert "`commit --amend` 等破坏性 / 不可逆操作与 `push` 按本条 / 〈安全红线〉" in content
+    assert "〈提问规则〉列明的情形除外" in content
+
+
+def test_empty_prompt_execution_path_conflicts_removed() -> None:
+    """验证时序、基线、git / 远程命令与 action=empty 的口径不得互斥。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    # 补测试是受控的第二次落盘；是否新增测试按〈测试〉判断。
+    assert "受控的第二次落盘" in content
+    assert "按〈测试〉判断是否需要新增" in content
+
+    # 基线是可选建议，未跑基线只影响回归结论强度，不直接判未完成。
+    assert "未做基线对比" in content
+    assert "并列入未完成清单" not in content
+
+    # 远程命令 / 破坏性操作是安全红线：超时默认项不得代替显式确认；
+    # 只有指向执行侧（且不含安全侧）的明确选择才算确认。
+    assert "`selected` **全部**指向**执行侧选项**" in content
+    assert "自由输入时 `custom` 明确表达执行意图" in content
+    assert "语义不明，一律视为未确认" in content
+    assert "一律视为未确认，不得执行" in content
+    assert "破坏性 / 不可逆项必须拆成独立的单选问题" in content
+    assert "默认项取安全侧" in content
+    assert "`push`（含普通 push）与强制推送 / 其他不可逆远程操作按〈安全红线〉必须显式确认" in content
+    # git 写操作与远程命令必须有可执行的 bash 通道。
+    assert "`commit` / `push` 经〈版本控制（Git）〉提问流程并按对应条款确认后" in content
+    assert "远程命令经〈安全红线〉确认后" in content
+
+    # 提词例外只覆盖三模式主提词，其它提词按受影响测试处理。
+    assert "`prompts/prompts_export_main*.md`" in content
+    assert "`prompts_loop_prompt.md`" in content
+
+    # action=empty 是调用错误，不得被当成默认授权。
+    assert "`action=empty`（`options` 为空，工具未真正提问）" in content
+    assert "不视为授权" in content
+    # 扩权 / git / 三查的拒绝分支也必须覆盖 action=empty。
+    assert "`action=cancel`、`action=empty`" in content
+    assert "`action=empty` 先按〈提问规则〉修正参数重发" in content
+    assert "仍失败则保留工作区改动并如实告知" in content
+
+
+def test_empty_prompt_references_and_meta_files_are_stable() -> None:
+    """行号型引用会随编辑漂移；元文件注入事实须与实现一致。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    # 交叉引用必须用可定位的章节名，不能再出现行号型引用。
+    assert "三-54" not in content
+    assert "三-59" not in content
+    assert "本节「分级交付」" in content
+    assert "〈工作方式 · 全量调用链与计划（仅代码任务）〉" in content
+
+    # 章节以名称命名，不使用「2.1」「5.4」这类数字编号；交叉引用按名称闭环。
+    assert not re.search(r"^#{1,3} [0-9]+(\.[0-9]+)*[、. ]", content, re.MULTILINE)
+    assert "## 授权闸门 · 正向判据" in content
+    assert "## 协作与安全 · 安全红线" in content
+
+    # 提词改动不要求代码调用链；交付清单用「未完成」而非「没有完成」。
+    assert "不要求代码调用链" in content
+    assert "全量未完成任务列表" in content
+
+    # global.md / main.md 按工作目录注入；think.md 无对应子代理。
+    assert "工作目录（通常是项目根）" in content
+    assert "存在且非空时" in content
+    assert "`think.md` 无对应子代理，不注入" in content
+    assert "`skills.auto_load` 配置的技能正文（如有）" in content
+
+
+def test_empty_prompt_priority_and_failure_semantics() -> None:
+    """授权补充项、硬红线例外与失败分类不得互相拆台。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    # 〈正向判据〉第 4 项的「按你的判断做」只有在既有任务 / 方案时才构成授权。
+    assert "第 2–4 项是对既有方案" in content
+    assert "仅在已有明确任务或上一轮方案时构成授权" in content
+
+    # 〈实操三查与例外〉是「实操三查」红线的组成部分，避免低级条款削弱硬红线。
+    assert "〈实操三查与例外〉是本款的组成部分" in content
+    assert "不构成对红线的降低" in content
+
+    # 触碰安全红线必须判失败，失败类别与「四类」口径一致。
+    assert "触碰安全红线" in content
+    assert "「失败」只指上一条的四类" in content
+
+    # 元文件读取需说明用途，不得与「未经明确指定不得主动读取」互斥。
+    assert "为完成当前任务确有必要时，可读取（读取前说明用途）" in content
+
+    # 项目外授权、回滚 edit、安全红线层级、提交信息与基线口径。
+    assert "〈运行时元文件〉允许的 `~/.chat/plan/*.md`——〈文件与工具〉路径限制的例外" in content
+    assert "覆盖已有文件（`write` / `cp` / `mv` 覆盖目标）、局部改写（`edit`）或删除已有文件（`rm`）" in content
+    assert "新建文件" in content
+    assert "层级见「唯一阶梯」" in content
+    assert "用户已给出则以其为准" in content
+    assert "基线调用不得夹带对源码 / 配置 / 测试的改写" in content
+    assert "回归结论已按〈验证时序〉举证" in content
+    assert "不得宣称未引入回归" in content
+    assert "本轮实际未改动源码 / 配置 / 测试 / 提词 / 文档 / 资源（工具缓存不计" in content
+    assert "全部源码 / 配置 / 脚本 / 提词 / 文档 / 资源" in content
+    assert "`action=error:*`，且 `default_options` 非空时按默认项执行" in content
+    assert "本节的「实操类文件改动」" in content
+    assert "项目内 `.bak`" in content
+    assert "`default_options` 非空时按〈决策与默认项〉默认项推进" in content
+    assert "为空时按调用错误处理，不视为授权" in content
+
+
+def test_empty_prompt_third_audit_conflicts_removed() -> None:
+    """第三轮审计：跨层阶梯、push 门槛、安全侧、新建文件与提交边界。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    # 跨层冲突不得与唯一阶梯互相否定。
+    assert "同一层级内特别规定优先" in content
+    assert "高层条款只是「允许」、低层有更严的禁止时，以更严者为准" in content
+    assert "高层允许不等于解除低层禁令" in content
+
+    # 新建文件不能被「写前必须 read / 快照」卡死。
+    assert "新建文件**（目标尚不存在）不受此限" in content
+    assert "确认目标不存在" in content
+
+    # 破坏性修复项不得混入默认全选；快照不得进入提交范围。
+    assert "非破坏性项默认全选" in content
+    assert "不并入全选清单" in content
+    assert "不含 `.bak` 快照" in content
+    assert "快照不进入提交范围" in content
+
+    # 完成标准与〈测试〉的无测试框架口径一致；无基线不得宣称未引入回归。
+    assert "项目无测试框架时按〈测试〉以最接近方式验证并说明" in content
+
+    # auto_load 技能不得被重复调用。
+    assert "直接遵循，禁止重复调用" in content
+
+    # 新请求与既有确认的授权判据分开，避免「只看动词 + 对象」自相矛盾。
+    assert "**新请求**的授权判定只看「动词 + 对象」" in content
+    assert "对既有方案 / 请求的确认按〈正向判据〉第 2–4 项" in content
+
+    # Submit 页会用默认值 + confirmed 回传未回答项，必须靠安全侧默认项兜底。
+    assert "并发多问题的 Submit 页会把**未回答**项" in content
+    assert "无法与「用户显式确认默认项」区分" in content
+    assert "每个 label 都必须出现在 `options` 中" in content
+
+    # 纯文本只能否决〈安全红线〉类操作，不能替代执行侧选择；拒绝后重问仍走 user_select。
+    assert "纯文本只能用于否决，不能替代执行侧选择" in content
+    assert "`user_select` 内的 `custom` 自由输入按〈安全红线〉的语义判定" in content
+    assert "重新用 `user_select` 的执行侧选项确认（纯文本不替代）" in content
+
+    # git 的多问必须在同一轮并发，不得与「最多一轮」互斥。
+    assert "拆成同一轮的独立问题（并发 `user_select`，不增加轮次）" in content
+    # 用户明确说「不用确认，直接提交」时可按开篇口径覆盖〈版本控制（Git）〉；push 仍受〈安全红线〉约束。
+    assert "按开篇口径覆盖本条的提问并记录" in content
+    assert "`push` 与破坏性操作仍按〈安全红线〉显式确认" in content
+
+
+def test_empty_prompt_has_positive_and_negative_examples() -> None:
+    """第七章的正例 / 反例必须与正文判据一致，且覆盖高风险节点。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    # 章节存在且声明「只解释判据、不新增规则」，避免示例反过来顶掉正文。
+    assert "# 行为示例：正例 / 反例对照" in content
+    assert "示例只解释判据、不新增规则" in content
+    assert "✓ 正例" in content
+    assert "✗ 反例" in content
+
+    # 覆盖授权判定、提问确认、工具红线、交付与冲突裁决五个面向。
+    assert "例 1｜改文件请求" in content
+    assert "例 2｜纯提问" in content
+    assert "例 3｜催促" in content
+    assert "例 4｜无对象" in content
+    assert "例 5｜能自查的先自查" in content
+    assert "例 7｜未回答" in content
+    assert "例 8｜破坏性 / 远程确认" in content
+    assert "例 10｜验证时序" in content
+    assert "例 12｜回归举证" in content
+    assert "例 13｜两个清单" in content
+    assert "例 14｜如实报告" in content
+    assert "例 15｜条款冲突" in content
+    assert "例 16｜用户明确覆盖" in content
+
+    # 反例必须给出具体的错误动作与依据，而不是空泛措辞。
+    assert "回「请确认是否要我修改该文件」" in content
+    assert "`sed -i 's/old/new/' src/a.py`" in content
+    assert "纯文本只能否决，不能替代执行侧选择" in content
+    assert "把超时当成用户拒绝" in content
+    assert "编造 pytest 输出" in content
+    assert "把「简化一下」当成覆盖授权" in content
+
+    # 示例中的正例不得与正文冲突：授权自检、默认项、三查证据形态。
+    assert "授权自检：改 + config/app.toml → 已授权" in content
+    assert "按〈决策与默认项〉默认项继续执行" in content
+    assert "无图形环境按〈实操三查与例外〉⑤ 用命令输出替代截图" in content
