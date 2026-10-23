@@ -44,6 +44,7 @@ from src.tui.app.trace_image import thumbnail_rows as _thumbnail_rows
 from src.tui.core.style import Style
 from src.tui.ink import (
     TEXT, Column, Row, StyledRun, h, use_effect, use_input, use_memo, use_ref,
+    use_state,
 )
 from src.tui.ink.helpers import truncate_runs, truncate_runs_ellipsis, wrap_runs_by_width
 from src.tui.ink.widgets.listview import ListView
@@ -3415,11 +3416,30 @@ def TraceView(props) -> object:
 
     use_effect(_flush_model_writes, tuple(sorted(_model_writes.items())))
 
+    # ★ 2026-10-23（用户需求：轨迹 Trace 右栏按 j/k 移动很卡）：本视图在
+    #   注册表中声明 ``idle_static=True``（空闲帧复用——不再每帧全量重建，
+    #   见 ``view_registry`` / ``_make_idle_frame_predicate``），但**输入处理
+    #   直接改 model 字段**（右栏 cursor/scroll、面板切换、折叠、搜索态等）
+    #   不会像 ``use_state`` 那样请求重绘：空闲复用的判定看不到任何变更 →
+    #   只有 1s 定时刷新（``refresh_interval``）才上屏。台账焦点经
+    #   ``ListView`` 内部 ``use_state``（set_cursor/set_offset）触发重绘所以
+    #   不卡，**只有右栏检查器卡**（正是用户报告的现象）。
+    #   修复：消费按键后递增本 state 计数器——set_state 走框架的
+    #   ``_schedule`` → 会话置脏 + 请求重绘，下一帧立即按新 model 渲染
+    #   （空闲复用不再吞掉按键）。计数仅用于触发重绘，不参与渲染内容。
+    _redraw_tick, _bump_redraw = use_state(0)
+
     # ★ P1-1（巨型组件拆分）：输入事件处理收敛到模块级
     #   ``_handle_trace_event``（搜索输入 / 关闭键 / 面板切换 / 检查器导航 /
     #   Enter 下钻）；hooks 无条件注册，与拆分前一致。
-    use_input(
-        lambda ev: _handle_trace_event(
+    def _handle_input(ev) -> bool:
+        """输入包装：模块级 handler + 消费后主动请求重绘。
+
+        ``_handle_trace_event`` 返回 True = 事件已被本视图消费（此时视图态
+        通常已变化：检查器光标/滚动、面板切换、折叠、搜索输入等）——空闲
+        复用下必须显式请求重绘，否则改动要等到 1s 定时刷新才可见。
+        """
+        consumed = _handle_trace_event(
             model, records, content_rows, row_keys, sel,
             total=total, total_content=total_content,
             approx_content_vh=approx_content_vh,
@@ -3429,7 +3449,13 @@ def TraceView(props) -> object:
             raw_records=raw_records, view_map=view_map, source=source_label,
             pane_total=pane_total, pane_vh=pane_vh,
             display_rows=display_rows, base_rows=rows,
-        ),
+        )
+        if consumed:
+            _bump_redraw(lambda v: v + 1)
+        return consumed
+
+    use_input(
+        _handle_input,
         bool(getattr(model, "trace_open", False)),
     )
     # ★ 模态全屏视图声明（2026-08-17 通用机制）：trace_open 期间未消费按键
