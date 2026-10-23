@@ -145,7 +145,8 @@ def test_find_bottom_area_returns_host_fiber_with_layout_box() -> None:
 # ── 4. InkSession 集成 ────────────────────────────────
 
 
-def _make_session(width: int = 60, height: int = 20, *, active: bool = True):
+def _make_session(width: int = 60, height: int = 20, *, active: bool = True,
+                  window=None):
     pyte = pytest.importorskip("pyte")
     from src.tui._config import TuiConfig
     from src.tui._screen import TerminalWidthCache
@@ -158,6 +159,8 @@ def _make_session(width: int = 60, height: int = 20, *, active: bool = True):
     cache.set_dimensions(width, height)
     model = AppModel()
     model.status.status_active = active
+    if window is not None:
+        model.floating_windows = [window]
     stream = io.StringIO()
     session = InkSession(
         model=model,
@@ -182,6 +185,49 @@ def _make_session(width: int = 60, height: int = 20, *, active: bool = True):
         return [line.rstrip() for line in screen.display]
 
     return model, session, step
+
+
+def _make_loop_session(width: int = 80, height: int = 24, *, window=None):
+    """带 ``/loop`` 浮窗的会话（浮窗每帧重建 + 动态计时行）。"""
+    from src.tui.app.floating import loop_window_spec
+
+    spec = window if window is not None else loop_window_spec()
+    model, session, step = _make_session(width, height, window=spec)
+    st = model.loop_status
+    st.active = True
+    st.total = 3
+    st.round = 1
+    st.run = 1
+    st.prompt = "测试提词"
+    return model, session, step
+
+
+def _rows_with(display, needle: str) -> list:
+    """屏幕中包含 needle 的行号（0-based）。"""
+    return [index for index, line in enumerate(display) if needle in line]
+
+
+def _assert_content_window_bottom_stable(with_parse, without_parse) -> None:
+    """解析进度行出现/消失时：内容、浮窗、底部框的屏幕位置全部不变。
+
+    唯一允许变化的是解析进度行本身（它出现/消失）。
+    """
+    bottom = _rows_with(with_parse, "⎇ main")
+    assert bottom, "底部框未渲染"
+    bottom_row = bottom[0]
+    # 浮窗边框位置稳定（/loop 浮窗不得相对底部框上下跳动）
+    assert _rows_with(with_parse, "╭") == _rows_with(without_parse, "╭")
+    # 底部框位置稳定
+    assert bottom == _rows_with(without_parse, "⎇ main")
+    # 内容 + 浮窗区域逐行稳定（解析行除外）
+    parse_rows = set(_rows_with(with_parse, "Edit"))
+    for row in range(bottom_row):
+        if row in parse_rows:
+            continue
+        assert with_parse[row] == without_parse[row], (
+            f"row {row} 发生位移/变化: {with_parse[row]!r} -> {without_parse[row]!r}"
+        )
+
 
 
 def test_parse_line_disappear_keeps_height_and_bottom_position() -> None:
@@ -222,3 +268,167 @@ def test_parse_line_disappear_keeps_height_and_bottom_position() -> None:
     assert session._frame_bottom_pad == 0
     assert not session._height_lock.locked
     assert session._last_frame.height == height_with_parse - 1
+
+
+# ── 5. /loop 浮窗 + 流式高度锁定（2026-10-23 用户报障：/loop 后 TUI 抖） ──
+
+
+def test_loop_window_parse_toggle_keeps_content_window_bottom_stable() -> None:
+    """短文档 + /loop 浮窗：解析行出现→消失，内容/浮窗/底框都不移动。
+
+    修复前浮窗存在时高度锁定被整体禁用（浮窗会相对底框跳动）：解析行
+    消失时文档高度瞬时缩短，底对齐让上方内容整体下移一行 → 视觉抖动。
+    """
+    from src.tui._const import ParseInfoCmd
+
+    model, session, step = _make_loop_session()
+    step()
+    with_parse = step(
+        ParseInfoCmd(tool_names="Edit", tokens=100, elapsed=1.0),
+    )
+    # 浮窗存在时锁定器必须生效（修复前 locked 为 False）
+    assert session._height_lock.locked
+    without_parse = step(
+        ParseInfoCmd(tool_names="", tokens=-1, elapsed=0.0),
+    )
+    assert session._frame_bottom_pad == 1
+    _assert_content_window_bottom_stable(with_parse, without_parse)
+
+
+def test_loop_window_long_document_parse_toggle_stable() -> None:
+    """长文档（超过屏幕）+ /loop 浮窗：底对齐滚动不再因瞬时缩短回跳。"""
+    from src.tui._const import DisplayMsgsCmd, ParseInfoCmd
+
+    model, session, step = _make_loop_session()
+    messages = [
+        {"role": "user", "content": f"消息 {index} " + "内容" * 20}
+        for index in range(12)
+    ]
+    step(DisplayMsgsCmd(messages=messages, speed=0))
+    with_parse = step(
+        ParseInfoCmd(tool_names="Edit", tokens=100, elapsed=1.0),
+    )
+    assert session._height_lock.locked
+    without_parse = step(
+        ParseInfoCmd(tool_names="", tokens=-1, elapsed=0.0),
+    )
+    assert session._frame_bottom_pad == 1
+    _assert_content_window_bottom_stable(with_parse, without_parse)
+    # 再次出现解析行：内容/浮窗位置仍稳定（不来回跳）
+    again = step(ParseInfoCmd(tool_names="Edit", tokens=200, elapsed=2.0))
+    _assert_content_window_bottom_stable(with_parse, again)
+
+
+def test_bottom_anchored_non_loop_window_stable() -> None:
+    """同一机制覆盖其它底部锚定浮窗（/usage、/pet 共用 bottom_area 锚点）。"""
+    from src.tui._const import ParseInfoCmd
+
+    from src.tui.app.floating import loop_window_spec
+
+    # 复制 loop 浮窗规格（不同 id / 不同水平位置），验证与浮窗身份无关。
+    spec = loop_window_spec().copy_with(id="usage-test", x="left")
+    model, session, step = _make_loop_session(window=spec)
+    step()
+    with_parse = step(ParseInfoCmd(tool_names="Edit", tokens=100, elapsed=1.0))
+    without_parse = step(ParseInfoCmd(tool_names="", tokens=-1, elapsed=0.0))
+    assert session._height_lock.locked
+    assert session._frame_bottom_pad == 1
+    _assert_content_window_bottom_stable(with_parse, without_parse)
+
+
+def test_doc_anchor_window_keeps_height_lock_disabled() -> None:
+    """文档锚点浮窗：补白会改变其相对文档位置 → 保持既有「不锁定」语义。"""
+    from src.tui._const import ParseInfoCmd
+    from src.tui.app.floating import FloatingWindowSpec
+    from src.tui.ink import TEXT, h
+
+    spec = FloatingWindowSpec(
+        id="doc-test",
+        render=lambda props: h(TEXT, {"children": "doc"}),
+        width=20,
+        bottom="doc_top",
+    )
+    model, session, step = _make_session(80, 24, window=spec)
+    model.status.status_active = True
+    step()
+    step(ParseInfoCmd(tool_names="Edit", tokens=100, elapsed=1.0))
+    step(ParseInfoCmd(tool_names="", tokens=-1, elapsed=0.0))
+    assert not session._height_lock.locked
+    assert session._frame_bottom_pad == 0
+
+
+def test_loop_window_lock_released_after_streaming() -> None:
+    """流式结束后释放锁定：帧高度回到真实值，浮窗仍在原位。"""
+    from src.tui._const import ParseInfoCmd
+
+    model, session, step = _make_loop_session()
+    step()
+    step(ParseInfoCmd(tool_names="Edit", tokens=100, elapsed=1.0))
+    without_parse = step(ParseInfoCmd(tool_names="", tokens=-1, elapsed=0.0))
+    locked_height = session._last_frame.height
+    window_rows = _rows_with(without_parse, "⟳ /loop")
+    assert window_rows, "循环浮窗未渲染"
+    model.status.status_active = False
+    display = step()
+    assert session._frame_bottom_pad == 0
+    assert not session._height_lock.locked
+    # 锁定释放：高度回到真实值（解析行已消失，比锁定高度少 1 行）
+    assert session._last_frame.height == locked_height - 1
+    # 浮窗仍贴在底部框上方（标题行位置不变）
+    assert _rows_with(display, "⟳ /loop") == window_rows
+
+
+
+def test_multiple_bottom_windows_stable() -> None:
+    """多个底部锚定浮窗同时打开（/loop + /usage）：补白随全部窗口一起下移。"""
+    from src.tui._const import DisplayMsgsCmd, ParseInfoCmd
+    from src.tui.app.floating import loop_window_spec
+
+    model, session, step = _make_session(80, 24, window=None)
+    model.floating_windows = [
+        loop_window_spec(),
+        loop_window_spec().copy_with(id="usage-test", x="left"),
+    ]
+    st = model.loop_status
+    st.active = True
+    st.total = 3
+    st.round = 1
+    st.run = 1
+    st.prompt = "测试提词"
+    step(DisplayMsgsCmd(
+        messages=[
+            {"role": "user", "content": f"消息 {index} " + "内容" * 20}
+            for index in range(12)
+        ],
+        speed=0,
+    ))
+    with_parse = step(ParseInfoCmd(tool_names="Edit", tokens=100, elapsed=1.0))
+    without_parse = step(ParseInfoCmd(tool_names="", tokens=-1, elapsed=0.0))
+    assert session._height_lock.locked
+    assert session._frame_bottom_pad == 1
+    _assert_content_window_bottom_stable(with_parse, without_parse)
+
+
+def test_small_screen_cropped_window_stable() -> None:
+    """小终端下浮窗被可视区裁剪（_float_src_row）：补白仍不打断其内容。"""
+    from src.tui._const import DisplayMsgsCmd, ParseInfoCmd
+
+    model, session, step = _make_loop_session(80, 15)
+    step(DisplayMsgsCmd(
+        messages=[
+            {"role": "user", "content": f"消息 {index} " + "内容" * 20}
+            for index in range(12)
+        ],
+        speed=0,
+    ))
+    with_parse = step(ParseInfoCmd(tool_names="Edit", tokens=100, elapsed=1.0))
+    without_parse = step(ParseInfoCmd(tool_names="", tokens=-1, elapsed=0.0))
+    assert session._height_lock.locked
+    assert session._frame_bottom_pad == 1
+    # 浮窗顶部边框位置稳定（即使可见高度被裁剪）
+    assert _rows_with(with_parse, "╭") == _rows_with(without_parse, "╭")
+    # 非浮窗行（左侧内容区）逐行稳定；浮窗行由合成层承载，位置由上一条断言守护
+    for row, (left, right) in enumerate(zip(with_parse, without_parse)):
+        if "Edit" in left or "╭" in left or "│" in left or "╰" in left:
+            continue
+        assert left == right, row

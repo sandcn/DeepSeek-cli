@@ -975,11 +975,20 @@ def _overlay_floating(root: Fiber, frame: Frame, width: int) -> Frame:
     )
 
 
-def render_frame(root: Fiber, width: int, viewport_height: int = 0) -> Frame:
+def render_frame(root: Fiber, width: int, viewport_height: int = 0,
+                 *, stream_pad=None) -> Frame:
     """渲染布局好的 host 树为整帧 Frame。
 
     浮窗定位（``apply_floating_layout``）在本函数内统一执行——所有帧构建
     入口（InkSession / renderToString / render()）因此共用同一套定位语义。
+
+    ``stream_pad``（可选，2026-10-23「/loop 后流式抖动」修复）：流式高度
+    锁定的**构建期补白**钩子。布局与浮窗定位之后、绘制之前调用
+    ``stream_pad(root, total_h) -> pad``；返回 pad>0 时由钩子自行把下屏
+    （``dataFloatAnchor="bottom_area"``）与底部锚定浮窗的布局盒下移 pad
+    行，本函数只把文档总高同步增加 pad——补白行因此落在下屏之前，内容、
+    浮窗、状态栏/输入区三者在屏幕上都不移动。默认 None 时零行为变化
+    （独立 ``renderToString`` / ``render()`` / 测试路径不补白）。
 
     Args:
         root: 根 fiber（ROOT 或 APP host）。
@@ -987,6 +996,8 @@ def render_frame(root: Fiber, width: int, viewport_height: int = 0) -> Frame:
         viewport_height: 终端可见高度（行）；> 0 时浮窗被钳进可视区
             （顶部锚点移入可视区、底部锚点裁剪顶部），渲染器只重写可见行。
             0 = 整帧输出（headless），不钳制。
+        stream_pad: 可选补白钩子 ``(root_fiber, total_h) -> pad``。异常时
+            按 0 处理（渲染不因补白失败而中断）。
 
     Returns:
         完整文档的 Frame。
@@ -1008,6 +1019,17 @@ def render_frame(root: Fiber, width: int, viewport_height: int = 0) -> Frame:
     #   修复「公共渲染 API 渲染 App 时浮窗不定位、粘在左上角」。幂等，调用方
     #   重复调用无副作用。
     _apply_float_positions(root, width, viewport_height)
+    # ★ 2026-10-23（流式高度锁定·构建期补白）：在绘制前求补白行数——钩子
+    #   负责平移下屏/浮窗布局盒，此处只同步文档总高，使画布多出 pad 行且
+    #   浮窗合成行号与新布局一致。失败按 0（不补白）处理，渲染照常进行。
+    if stream_pad is not None:
+        try:
+            pad = int(stream_pad(root, total_h) or 0)
+        except Exception:
+            _logger.debug("stream_pad 补白钩子异常（按不补白处理）", exc_info=True)
+            pad = 0
+        if pad > 0:
+            total_h += pad
     # ★ 画布惰性行（方向4）：初始 None——仅未命中行创建 dict（行级缓存优化；
     #   TEXT 命中行直接放 Line 对象，免逐字符重绘）。
     canvas: list = [None] * max(1, total_h)

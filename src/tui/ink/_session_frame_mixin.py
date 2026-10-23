@@ -113,6 +113,8 @@ class _SessionFrameMixin:
     _height_lock: Any
     #: 最近一帧实际补白行数（诊断/测试用）
     _frame_bottom_pad: int
+    #: 本帧补白是否已在 ``render_frame`` 构建期完成（2026-10-23 浮窗路径）
+    _stream_pad_handled: bool
     _last_render_width: int
     _last_render_height: int
     _last_size_poll: float
@@ -489,6 +491,10 @@ class _SessionFrameMixin:
         apply_clear = getattr(self, "_apply_pending_clear", None)
         if callable(apply_clear):
             apply_clear()
+        # ★ 2026-10-23（/loop 后流式抖动修复）：本帧补白是否已在帧构建期
+        #   （``render_frame`` 的 ``stream_pad`` 钩子）完成——完成时不再执行
+        #   帧后补白（否则重复补白两次）。每帧复位，仅由钩子置位。
+        self._stream_pad_handled = False
         if self._build_tree is None:
             return
         # 终端尺寸变化标志（下方内容行基线同步用；模型为空时保持 False）
@@ -676,6 +682,7 @@ class _SessionFrameMixin:
                 viewport_height = 0
             frame = _components.render_frame(
                 self._root_fiber, width, viewport_height=viewport_height,
+                stream_pad=self._make_stream_pad_callback(reset=lock_reset),
             )
             self._last_frame = frame
             self._last_frame_idle_static = static_now
@@ -686,7 +693,10 @@ class _SessionFrameMixin:
         # ★ 2026-10-23（流式高度锁定）：实际重建帧后按高水位补白（下屏之前），
         #   防止流式期间解析进度行消失 / Markdown 预览重排等**合法高度缩短**
         #   让上方内容整体跳动一行。复用帧已含上一帧补白，不重复处理。
-        if built_frame:
+        #   ★ 2026-10-23（/loop 后流式抖动修复）：存在底部锚定浮窗时补白已在
+        #   帧构建期完成（``_make_stream_pad_callback`` → ``render_frame``），
+        #   这里跳过帧后补白，避免浮窗与下屏被补白两次而错位。
+        if built_frame and not getattr(self, "_stream_pad_handled", False):
             frame = self._apply_stream_height_lock(frame, reset=lock_reset)
             self._last_frame = frame
         # ★ 输出历史接线（committed 内容行数）：InkRenderer 只回调 committed
@@ -750,6 +760,96 @@ class _SessionFrameMixin:
                 _logger.debug("_advance_frame_seq 异常", exc_info=True)
 
     # ── 流式高度锁定（防内容整体跳行） ───────────────
+
+    def _make_stream_pad_callback(self, *, reset: bool):
+        """构造「帧构建期补白」钩子（2026-10-23 ``/loop`` 后流式抖动修复）。
+
+        背景：``_apply_stream_height_lock`` 是**帧后**补白——把空行插在下屏
+        之前。悬窗打开时该路径被整体禁用（补白会让浮窗相对下屏上下跳动）：
+        禁用后流式期间文档高度瞬时缩短（解析进度行消失 / Markdown 预览
+        重排）会让内容整体上下移动一行，``/loop`` 浮窗打开时用户看到的就是
+        「抖得很夸张」。
+
+        本钩子把补白提前到 ``render_frame`` 内（布局之后、绘制之前）：
+        ``render_frame`` 以返回的 pad 增高文档总高，本方法负责把**下屏与
+        底部锚定浮窗**的布局盒一起下移 pad 行。补白行因此同时位于三者
+        之前，内容行号不变、浮窗/下屏行号 +pad 且文档总高 +pad——三者在
+        终端上的可见位置完全不变。
+
+        启用条件（任一不满足 → 返回 None，走既有帧后补白路径）：
+          - 本帧存在浮窗（``model.floating_windows`` 非空）；
+          - 锁定器可用。
+
+        兼容性：仅 ``bottom_area`` / ``input_*`` 锚点的浮窗可与补白协同；
+        存在 ``doc_bottom`` / ``doc_top`` / 绝对坐标浮窗时**禁用锁定**
+        （这些浮窗的位置语义依赖文档高度，补白会改变其相对位置）。
+
+        Args:
+            reset: 是否重置高水位（清屏/resize 重建文档坐标系）。
+
+        Returns:
+            回调 ``(root_fiber, total_h) -> pad``；无需构建期补白时 None。
+        """
+        lock = getattr(self, "_height_lock", None)
+        model = self._model
+        windows = getattr(model, "floating_windows", None) if model is not None else None
+        if lock is None or model is None or not windows:
+            return None
+
+        def _resolve(root_fiber, total_h: int) -> int:
+            # 标记本帧补白已由构建期处理（``_render_frame_impl`` 据此跳过
+            # 帧后 ``_apply_stream_height_lock``）。
+            self._stream_pad_handled = True
+            if reset:
+                lock.reset()
+            bottom = self._find_bottom_area_fiber()
+            box = getattr(bottom, "layout_box", None)
+            bottom_y = int(getattr(box, "y", 0) or 0) if box is not None else 0
+            # 本帧浮窗列表由 ``apply_floating_layout`` 写入同帧缓存（紧随
+            # ``_apply_float_positions`` 之后调用，不会陈旧）。
+            from ._floating import _anchor_kind, _collect_float_fibers
+
+            fibers = getattr(root_fiber, "_float_frame_windows", None)
+            if fibers is None:
+                fibers = _collect_float_fibers(root_fiber, include_hidden=True)
+
+            compatible: list = []
+            disabled = (
+                bottom is None
+                or bottom_y <= 0
+                or int(getattr(self._ink_renderer, "_height", 0) or 0) <= 0
+            )
+            for fiber in fibers or ():
+                if getattr(fiber, "_float_hidden", False):
+                    continue
+                if int(getattr(fiber, "_float_visible_h", 0) or 0) <= 0:
+                    continue
+                props = getattr(fiber, "props", None)
+                if not isinstance(props, dict) or _anchor_kind(props) not in (
+                    "bottom_area", "input",
+                ):
+                    # 文档锚点/绝对坐标浮窗：补白会改变其相对位置 → 保持
+                    # 既有语义（禁用锁定），不在本帧补白。
+                    disabled = True
+                    break
+                compatible.append(fiber)
+            pad = lock.update(
+                active=self._stream_height_active(),
+                height=int(total_h),
+                bottom_y=bottom_y,
+                disabled=disabled,
+            )
+            self._frame_bottom_pad = pad
+            if pad <= 0 or bottom is None:
+                return 0
+            # 下屏与底锚浮窗一起下移：补白行落在它们之前，三者在屏幕上的
+            # 位置都不变（内容行号不变 + 文档总高 +pad）。
+            _stream_height.shift_subtree_y(bottom, pad)
+            for fiber in compatible:
+                _stream_height.shift_float_for_pad(fiber, pad)
+            return pad
+
+        return _resolve
 
     def _stream_height_active(self) -> bool:
         """当前是否处于需要「高度锁定」的活跃期。

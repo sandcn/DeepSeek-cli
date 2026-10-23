@@ -118,6 +118,41 @@ class StreamHeightLock:
         return pad
 
 
+def shift_float_for_pad(fiber, pad: int) -> None:
+    """补白后同步平移浮窗子树与运行时几何（保持浮窗屏幕位置不变）。
+
+    背景（2026-10-23 用户报障「/loop 后流式输出 TUI 抖得很夸张」）：高度
+    锁定的补白行插入下屏（状态栏/输入区）之前。若浮窗锚定底部框
+    （``bottom_area`` / ``input_*``），补白会让浮窗与底部框的相对位置变化
+    ——浮窗必须与下屏一起下移同样的行数，否则浮窗相对底部框上下跳动。
+
+    平移范围：
+      - ``layout_box`` 坐标（``shift_subtree_y``）——本帧后续的光标定位与
+        浮窗合成都读布局盒；
+      - ``props["floatGeometry"]["y"]``（鼠标命中/内容组件读取）——文档坐标
+        需 +pad；``screen_y`` **不变**：补白使文档高度 +pad，可视区首行同样
+        +pad，终端可见坐标因此保持原值（浮窗在屏幕上不移动）。
+
+    Args:
+        fiber: 浮窗 host fiber（``_collect_float_fibers`` 元素）。
+        pad: 补白行数（<=0 时无操作）。
+    """
+    if fiber is None or pad <= 0:
+        return
+    shift_subtree_y(fiber, pad)
+    props = getattr(fiber, "props", None)
+    if not isinstance(props, dict):
+        return
+    geometry = props.get("floatGeometry")
+    if not isinstance(geometry, dict) or not geometry.get("visible"):
+        return
+    try:
+        geometry["y"] = int(geometry.get("y", 0) or 0) + int(pad)
+    except (TypeError, ValueError, OverflowError):
+        # 几何值异常时只跳过文档坐标修正（布局盒已平移，绘制正确）。
+        return
+
+
 def find_bottom_area(root):
     """在 host 树中查找下屏（``dataFloatAnchor="bottom_area"``）fiber。
 
@@ -238,6 +273,7 @@ __all__ = [
     "DEFAULT_MAX_PAD",
     "StreamHeightLock",
     "find_bottom_area",
+    "shift_float_for_pad",
     "shift_subtree_y",
     "pad_frame",
 ]
