@@ -244,6 +244,32 @@ def test_empty_prompt_question_gate_has_single_authority_list() -> None:
     assert "〈提问规则〉列明的情形除外" in content
 
 
+def test_empty_prompt_batches_undetermined_requirement_points() -> None:
+    """需求中有未确定的决策点时，必须一次性并发多个 user_select 问齐。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    # ⑥ 是提问清单的显式扩项，但不把可推定的小细节也变成提问。
+    assert "⑥ 需求本身存在未确定的决策点" in content
+    assert "无法从用户原话、上下文、代码现状与既有约定推定" in content
+    assert "能自行推定的一律自行决定" in content
+    assert "属 ⑥ 的决策点必须先问" in content
+    assert "不得以「取最合理方案」绕过" in content
+
+    # 必须一次问齐、并发弹出，禁止串行与拆轮。
+    assert "需求类提问必须一次问齐、并发弹出" in content
+    assert "同一轮并发发起多个 `user_select`" in content
+    assert "禁止串行逐个问" in content
+    assert "禁止等一个答复再问下一个" in content
+    assert "禁止把同一批决策点拆到多轮" in content
+    assert "不得只挑一部分问、其余自行定死" in content
+    assert "例 6｜一轮问完（需求未确定点）" in content
+
+    # 与正向判据不互斥：澄清需求不等于重复确认。
+    assert "不视为重复确认" in content
+    # 提问轮用尽后按推荐默认项推进，不得停摆。
+    assert "⑥：按各问题的 `default_options`（推荐方案）执行" in content
+
+
 def test_empty_prompt_execution_path_conflicts_removed() -> None:
     """验证时序、基线、git / 远程命令与 action=empty 的口径不得互斥。"""
     content = builder._load_prompt("prompts_export_main_empty")
@@ -389,6 +415,16 @@ def test_empty_prompt_third_audit_conflicts_removed() -> None:
     # 用户明确说「不用确认，直接提交」时可按开篇口径覆盖〈版本控制（Git）〉；push 仍受〈安全红线〉约束。
     assert "按开篇口径覆盖本条的提问并记录" in content
     assert "`push` 与破坏性操作仍按〈安全红线〉显式确认" in content
+
+
+def test_empty_prompt_requires_analysis_before_modification() -> None:
+    """改代码前必须先分析完所有相关代码和文件，不得凭局部理解动手。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    assert "要分析完所有相关代码和文件才能修改代码" in content
+    # 该要求挂在「先读后改」上，不得与既有禁令互斥。
+    assert "先读后改" in content
+    assert "禁止凭猜测修改" in content
 
 
 def test_empty_prompt_has_positive_and_negative_examples() -> None:
