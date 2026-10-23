@@ -17,10 +17,13 @@
 上方内容都不动；等本轮流式结束（``status_active`` 变假）再释放锁定，
 高度自然收缩一次。
 
+**严格语义（2026-10-23 用户确认）**：流式期间**行数只增不减**——只要处于
+活跃期，任何高度缩短都补白到高水位，不设「小回退容忍上限」（删除行 /
+可见区重映射就是闪动的根因）。流式结束（``active=False``）立即释放锁定，
+文档允许一次性缩回真实高度。
+
 边界：
   - 只锁「文档总高度」，不改变任何内容行；
-  - 补白行数有上限 ``max_pad``（超过上限时放弃本次锁定并重置高水位，
-    避免大重排时留下一大片空白）；
   - 浮窗 / 全屏视图 / 模态底部视图 / 未知屏幕高度时**不锁定**（这些形态
     的文档区域语义不同，补白会破坏浮窗锚点与模态布局）。
 """
@@ -28,10 +31,6 @@
 from __future__ import annotations
 
 from .output import Frame, Line
-
-#: 单次允许补白的最大行数。超过该值的高度回退不做补白（重置高水位，
-#: 接受一次较大位移），避免长文档重排后留下明显大片空白。
-DEFAULT_MAX_PAD = 8
 
 
 class StreamHeightLock:
@@ -49,15 +48,13 @@ class StreamHeightLock:
     ``reset()`` 时归零（下一轮流式从新的高度重新开始）。
 
     Attributes:
-        max_pad: 单次补白上限。
         floor: 当前高水位（文档总行数）；0 表示未锁定。
         locked: 是否处于锁定（高水位有效）状态。
     """
 
-    __slots__ = ("max_pad", "_floor", "_locked")
+    __slots__ = ("_floor", "_locked")
 
-    def __init__(self, max_pad: int = DEFAULT_MAX_PAD) -> None:
-        self.max_pad = max(0, int(max_pad))
+    def __init__(self) -> None:
         self._floor = 0
         self._locked = False
 
@@ -109,13 +106,9 @@ class StreamHeightLock:
             # 内容增长/持平：高水位跟随（不补白）。
             self._floor = height
             return 0
-        pad = self._floor - height
-        if pad > self.max_pad:
-            # 大幅缩短（长文档重排/折叠）：补白会留下明显空白 → 放弃本次
-            # 锁定并接受一次位移，高水位改为当前高度。
-            self._floor = height
-            return 0
-        return pad
+        # 严格只增不减：任何缩短都补白到高水位（不设容忍上限——删除行
+        # 会触发可见区重映射，正是用户看到的「闪」）。
+        return self._floor - height
 
 
 def find_bottom_area(root):
@@ -235,7 +228,6 @@ def pad_frame(frame: Frame, bottom_y: int, pad: int) -> Frame:
 
 
 __all__ = [
-    "DEFAULT_MAX_PAD",
     "StreamHeightLock",
     "find_bottom_area",
     "shift_subtree_y",

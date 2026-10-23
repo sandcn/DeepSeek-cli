@@ -1,8 +1,8 @@
 """流式高度锁定回归测试（2026-10-23 用户报障：内容整体跳动一行）。
 
 覆盖：
-  1. ``StreamHeightLock`` 纯状态机：高水位跟随增长、缩短补白、补白上限、
-     非活跃/禁用时重置；
+  1. ``StreamHeightLock`` 纯状态机：高水位跟随增长、**任意**缩短都补白
+     （流式期间行数只增不减、无容忍上限）、非活跃/禁用时重置；
   2. ``pad_frame``：补白插在下屏之前、行对象复用、稳定前缀安全；
   3. ``find_bottom_area``：返回**host** fiber（不是无 layout_box 的
      ``Box`` 函数 fiber）；
@@ -34,7 +34,7 @@ def _line(text: str) -> Line:
 
 
 def test_floor_tracks_growth_and_pads_transient_shrink() -> None:
-    lock = StreamHeightLock(max_pad=8)
+    lock = StreamHeightLock()
     assert lock.update(active=True, height=10, bottom_y=5) == 0
     assert lock.floor == 10 and lock.locked
     # 增长：高水位跟随，不补白
@@ -49,14 +49,19 @@ def test_floor_tracks_growth_and_pads_transient_shrink() -> None:
     assert lock.floor == 14
 
 
-def test_pad_is_capped_and_floor_reset_on_large_shrink() -> None:
-    lock = StreamHeightLock(max_pad=2)
+def test_large_shrink_also_pads_never_drops_lines() -> None:
+    """流式期间行数严格只增不减：大幅缩短同样补白（无容忍上限）。"""
+    lock = StreamHeightLock()
     assert lock.update(active=True, height=10, bottom_y=5) == 0
-    # 缩短 3 行 > 上限 2：放弃本次补白并重置高水位
-    assert lock.update(active=True, height=7, bottom_y=5) == 0
-    assert lock.floor == 7
-    # 后续小缩短正常补白
-    assert lock.update(active=True, height=6, bottom_y=5) == 1
+    # 大幅缩短 3 行：仍然补 3 行空白，高水位不变（绝不删除行）
+    assert lock.update(active=True, height=7, bottom_y=5) == 3
+    assert lock.floor == 10
+    # 继续缩短 4 行：继续补 4 行
+    assert lock.update(active=True, height=6, bottom_y=5) == 4
+    assert lock.floor == 10
+    # 恢复增长：高水位跟随
+    assert lock.update(active=True, height=11, bottom_y=5) == 0
+    assert lock.floor == 11
 
 
 def test_inactive_or_disabled_resets_lock() -> None:
@@ -182,6 +187,29 @@ def _make_session(width: int = 60, height: int = 20, *, active: bool = True):
         return [line.rstrip() for line in screen.display]
 
     return model, session, step
+
+
+def test_large_shrink_is_fully_padded_no_line_drop() -> None:
+    """超过旧上限（8 行）的缩短同样全部补白：流式期间行数严格只增不减。
+
+    构造：子代理面板 12 行摘要出现后清空（模拟子代理/内容块大幅缩短）。
+    旧实现（补白上限 8）会留下 4 行净删除 → 闪烁；新实现补满 12 行空白，
+    文档总高度保持不变。
+    """
+    from src.tui._const import SubagentFrameCmd, UserMsgCmd
+
+    model, session, step = _make_session()
+    step(UserMsgCmd(text="测试"))
+    subagent_lines = [_line(f"subagent line {i}") for i in range(12)]
+    step(SubagentFrameCmd(frame_lines=subagent_lines))
+    height_with = session._last_frame.height
+    assert session._height_lock.locked
+
+    step(SubagentFrameCmd(frame_lines=[]))
+    assert session._last_frame.height == height_with
+    # 缩短 12 行全部补白（> 旧上限 8，证明无容忍上限）
+    assert session._frame_bottom_pad >= 9
+    assert session._height_lock.floor == height_with
 
 
 def test_parse_line_disappear_keeps_height_and_bottom_position() -> None:

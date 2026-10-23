@@ -631,9 +631,10 @@ class _SessionFrameMixin:
     def _stream_height_active(self) -> bool:
         """当前是否处于需要「高度锁定」的活跃期。
 
-        与空闲帧复用的静态预测口径一致（流式输出/工具执行/参数解析中），
-        任一为真即视为活跃：``status.status_active``（模型阶段）、
-        ``model.tool_boxes``（工具卡运行）、``model.parse_line``（解析进度行）。
+        与空闲帧复用的静态预测口径一致（流式输出/工具执行/参数解析/子代理
+        活动中），任一为真即视为活跃：``status.status_active``（模型阶段）、
+        ``model.tool_boxes``（工具卡运行）、``model.parse_line``（解析进度行）、
+        ``model.subagent_lines``（子代理流式面板）。
 
         Returns:
             True — 活跃（文档高度变化应被锁定）；False — 空闲。
@@ -645,6 +646,8 @@ class _SessionFrameMixin:
         if status is not None and getattr(status, "status_active", False):
             return True
         if getattr(model, "tool_boxes", None):
+            return True
+        if getattr(model, "subagent_lines", None):
             return True
         return getattr(model, "parse_line", None) is not None
 
