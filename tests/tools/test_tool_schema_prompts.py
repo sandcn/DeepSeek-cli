@@ -206,7 +206,12 @@ def test_tool_selection_guidance_present() -> None:
     schemas = _schemas()
 
     # 文件读写：禁止 shell 替代内部工具（本项目的核心纪律）
-    assert "禁止用 bash cat/sed/head" in schemas["read"]["function"]["description"]
+    read_desc = schemas["read"]["function"]["description"]
+    assert "禁止用 bash cat/sed/head" in read_desc
+    # 首次读取须读完整文件；日志等大文件为例外（允许行号分段）
+    assert "首次读取必须读完整文件" in read_desc
+    assert "日志" in read_desc and ".log" in read_desc
+    assert "分段" in read_desc
     assert "局部修改一律用本工具" in schemas["edit"]["function"]["description"]
     assert "局部修改用 edit" in schemas["write"]["function"]["description"]
     assert "禁止用 bash 读写或搜索文件" in schemas["bash"]["function"]["description"]

@@ -46,10 +46,13 @@ class ReadFunc(Func):
                 "description": (
                     "读取文本文件并返回内容，支持整文件或 start_line/end_line 行号范围"
                     "（行号从 1 开始，缺省读全文，start_line>end_line 自动交换）。"
-                    "读代码/文本/日志一律用它，禁止用 bash cat/sed/head 读文件；"
-                    "大文件用行号范围分段读。自动检测编码并统一为 LF；"
+                    "首次读取必须读完整文件（不传行号参数）；日志（.log / logs/ 下）"
+                    "等大文件例外，可用行号范围分段读。"
+                    "读代码/文本一律用它，禁止用 bash cat/sed/head/tail/awk 等命令替代"
+                    "（✗ bash cat a.py ↦ ✓ read）；自动检测编码并统一为 LF；"
                     "show_line_numbers=true 时逐行附加行号；文件超过 100MB 拒绝读取。"
-                    "例：read({\"file_path\": \"src/app.py\", \"start_line\": 10, "
+                    "例：read({\"file_path\": \"src/app.py\"})；日志分段："
+                    "read({\"file_path\": \"app.log\", \"start_line\": 10, "
                     "\"end_line\": 40, \"show_line_numbers\": true})"
                 ),
                 "parameters": {
