@@ -259,14 +259,15 @@ class InkRenderer(_RendererContentMixin):
         #: 可能连续多帧超阈值，按 ``_LARGE_REWRITE_WARN_INTERVAL`` 限频，
         #: 避免日志刷屏（仅观测用途，不改变渲染路径）。
         self._large_rewrite_warn_at: float = 0.0
-        # ★ 2026-10-23（增长闪烁修复）：文档末尾固定底栏（状态栏/输入区）行数。
-        #   会话每帧经 ``set_bottom_reserved`` 注入（下屏 fiber 起始行推导）。
-        #   增长时若旧/新底栏行数一致，滚动区域限制在内容区（``1..height-
-        #   bottom``）——底栏不随滚动上移，无需重写，消除「底栏上下跳」。
-        #   0（无底栏/全屏视图/独立渲染器）= 整屏滚动（既有行为）。
+        # ★ 2026-10-23（增长闪烁修复）：文档末尾**固定区**（状态栏/输入区 +
+        #   底部锚定浮窗）行数。会话每帧经 ``set_bottom_reserved`` 注入
+        #   （``_fixed_bottom_rows`` 推导）。增长时若旧/新行数一致，滚动区域
+        #   限制在内容区（``1..height-bottom``）——固定区不随滚动上移，无需
+        #   重写，消除「底栏/浮窗上下跳/闪」。
+        #   0（无固定区/全屏视图/独立渲染器）= 整屏滚动（既有行为）。
         self._bottom_reserved: int = 0
-        #: 上一帧的底栏行数（``set_bottom_reserved`` 时递推）——底栏高度变化
-        #: 的帧不能使用局部滚动（滚动区域需按旧布局设置）。
+        #: 上一帧的固定区行数（``set_bottom_reserved`` 时递推）——行数变化
+        #: 的帧不能使用局部滚动/插入（区域需按旧布局设置）。
         self._bottom_reserved_prev: int = 0
 
     # ── 启动起始行锚定（用户需求：光标行 + 1） ──────────
@@ -357,19 +358,25 @@ class InkRenderer(_RendererContentMixin):
         self._width = int(width) if width else 0
 
     def set_bottom_reserved(self, rows: int) -> None:
-        """设置文档末尾固定底栏行数（增长时局部滚动的保留区）。
+        """设置文档末尾**固定区**行数（增长/缩短时局部滚动/插入的保留区）。
 
         ★ 2026-10-23（增长闪烁修复）：会话在每帧 ``render`` 前注入
         「状态栏/输入区」占用的末尾行数（由下屏 fiber 起始行推导）。增长时
-        若本帧与上一帧底栏行数一致，``_scroll_grow`` 把滚动区域限制在内容区
-        （``1..height-bottom``）——终端原生滚动只作用于内容区，底栏原地不动，
-        无需每帧重写底栏，消除「底栏被滚上去再写回」的上下跳动。
+        若本帧与上一帧行数一致，``_scroll_grow`` 把滚动区域限制在内容区
+        （``1..height-bottom``）——终端原生滚动只作用于内容区，固定区原地
+        不动，无需每帧重写，消除「底栏被滚上去再写回」的上下跳动。
 
-        0（无底栏/全屏视图/独立渲染器）或底栏高度变化时回退整屏滚动（既有
-        行为，正确性不变）。
+        ★ 2026-10-23（满屏流式浮窗闪烁修复）：固定区语义扩展到**可见的
+        底部锚定浮窗**（``/loop`` / ``/usage`` / ``/pet``，由会话
+        ``_fixed_bottom_rows`` 计算）——满屏流式输出时浮窗原本随内容一起
+        上滚再被重写，逐字节渲染的终端上表现为浮窗闪烁。缩短路径
+        （``_insert_shrink_reserved``）同样用本值把 IL 限制在内容区。
+
+        0（无固定区/全屏视图/独立渲染器）或固定区行数变化时回退整屏滚动
+        （既有行为，正确性不变）。
 
         Args:
-            rows: 底栏占用的文档末尾行数（0 = 无保留区）。
+            rows: 固定区占用的文档末尾行数（0 = 无保留区）。
         """
         self._bottom_reserved_prev = self._bottom_reserved
         try:
@@ -979,7 +986,15 @@ class InkRenderer(_RendererContentMixin):
             #   未变化行零重写；仅在插入点/被丢弃行/内容变化行上写。
             #   不满足条件（顶部对齐/起始行锚定/文档底部未贴底）时回退原路径。
             if self._insert_shrink_ok(prev_h):
-                self._insert_shrink(frame, prev_h, new_h)
+                # ★ 2026-10-23（满屏流式浮窗闪烁修复）：底部固定区（底栏 +
+                #   底部锚定浮窗）存在时，整屏 IL 会把固定区一起下移再写回
+                #   （逐字节渲染的终端上浮窗跳一下）。改用固定区感知的局部
+                #   IL：只在内容区插入空行，固定区原地不动。
+                bottom = self._reserved_bottom_for_scroll()
+                if bottom > 0:
+                    self._insert_shrink_reserved(frame, prev_h, new_h, bottom)
+                else:
+                    self._insert_shrink(frame, prev_h, new_h)
                 self._prev = frame
                 return
             # 增量缩短（文档仍高于屏幕或进入屏幕内）：重写可见区变化行 +
@@ -1275,15 +1290,16 @@ class InkRenderer(_RendererContentMixin):
         self._flush_frame_buf(buf)
 
     def _reserved_bottom_for_scroll(self) -> int:
-        """增长局部滚动可保留的底栏行数（0 = 整屏滚动）。
+        """增长/缩短可保留的文档末尾固定区行数（0 = 整屏滚动）。
 
         条件：
-          - 底栏行数 > 0 且小于屏幕高度（否则没有内容区可滚动）；
-          - 本帧与上一帧底栏行数一致（滚动区域需按旧布局设置；底栏高度
-            变化的帧走整屏滚动，正确性优先）。
+          - 固定区行数 > 0 且小于屏幕高度（否则没有内容区可滚动）；
+          - 本帧与上一帧行数一致（滚动区域需按旧布局设置；固定区行数
+            变化——浮窗隐藏/高度变化、输入区换行——的帧走整屏滚动，
+            正确性优先）。
 
         Returns:
-            可保留的底栏行数；0 表示不使用局部滚动。
+            可保留的固定区行数；0 表示不使用局部滚动/插入。
         """
         bottom = self._bottom_reserved
         if bottom <= 0 or bottom >= self._height:
@@ -1295,7 +1311,7 @@ class InkRenderer(_RendererContentMixin):
     def _scroll_grow_reserved(
         self, frame: Frame, prev_h: int, new_h: int, first_diff: int, bottom: int,
     ) -> None:
-        """底栏固定时的增长：滚动区域限制在内容区，底栏原地不动。
+        """固定区（底栏 + 底部锚定浮窗）固定时的增长：滚动区域限制在内容区。
 
         ★ 2026-10-23（用户报障「增长的时候闪」）：整屏滚动会把固定的底栏
         （状态栏/输入区）一起滚上去，随后再写回屏幕底部——mintty 等逐字节
@@ -1304,14 +1320,16 @@ class InkRenderer(_RendererContentMixin):
 
           1. 设置滚动区域并**绝对定位**到内容区底部（设置区域后光标位置
              终端实现不一，不能依赖）；
-          2. 写 delta 个 ``\\r\\n``：只滚动内容区，底栏行完全不动；
-          3. 重写内容区差异行 + 位移区（截断到 ``new_h - bottom``，底栏
+          2. 写 delta 个 ``\\r\\n``：只滚动内容区，固定区行完全不动；
+          3. 重写内容区差异行 + 位移区（截断到 ``new_h - bottom``，固定区
              不参与）；
-          4. 底栏行位置未变，只重写**内容真正变化**的行（时钟/动画/输入）；
+          4. 固定区行位置未变，只重写**内容真正变化**的行（时钟/输入/
+             浮窗计时）——修复前底部锚定浮窗在内容区内，会跟随滚动上移再
+             被重写（满屏流式时浮窗闪）。
           5. 重置滚动区域并绝对定位到屏幕底部，恢复整屏坐标系。
 
-        前提由 ``_reserved_bottom_for_scroll`` 保证（底栏行数 >0、未变、小于
-        屏幕高度）；映射与整屏滚动一致（文档底部仍贴屏幕底部）。
+        前提由 ``_reserved_bottom_for_scroll`` 保证（固定区行数 >0、未变、
+        小于屏幕高度）；映射与整屏滚动一致（文档底部仍贴屏幕底部）。
 
         Args:
             frame: 新帧。
@@ -1334,21 +1352,30 @@ class InkRenderer(_RendererContentMixin):
         # 2) 内容区滚动 delta 行（底栏不在区域内，位置/内容都不变）。
         buf.write("\r\n" * delta)
         self._buf_h += delta
-        # 3) 内容区差异行 + 位移区（底栏之前的文档行）
+        # 3) 内容区差异行 + 位移区（固定区之前的文档行）
         vis_start = self._screen_offset(new_h)
-        anchor = self._find_tail_anchor(prev, frame, delta)
-        shift_start = max(anchor, vis_start)
-        head_runs: list[tuple[int, int]] = []
-        if first_diff >= 0 and first_diff < anchor:
-            for rs, re_ in self._diff_runs(
-                prev, frame, min(prev_h, new_h), start=first_diff,
-            ):
-                if rs >= anchor:
-                    break  # 锚点之后的差异由位移区覆盖
-                rs = max(rs, vis_start)
-                re_ = min(re_, anchor, content_end)
-                if re_ > rs:
-                    head_runs.append((rs, re_))
+        if delta >= content_h:
+            # ★ 2026-10-23（固定区含浮窗后的整段滚出边界）：滚动量 >= 内容区
+            #   高度时旧内容被**整段滚出**、区域全是空白——物理行不再对应
+            #   ``prev`` 的同一文档行（可能来自更上方或已滚出屏幕），逐行
+            #   比较会把「内容恰好相同」的行误判为未变化，残留空白。此时
+            #   直接整段重写内容区。
+            head_runs: list[tuple[int, int]] = []
+            shift_start = vis_start
+        else:
+            anchor = self._find_tail_anchor(prev, frame, delta)
+            shift_start = max(anchor, vis_start)
+            head_runs = []
+            if first_diff >= 0 and first_diff < anchor:
+                for rs, re_ in self._diff_runs(
+                    prev, frame, min(prev_h, new_h), start=first_diff,
+                ):
+                    if rs >= anchor:
+                        break  # 锚点之后的差异由位移区覆盖
+                    rs = max(rs, vis_start)
+                    re_ = min(re_, anchor, content_end)
+                    if re_ > rs:
+                        head_runs.append((rs, re_))
         for start, end in head_runs:
             target_row = self._clamp(self._to_screen(start + 1, new_h))
             if current_row > target_row:
@@ -1517,6 +1544,119 @@ class InkRenderer(_RendererContentMixin):
             else:
                 buf.write(cursor_down(bottom_row - current_row))
         self._cursor_row = bottom_row
+        self._flush_frame_buf(buf)
+
+    def _insert_shrink_reserved(
+        self, frame: Frame, prev_h: int, new_h: int, bottom: int,
+    ) -> None:
+        """底部固定区存在时的增量缩短：只在内容区内 IL 插入空行。
+
+        ★ 2026-10-23（满屏流式浮窗闪烁修复）：``_insert_shrink`` 的整屏 IL
+        会把底部固定区（状态栏/输入区 + 底部锚定浮窗）一起下移 ``|delta|``
+        行、随后再逐行写回原位——mintty 等逐字节渲染的终端会显示中间态，
+        用户看到浮窗「跳一下 / 闪一下」（流式结束释放补白、解析行消失均会
+        触发）。本方法用 DECSTBM 把 IL 限制在内容区
+        ``1..height-bottom``：固定区完全不动，只重写被插入的空行、被丢弃
+        的行、内容真正变化的行，以及固定区自身变化的行（时钟/输入/浮窗
+        计时）。
+
+        映射（与 ``_scroll_grow_reserved`` 互补）：
+
+          - 内容区屏幕行 ``s`` 在 IL 后显示旧内容区行 ``s-n``（``s<=n`` 为
+            空行）：旧文档行 = ``s-n-1+offset_old``，新文档行 =
+            ``s-1+offset_new``；
+          - 固定区屏幕行 ``s`` 内容不随 IL 移动：按**距文档底部的距离**
+            比较旧/新行（``prev_h-1-(height-s)`` / ``new_h-1-(height-s)``），
+            与增长路径 ``_scroll_grow_reserved`` 的底栏比较同口径。
+
+        前提（由调用方保证）：``bottom > 0`` 且本帧与上一帧一致
+        （``_reserved_bottom_for_scroll``），屏幕高度已知、底部对齐、旧文档
+        末行贴屏幕底部（``_insert_shrink_ok``）。
+
+        Args:
+            frame: 新帧（更矮）。
+            prev_h: 旧帧高度。
+            new_h: 新帧高度（``new_h < prev_h``）。
+            bottom: 文档末尾固定区行数。
+        """
+        n = prev_h - new_h
+        height = self._height
+        prev = cast(Frame, self._prev)
+        content_h = max(0, height - bottom)
+        buf = io.StringIO()
+        # 1) 在内容区顶部插入 n 空行（固定区不在滚动区域内，完全不动）。
+        current_row = self._cursor_row
+        if content_h > 0:
+            buf.write(set_scroll_region(1, content_h))
+            buf.write(cursor_goto(1, 1))
+            buf.write("\r")
+            buf.write(insert_lines(n))
+            buf.write(reset_scroll_region())
+            buf.write(cursor_goto(1, 1))
+            current_row = 1
+        offset_old = self._effective_offset(prev_h)
+        offset_new = self._effective_offset(new_h)
+        #: (屏幕行 1-based, 新文档行号；-1 = 清空该行)
+        rewrites: list[tuple[int, int]] = []
+        # 2) 内容区：IL 后行 s 来自旧内容区行 s-n（s<=n 为空行）。
+        for s in range(1, content_h + 1):
+            new_idx = s - 1 + offset_new
+            new_line = frame.lines[new_idx] if 0 <= new_idx < new_h else None
+            if s <= n:
+                old_line = None
+            else:
+                old_idx = s - n - 1 + offset_old
+                old_line = prev.lines[old_idx] if 0 <= old_idx < prev_h else None
+            if old_line is None and (new_line is None or not new_line.runs):
+                continue  # 两侧都是空行：无需写入
+            if (
+                old_line is not None
+                and new_line is not None
+                and _fd._lines_equal(old_line, new_line)
+            ):
+                continue
+            rewrites.append((
+                s, new_idx if new_line is not None and new_line.runs else -1,
+            ))
+        # 3) 固定区：内容不随 IL 移动，按距底距离比较（同增长路径口径）。
+        for s in range(content_h + 1, height + 1):
+            old_idx = prev_h - 1 - (height - s)
+            new_idx = new_h - 1 - (height - s)
+            old_line = prev.lines[old_idx] if 0 <= old_idx < prev_h else None
+            new_line = frame.lines[new_idx] if 0 <= new_idx < new_h else None
+            if old_line is None and (new_line is None or not new_line.runs):
+                continue
+            if (
+                old_line is not None
+                and new_line is not None
+                and _fd._lines_equal(old_line, new_line)
+            ):
+                continue
+            rewrites.append((
+                s, new_idx if new_line is not None and new_line.runs else -1,
+            ))
+        # 4) 自底向上重写（不写 \n：避免在屏幕底部触发滚动）。
+        rewrites.sort(key=lambda item: item[0], reverse=True)
+        for s, new_idx in rewrites:
+            if current_row > s:
+                buf.write(cursor_up(current_row - s))
+            elif current_row < s:
+                buf.write(cursor_down(s - current_row))
+            current_row = s
+            buf.write("\r")
+            if new_idx == -1 or self._line_needs_clear(frame, new_idx):
+                buf.write(_CLEAR_EOL)
+            if new_idx != -1:
+                buf.write(frame.render_line(new_idx))
+        # 5) 光标收尾到文档底部（屏幕底部；末行无 \n，通常已在此）。
+        bottom_row = self._clamp(self._to_screen(new_h, new_h))
+        if current_row != bottom_row:
+            if current_row > bottom_row:
+                buf.write(cursor_up(current_row - bottom_row))
+            else:
+                buf.write(cursor_down(bottom_row - current_row))
+        self._cursor_row = bottom_row
+        self._prev = frame
         self._flush_frame_buf(buf)
 
     def _grow_drifted(self, frame: Frame, prev_h: int, new_h: int) -> None:

@@ -718,26 +718,20 @@ class _SessionFrameMixin:
             start=content_start,
             resync=size_changed,
         )
-        # ★ 2026-10-23（增长闪烁修复）：注入文档末尾固定底栏行数——渲染器
-        #   增长时把滚动区域限制在内容区（DECSTBM），状态栏/输入区不随滚动
-        #   上移、无需每帧写回底部，消除「增长时底栏上下跳一下」的闪。
-        #   底栏 = 下屏 fiber（``dataFloatAnchor="bottom_area"``）起始行到文档
-        #   末尾；补白/浮窗平移后 layout_box.y 已是本帧行号。无下屏（全屏视图）
-        #   注入 0 → 回退整屏滚动（既有行为）。
-        bottom_reserved = 0
-        bottom_area = self._find_bottom_area_fiber()
-        bottom_box = getattr(bottom_area, "layout_box", None)
-        if bottom_box is not None:
-            try:
-                bottom_y = int(getattr(bottom_box, "y", 0) or 0)
-            except (TypeError, ValueError, OverflowError):
-                bottom_y = -1
-            if 0 <= bottom_y <= frame.height:
-                bottom_reserved = frame.height - bottom_y
+        # ★ 2026-10-23（增长闪烁修复）：注入文档末尾固定区行数——渲染器
+        #   增长时把滚动区域限制在内容区（DECSTBM），固定区不随滚动上移、
+        #   无需每帧写回，消除「增长时底栏上下跳一下」的闪。
+        #   ★ 2026-10-23（满屏流式浮窗闪烁修复）：固定区不再只是下屏
+        #   （状态栏 + 输入区），还包括可见的**底部锚定浮窗**（/loop、
+        #   /usage、/pet）——满屏流式增长时浮窗原本随内容一起上滚再被重写，
+        #   逐字节渲染的终端（mintty）上表现为浮窗跳一下/闪一下。固定区
+        #   = 下屏顶行与全部底部锚定浮窗最上沿的最小值到文档末尾。
+        #   无下屏（全屏视图）注入 0 → 回退整屏滚动（既有行为）。
+        bottom_reserved = self._fixed_bottom_rows(frame.height)
         try:
             self._ink_renderer.set_bottom_reserved(bottom_reserved)
         except Exception:
-            _logger.debug("注入底栏保留行数异常", exc_info=True)
+            _logger.debug("注入固定区行数异常", exc_info=True)
         self._ink_renderer.render(frame)
         # ★ render({onRender})：每帧渲染后回调（官方 RenderMetrics 语义）——
         #   回调异常仅记录日志，不中断渲染循环。
@@ -917,6 +911,85 @@ class _SessionFrameMixin:
         fiber = _stream_height.find_bottom_area(self._root_fiber)
         self._bottom_area_fiber = fiber
         return fiber
+
+    def _fixed_bottom_rows(self, doc_height: int) -> int:
+        """文档末尾固定区行数（下屏 + 可见的底部锚定浮窗）。
+
+        ★ 2026-10-23（满屏流式浮窗闪烁修复）：渲染器把增长/缩短的滚动区域
+        限制在「内容区」、固定区原地不动。固定区此前只含下屏（状态栏 +
+        输入区）；满屏流式输出时底部锚定浮窗（``/loop``、``/usage``、
+        ``/pet``）位于内容区内，会随内容一起上滚、随后再被重写——终端
+        （mintty 等逐字节渲染）会显示这个中间态，用户看到「浮动窗口闪」。
+        把浮窗并入固定区后，滚动只作用于浮窗上方的内容，浮窗钉在屏幕原位。
+
+        固定区起点 = ``min(下屏顶行, 全部可见底部锚定浮窗的最上沿)``：多个
+        浮窗可叠放（``/loop`` + ``/usage``），取最高的那个；浮窗可能带
+        ``offset_y`` / ``max_height``，其布局盒已是本帧最终行号（布局后
+        定位 + 补白平移均已完成）。
+
+        保守回退：存在与固定区相交的**非**底部锚定浮窗（``doc_bottom`` /
+        ``doc_top`` / 绝对坐标）时只固定下屏——这些窗口的位置随文档高度
+        变化，冻结其所在行会让它们停止滚动而错位。浮窗行数变化（隐藏 /
+        高度变化）由渲染器 ``_reserved_bottom_for_scroll`` 判为不连续并
+        回退整屏滚动（正确性优先）。
+
+        Args:
+            doc_height: 本帧文档总行数。
+
+        Returns:
+            固定区行数（0 = 不固定，回退整屏滚动）。
+        """
+        bottom = self._find_bottom_area_fiber()
+        box = getattr(bottom, "layout_box", None)
+        if box is None:
+            return 0
+        try:
+            bottom_y = int(getattr(box, "y", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            return 0
+        if bottom_y < 0 or bottom_y > doc_height:
+            return 0
+        bottom_rows = doc_height - bottom_y
+        model = getattr(self, "_model", None)
+        if model is None or not getattr(model, "floating_windows", None):
+            return bottom_rows
+        fibers = getattr(self._root_fiber, "_float_frame_windows", None) or ()
+        if not fibers:
+            return bottom_rows
+        # 局部导入：``_floating`` 只依赖 ink 内部模块（避免模块级循环导入）。
+        from ._floating import _anchor_kind
+
+        float_top: int | None = None
+        others: list[tuple[int, int]] = []
+        for fiber in fibers:
+            if getattr(fiber, "_float_hidden", False):
+                continue
+            try:
+                visible_h = int(getattr(fiber, "_float_visible_h", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                visible_h = 0
+            if visible_h <= 0:
+                continue
+            fbox = getattr(fiber, "layout_box", None)
+            props = getattr(fiber, "props", None)
+            if fbox is None or not isinstance(props, dict):
+                continue
+            try:
+                y0 = int(getattr(fbox, "y", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if _anchor_kind(props) in ("bottom_area", "input"):
+                float_top = y0 if float_top is None else min(float_top, y0)
+            else:
+                others.append((y0, y0 + visible_h))
+        if float_top is None:
+            return bottom_rows
+        fixed_top = max(0, min(bottom_y, float_top))
+        for y0, y1 in others:
+            # 非固定浮窗与固定区相交：冻结会让它停止滚动 → 只固定下屏。
+            if y0 < doc_height and y1 > fixed_top:
+                return bottom_rows
+        return doc_height - fixed_top
 
     def _apply_stream_height_lock(self, frame, *, reset: bool = False):
         """应用流式高度锁定：必要时在**下屏之前**补空行，返回（可能新的）帧。
