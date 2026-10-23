@@ -52,8 +52,10 @@ user_select 工具调用各自 append 一个 ``UserSelectState`` 到
     * 选项带 ``1.`` 序号，数字键 ``1-9`` 快选：单选立即确认（多问题自动
       推进），多选切换勾选（Enter 再确认）；自定义输入模式数字放行给
       TextInput。
-    * 选项说明：每个选项自己的说明缩进显示在该选项下方（选中亮色/其余
-      dim）；说明超出单行宽度时在列表下方完整展开（最多 2 行）。
+    * 选项说明：说明写在选项对象 ``description`` 里，缩进显示在该选项
+      下方（选中亮色/其余 dim）；★ 2026-10-23（用户需求：说明支持多行
+      显示）：**选中项**按原文分行 + 超宽自动换行展开（受弹窗高度预算
+      限制，超出以 ``…`` 截断），其余选项折叠为单行。
     * 导航增强：Home/End 首末、PgUp/PgDn 翻页（共享控件仅在模态弹窗
       ``consumeAll=True`` 时启用，命令补全等调用零回归）。
     * 多选未勾选时按 Enter 仍提交空列表（返回协议不变），提示行明确
@@ -74,7 +76,9 @@ user_select 工具调用各自 append 一个 ``UserSelectState`` 到
     * 标题区：问题页只渲染一行问题文本（加粗白字），无 header chip / 无
       整行 ``─`` 分割线；``header`` 仅用于 tab 标签。
     * 选项行：``> 1. 标签``（选中指针 + 序号），选中整行背景高亮；
-      说明缩进显示在选项下方（Claude 选项 label+description 布局）。
+      说明缩进显示在选项下方（Claude 选项 label+description 布局）；
+      ★ 2026-10-23：说明与选项同参数（``options[].description``），
+      选中项多行展开、其余折叠单行。
     * 多选标记：``[√]``/``[ ]``（替代 ●/○）；多选列表末尾追加 ``提交`` 项
       （Claude 多选 Submit 行；Enter 直接提交仍保留兼容）。
     * 自定义输入项：``4. 其他（自定义输入…）``（普通编号项，无说明行）。
@@ -355,17 +359,75 @@ def _one_line(text: str) -> str:
     return str(text or "").replace("\r", " ").replace("\n", " ")
 
 
-def _option_desc_row(
+def _option_description(option) -> str:
+    """读取选项说明文本（``UserSelectOption.description``；空串 = 无说明）。"""
+    return str(getattr(option, "description", "") or "")
+
+
+def _option_label(option) -> str:
+    """读取选项标签文本（``UserSelectOption.label``）。"""
+    return str(getattr(option, "label", "") or "")
+
+
+def _wrap_description(text: str, width: int) -> list:
+    """说明文本按显示宽度换行（``\\n`` 强制换行；空文本返回空列表）。
+
+    ★ 2026-10-23（用户需求：说明支持多行显示）：说明原文含换行时逐行
+    保留，每行再按可用列宽自动换行（CJK 安全，不产生超宽行）。
+    """
+    raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not raw:
+        return []
+    return _wrap_by_width(raw, max(1, int(width))) or [""]
+
+
+def _option_desc_rows(
     text: str, *, indent: int, target_w: int, style: Style,
-    key: str,
+    key: str, max_rows: "int | None" = None,
+) -> list:
+    """选中项说明行：按原文多行展开（超宽自动换行，超出预算以 ``…`` 截断）。
+
+    Args:
+        text: 说明原文（可含换行）。
+        indent: 说明行缩进（对齐选项 label 起点）。
+        target_w: 行宽预算（含缩进）。
+        style: 说明文字样式。
+        key: 元素 key 前缀（多行时追加行号）。
+        max_rows: 最大渲染行数（None = 不限制；用于弹窗高度预算）。
+    """
+    target_w = max(1, int(target_w))
+    indent = max(0, min(int(indent), target_w - 1))
+    budget = max(1, target_w - indent)
+    lines = _wrap_description(text, budget)
+    truncated = max_rows is not None and len(lines) > max(1, int(max_rows))
+    if truncated:
+        lines = lines[: max(1, int(max_rows))]
+    rows: list = []
+    for i, line in enumerate(lines):
+        body = line
+        if truncated and i == len(lines) - 1:
+            # 末行加省略号（先留 1 列给 ``…``，保持行宽不超预算）。
+            body = _truncate_width(body, max(1, budget - 1)).rstrip() + "\u2026"
+        rows.append(h(TEXT, {
+            "children": " " * indent + body,
+            "style": style,
+            "height": 1,
+            "key": f"{key}-{i}",
+            "textWrap": "truncate-end",
+        }))
+    return rows
+
+
+def _option_folded_desc_row(
+    text: str, *, indent: int, target_w: int, style: Style, key: str,
 ) -> object:
-    """选项说明行（Claude 风格：缩进显示在选项下方，单行截断）。"""
-    indent = max(0, int(indent))
-    budget = max(1, int(target_w) - indent)
+    """非选中项说明行（多行说明折叠为单行，超宽截断）。"""
+    target_w = max(1, int(target_w))
+    indent = max(0, min(int(indent), target_w - 1))
+    budget = max(1, target_w - indent)
     body = _truncate_width(_one_line(text), budget)
-    children = " " * min(indent, max(0, int(target_w))) + body
     return h(TEXT, {
-        "children": children,
+        "children": " " * indent + body,
         "style": style,
         "height": 1,
         "key": key,
@@ -682,8 +744,9 @@ def _build_tab_bar(states: list, active: int, width: int) -> object:
 
 
 def _build_regular_row(
-    us, options: list, multi: bool, i: int, cur: int, checked: list,
+    options: list, multi: bool, i: int, cur: int, checked: list,
     opt_w: int, num_total: "int | None" = None,
+    max_desc_rows: "int | None" = None,
 ) -> object:
     """单个选项行（Claude 风格：``> 1. 标签`` + 缩进说明行）。
 
@@ -692,18 +755,22 @@ def _build_regular_row(
     选项/说明超长均按显示宽度截断（CJK 安全，防超宽行破坏行级 diff
     宽度不变量）。
 
+    ★ 2026-10-23（用户需求：说明支持多行显示）：说明已并入选项对象
+    （``options[i].description``）——**仅选中项**按原文多行展开（超宽自动
+    换行，``max_desc_rows`` 控制高度预算），其余选项折叠为单行。
+
     Args:
-        us: UserSelectState（当前 tab）。
-        options: 选项字符串列表。
+        options: 选项对象列表（``UserSelectOption``）。
         multi: 是否多选。
         i: 当前选项索引（控件 item 索引）。
         cur: 当前高亮索引（已钳制）。
         checked: 多选勾选索引列表。
         opt_w: 选项行宽度预算。
         num_total: 序号列宽参考总项数（含自定义 / 提交伪选项；缺省选项数）。
+        max_desc_rows: 选中项说明最大渲染行数（None = 不限制）。
 
     Returns:
-        Column（选项行 + 可选的说明行，最多 2 行）。
+        Column（选项行 + 说明行；选中项说明可多行）。
     """
     is_sel = i == cur
     # 序号列宽按控件总项数计算（含末尾伪选项），保证 9→10 项时仍对齐。
@@ -720,7 +787,7 @@ def _build_regular_row(
     else:
         mark_style = _S_NUM
     runs = _option_runs(
-        _CURSOR if is_sel else _CURSOR_PAD, num, mark, str(options[i]),
+        _CURSOR if is_sel else _CURSOR_PAD, num, mark, _option_label(options[i]),
         cursor_style=_S_SEL_ACCENT if is_sel else _S_NUM,
         num_style=_S_SEL_ACCENT if is_sel else _S_NUM,
         mark_style=mark_style,
@@ -732,40 +799,29 @@ def _build_regular_row(
         "styled": runs, "height": 1, "key": f"row-{i}",
         "textWrap": "truncate-end",
     })]
-    descs = us.option_descriptions or []
-    desc = str(descs[i] or "") if i < len(descs) else ""
+    desc = _option_description(options[i])
     if desc:
-        rows.append(_option_desc_row(
-            desc,
-            indent=_option_indent(num_w, multi),
-            target_w=opt_w,
-            style=_S_DESC if is_sel else _S_DESC_DIM,
-            key=f"row-{i}-desc",
-        ))
+        indent = _option_indent(num_w, multi)
+        if is_sel:
+            # 选中项：按原文多行展开（超宽自动换行；受高度预算限制）。
+            rows.extend(_option_desc_rows(
+                desc,
+                indent=indent,
+                target_w=opt_w,
+                style=_S_DESC,
+                key=f"row-{i}-desc",
+                max_rows=max_desc_rows,
+            ))
+        else:
+            # 其余选项：折叠为单行（换行 → 空格，超宽截断）。
+            rows.append(_option_folded_desc_row(
+                desc,
+                indent=indent,
+                target_w=opt_w,
+                style=_S_DESC_DIM,
+                key=f"row-{i}-desc",
+            ))
     return h(Column, None, rows)
-
-
-def _selected_desc_lines(
-    us, cur: int, total: int, width: int, desc_w: int = 0,
-) -> list:
-    """选中项完整说明的换行行（最多 2 行；无需额外显示时返回空列表）。
-
-    选项下方已显示单行说明；说明超过单行宽度（或本身含换行）时，在
-    列表下方以 ``▸`` 块完整展开（避免截断丢失信息）。
-    """
-    if cur < 0 or cur >= total:
-        return []
-    descs = us.option_descriptions or []
-    if cur >= len(descs):
-        return []
-    desc = str(descs[cur] or "")
-    if not desc:
-        return []
-    wrap_w = max(1, int(width) - 2)
-    if "\n" not in desc and wcswidth_simple(desc) <= wrap_w:
-        return []
-    lines = _wrap_by_width(desc, wrap_w)
-    return lines[:2]
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1247,7 +1303,9 @@ def _handle_number_event(
     us.selected = idx
     if set_selected is not None:
         set_selected(idx)
-    on_confirm({"label": str(options[idx]), "value": options[idx]})
+    # ★ 2026-10-23：选项对象以 label 作为结果值（说明不进入返回值）。
+    label = _option_label(options[idx])
+    on_confirm({"label": label, "value": label})
     return True
 
 
@@ -1646,6 +1704,9 @@ def UserSelectPopup(props) -> object:
             if selected != sel_us:
                 set_selected(sel_us)
     # ── 当前问题基础数据（提前计算：自定义输入回调/渲染共用） ──
+    # ★ 2026-10-23（用户需求：说明并入选项对象）：options 为
+    #   ``UserSelectOption(label, description)`` 列表，label 作为控件值与
+    #   返回结果，description 仅供渲染。
     options = list(us.options) if us is not None else []
     total = len(options)
     multi = bool(getattr(us, "multi_select", False)) if us is not None else False
@@ -1697,7 +1758,7 @@ def UserSelectPopup(props) -> object:
             except (TypeError, ValueError):
                 continue
             if 0 <= idx < total:
-                out.append(options[idx])
+                out.append(_option_label(options[idx]))
         return out
 
     def _on_checked_change(values) -> None:
@@ -1709,7 +1770,8 @@ def UserSelectPopup(props) -> object:
             if v not in (_CUSTOM_VALUE, _SUBMIT_VALUE)
         ]
         us.checked = [
-            i for i, opt in enumerate(options) if opt in vals
+            i for i, opt in enumerate(options)
+            if _option_label(opt) in vals
         ]
 
     def _toggle_checked(idx: int) -> None:
@@ -1993,7 +2055,6 @@ def UserSelectPopup(props) -> object:
             cur = max(0, min(selected, total_items - 1))
     else:
         cur = max(0, min(selected, total_items - 1))
-    descs = us.option_descriptions or []
     checked_idx = _checked_indices(us, total)
     checked_count = len(checked_idx)
 
@@ -2001,8 +2062,18 @@ def UserSelectPopup(props) -> object:
     width_i = int(width) if width and width > 0 else 80
     opt_w = max(1, width_i)
 
-    # 选中项完整说明块（说明超出单行宽度 / 含换行时，列表下方完整展开）
-    desc_block_lines = _selected_desc_lines(us, cur, total, width_i)
+    # ★ 2026-10-23（用户需求：说明支持多行显示）：仅选中项按原文展开多行，
+    #   其余选项折叠单行——选中项说明的行数参与列表高度预算（见下）。
+    sel_desc_full_rows = 0
+    if 0 <= cur < total:
+        sel_desc_rows_text = _wrap_description(
+            _option_description(options[cur]),
+            max(
+                1,
+                opt_w - _option_indent(_num_width(total_items), multi),
+            ),
+        )
+        sel_desc_full_rows = len(sel_desc_rows_text)
 
     # 主/次两行提示（先算：决定可见项行预算）
     hint_primary, hint_secondary = _build_hints(
@@ -2044,7 +2115,11 @@ def UserSelectPopup(props) -> object:
             "key": "us-done-result",
         }))
     else:
-        items = [{"label": opt, "value": opt} for opt in options]
+        # ★ 2026-10-23：选项对象 → 控件项（value 用 label，说明不参与选择）。
+        items = [
+            {"label": _option_label(opt), "value": _option_label(opt)}
+            for opt in options
+        ]
         # ★ 2026-10-21（用户需求）：列表末尾追加「其他（自定义输入…）」
         #   伪选项（仅工具路径 allow_custom=True；命令选择路径不追加）。
         if allow_custom:
@@ -2053,26 +2128,36 @@ def UserSelectPopup(props) -> object:
         #   （Claude 的 Submit 行）；Enter 直接提交勾选集合仍保留兼容。
         if show_submit_item:
             items.append({"label": _SUBMIT_LABEL, "value": _SUBMIT_VALUE})
-        # 行预算（Claude 风格每项最多 2 行：选项行 + 说明行）：
-        # 标题区、tab 栏、说明块、提示行、输入行先从可用高度扣除，剩余给
+        # 行预算：标题区、tab 栏、提示行、输入行先从可用高度扣除，剩余给
         # 选项列表；长列表需要滚动指示时再扣 1 行（矮终端下限 1 行）。
-        # 标题行 + tab 栏/空行 + 提示行 + 提示前空行（Claude 布局）。
+        # ★ 2026-10-23（说明支持多行显示）：每项行数不再恒定——普通项
+        #   ≤ 2 行（选项行 + 折叠说明行），选中项 = 1 + 说明展开行数。
+        #   先按「选中项占满可用高度」求说明行上限，再据此反推可容纳的
+        #   项数（limit），保证无论说明多长都不会撑破底部视图。
         base_fixed_rows = len(header_rows) + (2 if multi_mode else 0) + 2
-        base_fixed_rows += len(desc_block_lines)
         if hint_secondary:
             base_fixed_rows += 1
         if custom_editing_ref.current:
             base_fixed_rows += 1
-        # 每项占用的最大行数（有说明 → 2；自定义 / 提交伪选项各 1 行）
-        per_item_rows = 2 if descs else 1
+        has_desc = any(_option_description(opt) for opt in options)
+        other_rows = 2 if has_desc else 1
         base_limit = max(1, _popup_item_rows() - base_fixed_rows)
-        need_indicator = (
-            total_items * per_item_rows > base_limit
+        sel_desc_cap = max(1, base_limit - 1)
+        sel_desc_rows = min(sel_desc_full_rows, sel_desc_cap)
+        est_total_rows = (
+            max(0, total_items - 1) * other_rows + 1 + sel_desc_rows
         )
+        need_indicator = est_total_rows > base_limit
         fixed_rows = base_fixed_rows + (1 if need_indicator else 0)
         limit_base = max(1, _popup_item_rows() - fixed_rows)
+        sel_desc_cap = max(1, limit_base - 1)
+        sel_desc_rows = min(sel_desc_full_rows, sel_desc_cap)
+        other_budget = max(0, limit_base - 1 - sel_desc_rows)
         control_focus = not custom_editing_ref.current
-        limit = max(1, min(total_items, limit_base // max(1, per_item_rows)))
+        limit = max(
+            1,
+            min(total_items, 1 + other_budget // max(1, other_rows)),
+        )
         # 可见窗口（控件 onWindowChange 上报；首帧用跟随光标估算兜底）。
         win_off, win_count = list_window
         if win_count <= 0:
@@ -2107,8 +2192,9 @@ def UserSelectPopup(props) -> object:
                 )
             checked_now = _checked_indices(us, total)
             return _build_regular_row(
-                us, options, multi, idx, cur, checked_now, opt_w,
+                options, multi, idx, cur, checked_now, opt_w,
                 num_total=total_items,
+                max_desc_rows=sel_desc_cap,
             )
 
         # 多选勾选态：控件内部与 ``us.checked`` 双向同步（控件受控 values
@@ -2123,7 +2209,7 @@ def UserSelectPopup(props) -> object:
             f"-{cur_active}" if multi_mode else ""
         )
         if multi:
-            checked_vals = [options[i] for i in checked_idx]
+            checked_vals = [_option_label(options[i]) for i in checked_idx]
             control = h(MultiSelect, {
                 "key": f"us-multiselect-{getattr(us, 'seq', 0)}{ctrl_key_suffix}",
                 "items": items,
@@ -2157,17 +2243,9 @@ def UserSelectPopup(props) -> object:
                 "focus": control_focus,
             })
         rows.append(control)
-
-        # ── 选中项完整说明块（说明超宽时在列表下方展开） ──
-        for i, line in enumerate(desc_block_lines):
-            prefix = "  \u25b8 " if i == 0 else "    "
-            rows.append(h(TEXT, {
-                "children": _truncate_width(prefix + str(line), max(1, int(width))),
-                "style": _S_DESC,
-                "height": 1,
-                "key": f"us-desc-block-{i}",
-                "textWrap": "truncate-end",
-            }))
+        # ★ 2026-10-23（用户需求：说明支持多行显示）：选中项说明已在
+        #   选项行下方多行展开（`_build_regular_row`），不再额外渲染
+        #   列表下方的 `▸` 展开块（避免同一说明重复显示两遍）。
 
         # ── 自定义输入编辑行（输入模式：选项列表之后、提示行之前） ──
         if custom_editing_ref.current:

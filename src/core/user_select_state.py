@@ -13,15 +13,27 @@
 ——工具路径以 ``IDLE_TIMEOUT_SECONDS``（60s）作为空闲窗口，弹窗每收到一次
 界面操作就重置 ``deadline``；固定 deadline 的调用方 ``idle_timeout`` 为 0，
 行为不变。
+
+★ 2026-10-23（用户需求：说明列表与选项合成一个参数，并删除说明列表）：
+``options`` 从「字符串列表 + ``option_descriptions`` 平行列表」改为
+``list[UserSelectOption]``（每项 ``label`` + 可选 **多行** ``description``），
+构造期经 ``normalize_options`` 严格校验（只接受对象，纯字符串报错）；
+渲染层仅对选中项展开多行说明，其余选项折叠单行。
 """
 
 from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-__all__ = ["IDLE_TIMEOUT_SECONDS", "UserSelectState"]
+__all__ = [
+    "IDLE_TIMEOUT_SECONDS",
+    "UserSelectOption",
+    "UserSelectState",
+    "normalize_options",
+]
 
 #: 空闲超时窗口（秒）：user_select 弹窗 **1 分钟没有任何操作**（按键/滚动）
 #: 才判定超时（回退 default_options）。
@@ -31,6 +43,76 @@ __all__ = ["IDLE_TIMEOUT_SECONDS", "UserSelectState"]
 #:   ``now + idle_timeout``；命令系统选择（CommandUiAdapter）等固定 deadline
 #:   调用方 ``idle_timeout`` 保持 0，计时语义不变。
 IDLE_TIMEOUT_SECONDS = 60.0
+
+
+@dataclass(frozen=True)
+class UserSelectOption:
+    """user_select 选项（标签 + 可选说明）。
+
+    ★ 2026-10-23（用户需求：说明列表与选项合成一个参数并删除说明列表）：
+    ``user_select`` 工具参数不再有独立的 ``option_descriptions``——每个选项
+    自带 ``description``，说明与选项在**同一个参数**里表达，避免两处列表
+    长度不一致；``description`` 允许含换行（渲染层支持多行显示）。
+
+    Attributes:
+        label: 选项文本（即返回给工具的选项值；``default_options`` /
+            ``result`` / ``checked`` 均按该文本匹配）。
+        description: 选项说明（可多行；空串 = 无说明）。
+    """
+
+    label: str
+    description: str = ""
+
+
+def _option_type_error(value) -> "ValueError":
+    """构造「选项格式不合法」的统一错误（严格对象契约）。"""
+    return ValueError(
+        "user_select options 的每一项必须是对象 "
+        '{"label": "选项文本", "description": "说明（可选，可多行）"}；'
+        f"不再接受纯字符串。收到: {value!r}"
+    )
+
+
+def make_option(value) -> UserSelectOption:
+    """把单个选项值归一化为 :class:`UserSelectOption`（严格校验）。
+
+    ★ 2026-10-23（用户需求）：**只接受对象**——``UserSelectOption`` 实例或
+    带 ``label`` 的映射（``description`` 可选）。纯字符串等其它形态一律
+    抛 ``ValueError``，让模型/调用方按新 schema 重试，避免「选项与说明」
+    再次分裂成两个平行列表。
+
+    Args:
+        value: 选项值（``UserSelectOption`` / ``{"label", "description"}``）。
+
+    Returns:
+        归一化后的 :class:`UserSelectOption`。
+
+    Raises:
+        ValueError: 非对象、缺少 ``label``、``label`` 为空或字段类型非法。
+    """
+    if isinstance(value, UserSelectOption):
+        return value
+    if isinstance(value, Mapping):
+        label = value.get("label")
+        if not isinstance(label, str) or not label.strip():
+            raise _option_type_error(value)
+        description = value.get("description", "")
+        if description is None:
+            description = ""
+        if not isinstance(description, str):
+            raise _option_type_error(value)
+        return UserSelectOption(label=label, description=description)
+    raise _option_type_error(value)
+
+
+def normalize_options(values) -> list:
+    """把选项列表整体归一化为 :class:`UserSelectOption` 列表。
+
+    ``None`` / 空列表返回空列表；其余逐项经 :func:`make_option` 严格校验。
+    """
+    if not values:
+        return []
+    return [make_option(item) for item in values]
 
 
 @dataclass
@@ -45,8 +127,10 @@ class UserSelectState:
             用于单问题标题 chip 与多问题 tab 标签）；空串时回退 title
             （渲染层截断）。★ 2026-10-22（用户需求：user_select TUI 与
             Claude 对齐）：新增可选字段，旧构造/旧测试默认空串零回归。
-        options: 选项字符串列表。
-        option_descriptions: 与 options 等长的说明列表。
+        options: 选项列表（:class:`UserSelectOption`，每项 = 标签 + 可选
+            **多行**说明）。★ 2026-10-23（用户需求）：原 ``options`` 字符串
+            列表 + ``option_descriptions`` 平行列表已合并为本结构；构造时
+            经 ``normalize_options`` 严格归一化（只接受对象，纯字符串报错）。
         multi_select: 是否多选。
         default_options: 默认选项（超时/取消/非交互回退）。
         selected: 当前高亮索引（组件维护）。
@@ -59,7 +143,7 @@ class UserSelectState:
         answered: 该问题是否已回答（提交前可重答）。
         done: 交互是否已整体提交/超时（终态锁定）。
         action: 结束方式（confirmed/cancel/timeout）。
-        result: 选中的 options 子集（含自由输入时附加的自定义文本）。
+        result: 选中选项的 label 列表（含自由输入时附加的自定义文本）。
         allow_custom: 是否允许用户输入选项外的自定义答案（工具路径为
             True；命令系统选择路径默认 False，保持 index 契约）。
         typing: 外部编辑器（Ctrl+G，默认 vim）当前是否正在运行（跨线程
@@ -78,7 +162,6 @@ class UserSelectState:
     #: 极短标签（chip / tab 标签；空串回退 title）。
     header: str = ""
     options: list = field(default_factory=list)
-    option_descriptions: list = field(default_factory=list)
     multi_select: bool = False
     default_options: list = field(default_factory=list)
     selected: int = 0
@@ -100,6 +183,17 @@ class UserSelectState:
     _final_lock: threading.Lock = field(
         default_factory=threading.Lock, repr=False, compare=False,
     )
+
+    def __post_init__(self) -> None:
+        """构造期归一化选项（严格对象契约；纯字符串报错）。
+
+        ★ 2026-10-23（用户需求）：说明已并入选项对象（``description``），
+        ``options`` 构造后统一为 ``list[UserSelectOption]``——工具/命令系统/
+        测试传 ``{"label", "description"}`` 映射或 ``UserSelectOption`` 均可，
+        但**不再接受纯字符串**（显式 ``ValueError``，避免调用方沿用旧契约
+        静默丢说明）。
+        """
+        self.options = normalize_options(self.options)
 
     def touch_activity(self, now: "float | None" = None) -> bool:
         """按空闲计时刷新超时截止（界面每发生一次操作调用一次）。

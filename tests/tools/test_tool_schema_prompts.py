@@ -87,6 +87,13 @@ def test_key_parameter_contracts() -> None:
     user_select = schemas["user_select"]["function"]["parameters"]
     assert user_select["required"] == ["title", "options"]
     assert "1 分钟没有任何操作" in schemas["user_select"]["function"]["description"]
+    # ★ 2026-10-23（用户需求）：说明并入 options，删除 option_descriptions。
+    props = user_select["properties"]
+    assert "option_descriptions" not in props
+    options_item = props["options"]["items"]
+    assert options_item["type"] == "object"
+    assert options_item["required"] == ["label"]
+    assert "description" in options_item["properties"]
 
 
 def test_bash_opt_schema_keeps_ops_and_op_list() -> None:

@@ -83,12 +83,20 @@ def _mount_popup(states, width: int = 80):
     return model, element, root, press
 
 
+def _norm_options(options) -> list:
+    """测试便捷：字符串 → ``{label}`` 对象（``options`` 严格只接受对象）。"""
+    return [
+        item if isinstance(item, dict) else {"label": str(item)}
+        for item in (options or ["A", "B"])
+    ]
+
+
 def _state(title: str = "Q", options=None, **kwargs) -> UserSelectState:
     return UserSelectState(
         visible=True,
         seq=int(kwargs.pop("seq", 1)),
         title=title,
-        options=list(options or ["A", "B"]),
+        options=_norm_options(options),
         selected=0,
         allow_custom=bool(kwargs.pop("allow_custom", True)),
         **kwargs,
@@ -121,7 +129,10 @@ def test_state_custom_fields_default_and_final_write() -> None:
 def test_poll_deadline_pauses_while_typing() -> None:
     # ★ 2026-10-22：``typing`` 仅表示「外部编辑器（Ctrl+G vim）运行中」——
     #   编辑器独占终端、界面收不到按键，轮询暂停计时并在返回后补回。
-    st = UserSelectState(visible=True, options=["A"], allow_custom=True, deadline=100.0)
+    st = UserSelectState(
+        visible=True, options=[{"label": "A"}],
+        allow_custom=True, deadline=100.0,
+    )
     st.typing = True
     paused, expired = _poll_deadline(st, 0.0, 50.0)
     assert paused == 50.0 and expired is False
@@ -140,7 +151,10 @@ def test_poll_deadline_pauses_while_typing() -> None:
 
 
 def test_poll_deadline_zero_deadline_never_expires() -> None:
-    st = UserSelectState(visible=True, options=["A"], allow_custom=True, deadline=0.0)
+    st = UserSelectState(
+        visible=True, options=[{"label": "A"}],
+        allow_custom=True, deadline=0.0,
+    )
     st.typing = False
     paused, expired = _poll_deadline(st, 0.0, 10.0)
     assert paused == 0.0 and expired is False
@@ -149,7 +163,8 @@ def test_poll_deadline_zero_deadline_never_expires() -> None:
 def test_idle_deadline_expires_only_after_one_minute_idle() -> None:
     """★ 2026-10-22：连续 1 分钟无操作才超时；期间一次操作即续期。"""
     st = UserSelectState(
-        visible=True, options=["A"], idle_timeout=60.0, deadline=60.0,
+        visible=True, options=[{"label": "A"}],
+        idle_timeout=60.0, deadline=60.0,
     )
     assert _poll_deadline(st, 0.0, 59.9) == (0.0, False)
     # 30s 时发生一次界面操作 → deadline 顺延到 90s。
@@ -179,12 +194,15 @@ def test_tool_schema_mentions_one_minute_idle_timeout() -> None:
 
 def test_touch_activity_ignores_zero_idle_and_done_state() -> None:
     """固定 deadline 调用方（idle_timeout=0）与已终态问题不被刷新。"""
-    fixed = UserSelectState(visible=True, options=["A"], deadline=100.0)
+    fixed = UserSelectState(
+        visible=True, options=[{"label": "A"}], deadline=100.0,
+    )
     assert fixed.touch_activity(10.0) is False
     assert fixed.deadline == 100.0
 
     finished = UserSelectState(
-        visible=True, options=["A"], idle_timeout=60.0, deadline=100.0,
+        visible=True, options=[{"label": "A"}],
+        idle_timeout=60.0, deadline=100.0,
     )
     finished.try_set_final("confirmed", ["A"])
     assert finished.touch_activity(10.0) is False
@@ -199,7 +217,7 @@ def test_tool_schema_has_no_timeout_param_and_ignores_legacy_timeout() -> None:
     assert "timeout" not in props
     assert "default_options" in props
     func = UserSelectFunc.from_args(
-        {"title": "Q", "options": ["A"], "timeout": 5},
+        {"title": "Q", "options": [{"label": "A"}], "timeout": 5},
     )
     assert not hasattr(func, "timeout")
     assert func.title == "Q"
@@ -213,16 +231,74 @@ def test_tool_schema_has_header_param_and_state_carries_it() -> None:
     assert "header" in props
     assert "12" in props["header"]["description"]
     func = UserSelectFunc.from_args(
-        {"title": "Q", "options": ["A"], "header": "认证方式"},
+        {"title": "Q", "options": [{"label": "A"}], "header": "认证方式"},
     )
     assert func.header == "认证方式"
     # 缺省 header 为空串（渲染层回退 title 截断）。
-    func2 = UserSelectFunc.from_args({"title": "Q", "options": ["A"]})
+    func2 = UserSelectFunc.from_args(
+        {"title": "Q", "options": [{"label": "A"}]},
+    )
     assert func2.header == ""
 
 
 def test_state_header_defaults_empty() -> None:
     assert UserSelectState().header == ""
+
+
+def test_options_schema_inlines_description_and_drops_legacy_list() -> None:
+    """★ 2026-10-23（用户需求）：说明并入 options，删除 option_descriptions。"""
+    from src.tools.user_select import UserSelectFunc
+
+    props = UserSelectFunc.to_tool_schema()["function"]["parameters"]["properties"]
+    assert "option_descriptions" not in props
+    options = props["options"]
+    assert options["type"] == "array"
+    item = options["items"]
+    assert item["type"] == "object"
+    assert item["required"] == ["label"]
+    assert "label" in item["properties"]
+    assert "description" in item["properties"]
+    # description 说明中明确支持多行显示。
+    assert "多行" in item["properties"]["description"]["description"]
+
+
+def test_state_rejects_plain_string_options() -> None:
+    """★ 2026-10-23：``options`` 严格只接受对象（纯字符串报错）。"""
+    import pytest
+
+    with pytest.raises(ValueError):
+        UserSelectState(visible=True, options=["A"])
+    with pytest.raises(ValueError):
+        UserSelectState(visible=True, options=[{"description": "无标签"}])
+
+
+def test_options_carry_multiline_description() -> None:
+    st = UserSelectState(visible=True, options=[
+        {"label": "A", "description": "第一行\n第二行"},
+        {"label": "B"},
+    ])
+    assert st.options[0].label == "A"
+    assert st.options[0].description == "第一行\n第二行"
+    assert st.options[1].description == ""
+    # 结果协议仍以 label 文本为准（说明不参与匹配）。
+    st.try_set_final("confirmed", ["A"])
+    assert st.result == ["A"]
+
+
+def test_tool_init_and_defaults_match_labels_with_descriptions() -> None:
+    """★ 2026-10-23：默认项按 label 匹配；selected 返回 label。"""
+    from src.tools.user_select import UserSelectFunc
+
+    func = UserSelectFunc(
+        title="Q",
+        options=[
+            {"label": "A", "description": "说明甲\n第二行"},
+            {"label": "B"},
+        ],
+        default_options=["B"],
+    )
+    assert [o.label for o in func.options] == ["A", "B"]
+    assert func.options[0].description == "说明甲\n第二行"
 
 
 def test_any_key_resets_idle_deadline_for_all_pending_questions() -> None:
@@ -430,7 +506,10 @@ def test_arrow_in_input_mode_does_not_switch_tab() -> None:
 
 def test_custom_row_has_no_description_like_claude() -> None:
     """★ 2026-10-22（Claude 对齐）：自定义项是普通编号项，无说明行。"""
-    st = _state(option_descriptions=["说明一", "说明二"])
+    st = _state(options=[
+        {"label": "A", "description": "说明一"},
+        {"label": "B", "description": "说明二"},
+    ])
     model = SimpleNamespace(
         user_selects=[st], user_select=st, bottom_view="user_select",
     )
@@ -482,7 +561,9 @@ def test_tool_returns_explicit_empty_multi_submit(monkeypatch) -> None:
 
     def run() -> None:
         func = tool_mod.UserSelectFunc(
-            title="Q", options=["A", "B"], multi_select=True,
+            title="Q",
+            options=[{"label": "A"}, {"label": "B"}],
+            multi_select=True,
         )
         out.append(asyncio.run(func.execute()))
 

@@ -85,12 +85,20 @@ def _frame_lines(root, width: int = 80):
     return _components.render_frame(root, width).lines
 
 
+def _norm_options(options) -> list:
+    """测试便捷：字符串 → ``{label}`` 对象（``options`` 严格只接受对象）。"""
+    return [
+        item if isinstance(item, dict) else {"label": str(item)}
+        for item in (options or ["A", "B"])
+    ]
+
+
 def _state(title: str = "Q", options=None, **kwargs) -> UserSelectState:
     return UserSelectState(
         visible=True,
         seq=int(kwargs.pop("seq", 1)),
         title=title,
-        options=list(options or ["A", "B"]),
+        options=_norm_options(options),
         selected=int(kwargs.pop("selected", 0)),
         allow_custom=bool(kwargs.pop("allow_custom", True)),
         **kwargs,
@@ -230,24 +238,44 @@ def test_home_end_and_page_navigation_modal() -> None:
 # ══════════════════════════════════════════════════════════
 
 
-def test_descriptions_below_each_option_and_selected_expanded() -> None:
+def test_descriptions_below_each_option_and_selected_multiline() -> None:
+    """★ 2026-10-23（用户需求）：说明并入选项；选中项多行展开、其余折叠单行。"""
     long_desc = "很长的说明文本" * 12
     st = _state(
-        "Q", ["A", "B", "C"],
-        option_descriptions=["说明甲", "说明乙", long_desc],
+        "Q", [
+            {"label": "A", "description": "说明甲"},
+            {"label": "B", "description": "说明乙"},
+            {"label": "C", "description": long_desc},
+        ],
         allow_custom=True,
     )
     st.selected = 2
     text = _render([st], width=80)
     assert "说明甲" in text
     assert "说明乙" in text
-    # 每个选项自己的说明都在右栏出现（而非只有选中项）。
+    # 每个选项自己的说明都在选项行下方出现（而非只有选中项）。
     assert text.count("说明甲") >= 1 and text.count("说明乙") >= 1
-    # 选中的长说明在列表下方完整展开（▸ 块）。
-    assert "▸" in text
+    # 选中的长说明按宽度自动换行成多行（不再使用列表下方 ▸ 展开块）。
+    assert text.count("很长的说明文本") >= 2
+    assert "\u25b8" not in text
     # ★ 2026-10-22（Claude 对齐）：自定义输入项为普通编号项（无说明行）。
     assert "其他（自定义输入…）" in text
     assert "输入不在选项中的答案" not in text
+
+
+def test_non_selected_multiline_description_folds_single_line() -> None:
+    """★ 2026-10-23：非选中项的多行说明折叠为单行（换行 → 空格）。"""
+    st = _state(
+        "Q", [
+            {"label": "A", "description": "甲一\n甲二\n甲三"},
+            {"label": "B", "description": "乙说明"},
+        ],
+        selected=1,
+        allow_custom=False,
+    )
+    text = _render([st], width=80)
+    lines = [line for line in text.splitlines() if "甲一" in line]
+    assert lines and "甲一 甲二 甲三" in lines[0]
 
 
 def test_submit_page_shows_defaults_for_unanswered() -> None:
@@ -319,8 +347,11 @@ def _assert_width(text: str, width: int) -> None:
 
 def test_width_invariant_single_split() -> None:
     st = _state(
-        "一个很长很长的问题标题" * 2, ["Python", "JavaScript", "Rust"],
-        option_descriptions=["解释型动态语言", "前端脚本", "系统级语言"],
+        "一个很长很长的问题标题" * 2, [
+            {"label": "Python", "description": "解释型动态语言"},
+            {"label": "JavaScript", "description": "前端脚本"},
+            {"label": "Rust", "description": "系统级语言"},
+        ],
         allow_custom=True,
     )
     for width in (30, 40, 60, 80, 120):
@@ -503,8 +534,11 @@ def test_tab_marks_answered_cancel_timeout() -> None:
 def test_claude_layout_pointer_and_description_below() -> None:
     """Claude 对齐布局：``> `` 指针 + 说明缩进在选项下方。"""
     st = _state(
-        "问题正文", ["A", "B"], allow_custom=True,
-        option_descriptions=["说明甲", "说明乙"],
+        "问题正文", [
+            {"label": "A", "description": "说明甲"},
+            {"label": "B", "description": "说明乙"},
+        ],
+        allow_custom=True,
     )
     st.header = "短标签"
     text = _render([st], width=80)
@@ -540,15 +574,22 @@ def test_header_only_rendered_in_tab_bar() -> None:
     assert "\u2500" not in text
 
 
-def test_multiline_title_and_description_folded_one_line() -> None:
-    """多行 title/说明折叠为单行（不破坏行数预算与行宽不变量）。"""
+def test_multiline_title_folded_and_selected_description_multiline() -> None:
+    """★ 2026-10-23：title 折叠单行；选中项多行说明逐行展开。"""
     st = _state(
-        "第一行\n第二行", ["A"], allow_custom=False,
-        option_descriptions=["说明一\n说明二"],
+        "第一行\n第二行", [
+            {"label": "A", "description": "说明一\n说明二"},
+        ],
+        allow_custom=False,
     )
     text = _render([st], width=40)
+    # title 仍折叠为单行（问题区固定 1 行）。
     assert "第一行 第二行" in text
-    assert "说明一 说明二" in text
+    lines = text.splitlines()
+    # 选中项说明按原文分行显示（不是折叠成 "说明一 说明二"）。
+    assert any(line.strip() == "说明一" for line in lines)
+    assert any(line.strip() == "说明二" for line in lines)
+    assert "说明一 说明二" not in text
     _assert_width(text, 40)
 
 
@@ -646,9 +687,11 @@ def test_new_features_width_invariant(monkeypatch) -> None:
 
     monkeypatch.setattr(us_mod, "_popup_item_rows", lambda: 10)
     st = _state(
-        "很长的问题标题" * 3, [f"选项{i}" for i in range(30)],
+        "很长的问题标题" * 3, [
+            {"label": f"选项{i}", "description": "很长的说明文本" * 8}
+            for i in range(30)
+        ],
         multi_select=True, allow_custom=True,
-        option_descriptions=["很长的说明文本" * 8] * 30,
     )
     # header 超长（>12 显示宽）在渲染层截断，不得撑破窄屏行宽。
     st.header = "很长的短标签超过十二个字符"

@@ -177,7 +177,8 @@ class EditMsgSelectState:
     （EditMsgSelectPopup）+ 独立底部视图（bottom_view="editmsg"）。
 
     与 UserSelectState 的差异：
-      - 仅单选消息（无 multi_select / 无 option_descriptions 分栏）；
+      - 仅单选消息（无 multi_select / 无选项说明分栏——``UserSelectState``
+        的说明已并入 ``options[].description``）；
       - 每条消息只显示一行——options 为单行摘要（_user_msg_summary 生成，
         不再使用多行 option_lines）。
 

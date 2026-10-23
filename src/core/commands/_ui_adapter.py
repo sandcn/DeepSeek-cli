@@ -67,11 +67,17 @@ class CommandUiAdapter:
             # ★ 2026-08-19（并发 tab 弹窗，与 user_select 工具同协议）：追加
             #   到 ``model.user_selects`` 并发队列（真源）+ 同步兼容字段
             #   ``model.user_select``——并发弹窗以 tab 形式一起显示。
+            # ★ 2026-10-23（用户需求：说明并入选项对象）：命令系统的显示项
+            #   是纯文本、无说明——显式构造 {label, description} 对象（
+            #   UserSelectState 严格只接受对象，不再接受纯字符串）。
             state = UserSelectState(
                 visible=True,
                 seq=prev_seq + 1,
                 title=title or "选择",
-                options=list(display),
+                options=[
+                    {"label": str(item), "description": ""}
+                    for item in display
+                ],
                 selected=max(0, min(int(initial_idx), len(display) - 1)),
                 deadline=time.monotonic() + 60,
             )

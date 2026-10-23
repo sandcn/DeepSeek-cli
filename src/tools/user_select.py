@@ -56,6 +56,13 @@ AskUserQuestion）：``parallel_safe=True``——多个 user_select 工具调用
     ``default_options``（``action="timeout"``）；
   - 外部编辑器（Ctrl+G vim）独占终端期间组件置 ``state.typing=True``，
     轮询暂停计时并在返回后补回，避免长文编辑被空闲超时打断。
+
+★ 2026-10-23（用户需求：说明列表与选项合成一个参数，并删除说明列表）：
+``options`` 每项改为对象 ``{"label": "选项文本", "description": "说明"}``，
+**已删除** ``option_descriptions`` 参数——说明与选项同参数表达，杜绝两个
+列表长度不一致；``description`` 支持换行，弹窗对**选中项**按原文多行
+展开（超宽自动换行），其余选项折叠为单行显示。``default_options`` /
+返回的 ``selected`` 仍以 ``label`` 文本为准（说明不参与匹配）。
 """
 
 from __future__ import annotations
@@ -71,7 +78,7 @@ from src._compat_termios import HAS_TERMIOS
 from .base import Func
 from ..core.constants import GREEN, YELLOW, RED, DIM, RESET
 from ..core.display_target import get_display_target
-from ..core.user_select_state import IDLE_TIMEOUT_SECONDS
+from ..core.user_select_state import IDLE_TIMEOUT_SECONDS, normalize_options
 
 
 _logger = logging.getLogger(__name__)
@@ -205,14 +212,24 @@ class UserSelectFunc(Func):
                         },
                         "options": {
                             "type": "array",
-                            "items": {"type": "string"},
-                            "description": "选项列表"
-                        },
-                        "option_descriptions": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "选项说明列表",
-                            "default": []
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "label": {
+                                        "type": "string",
+                                        "description": "选项文本（作为返回值）"
+                                    },
+                                    "description": {
+                                        "type": "string",
+                                        "description": (
+                                            "选项说明（可选；可含换行实现多行显示，"
+                                            "仅选中项展开多行）"
+                                        )
+                                    }
+                                },
+                                "required": ["label"]
+                            },
+                            "description": "选项列表（每项 label + description）"
                         },
                         "multi_select": {
                             "type": "boolean",
@@ -222,7 +239,7 @@ class UserSelectFunc(Func):
                         "default_options": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "默认选项列表",
+                            "description": "默认选项列表（与 options[].label 文本一致）",
                             "default": []
                         }
                     },
@@ -232,7 +249,7 @@ class UserSelectFunc(Func):
         }
 
     def __init__(self, title, options, multi_select=False, default_options=None,
-                 option_descriptions=None, header=""):
+                 header=""):
         """构造 user_select 工具实例。
 
         ★ 2026-10-22（用户需求）：**已删除** ``timeout`` 参数——超时不再由
@@ -242,18 +259,19 @@ class UserSelectFunc(Func):
         ★ 2026-10-22（用户需求：TUI 与 Claude 对齐）：新增可选 ``header``
         ——极短标签（≤12 字符），渲染为多问题 tab 标签；空串时 tab 回退
         title 截断（旧调用零回归）。问题页正文只显示 ``title``。
+        ★ 2026-10-23（用户需求：说明列表与选项合成一个参数，并删除说明
+        列表）：**已删除** ``option_descriptions`` 参数——``options`` 每项为
+        ``{"label": "选项文本", "description": "说明（可选，可多行）"}``
+        对象（纯字符串不再接受，见 :func:`normalize_options`）。说明随选项
+        一起传入，渲染层对选中项展开多行、其余折叠单行。
         """
         super().__init__()  # 调用父类初始化，设置agent为None
         self.title = title
         self.header = str(header or "")
-        self.options = options
+        # 严格对象契约：每项 UserSelectOption(label, description)
+        self.options = normalize_options(options)
         self.multi_select = multi_select
         self.default_options = default_options or []
-        # 与 options 等长的说明列表；长度不足补齐空串，超出截断
-        descs = list(option_descriptions or [])
-        if len(descs) < len(self.options):
-            descs += [""] * (len(self.options) - len(descs))
-        self.option_descriptions = descs[: len(self.options)]
 
     async def execute(self):
         """异步执行选择并返回结果"""
@@ -331,7 +349,8 @@ class UserSelectFunc(Func):
         initial_idx = 0
         checked = []
         for i, opt in enumerate(self.options):
-            if opt in default_opts:
+            # ★ 2026-10-23：选项为 UserSelectOption，按 label 文本匹配默认项。
+            if opt.label in default_opts:
                 if not checked:
                     initial_idx = i
                 checked.append(i)
@@ -352,8 +371,9 @@ class UserSelectFunc(Func):
                 seq=prev_seq + 1,
                 title=self.title or "选择",
                 header=self.header,
+                # ★ 2026-10-23：选项自带说明（UserSelectOption），无平行
+                #   说明列表；state 构造期再归一化（幂等）。
                 options=list(self.options),
-                option_descriptions=list(self.option_descriptions),
                 multi_select=self.multi_select,
                 default_options=default_opts,
                 selected=initial_idx,
@@ -493,9 +513,9 @@ class UserSelectFunc(Func):
         _label = f"{self.header} · {self.title}" if self.header and self.header != self.title else self.title
         Func._publish_tool_text(f"\n{GREEN}> 用户选择: {_label}{RESET}")
 
-        # 显示选项预览
+        # 显示选项预览（单行摘要：说明换行折叠为空格；完整多行在弹窗内）
         def _opt_desc(i: int) -> str:
-            desc = self.option_descriptions[i] if i < len(self.option_descriptions) else ""
+            desc = self.options[i].description
             if not desc:
                 return ""
             desc_short = desc.replace('\r', '').replace('\n', ' ')
@@ -505,17 +525,17 @@ class UserSelectFunc(Func):
 
         if len(self.options) <= 10:
             for i, option in enumerate(self.options):
-                if option in self.default_options:
-                    Func._publish_tool_text(f"  {DIM}{i + 1}. {option}{_opt_desc(i)} (默认){RESET}")
+                if option.label in self.default_options:
+                    Func._publish_tool_text(f"  {DIM}{i + 1}. {option.label}{_opt_desc(i)} (默认){RESET}")
                 else:
-                    Func._publish_tool_text(f"  {DIM}{i + 1}. {option}{_opt_desc(i)}{RESET}")
+                    Func._publish_tool_text(f"  {DIM}{i + 1}. {option.label}{_opt_desc(i)}{RESET}")
         else:
             Func._publish_tool_text(f"  {DIM}共 {len(self.options)} 个选项{RESET}")
             for i, option in enumerate(self.options[:5]):
-                if option in self.default_options:
-                    Func._publish_tool_text(f"  {DIM}{i + 1}. {option}{_opt_desc(i)} (默认){RESET}")
+                if option.label in self.default_options:
+                    Func._publish_tool_text(f"  {DIM}{i + 1}. {option.label}{_opt_desc(i)} (默认){RESET}")
                 else:
-                    Func._publish_tool_text(f"  {DIM}{i + 1}. {option}{_opt_desc(i)}{RESET}")
+                    Func._publish_tool_text(f"  {DIM}{i + 1}. {option.label}{_opt_desc(i)}{RESET}")
             Func._publish_tool_text(f"  {DIM}... 还有 {len(self.options) - 5} 个选项{RESET}")
 
         Func._publish_tool_text(
