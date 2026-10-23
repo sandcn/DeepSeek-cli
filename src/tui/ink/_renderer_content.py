@@ -13,10 +13,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import logging
+import time
 
 from .output import Frame
 
 _logger = logging.getLogger(__name__)
+
+#: 行回调异常告警限频（秒）——回调对每行都可能失败，避免逐行刷屏。
+_EMIT_ERROR_WARN_INTERVAL = 5.0
+_last_emit_error_warn_at = 0.0
 
 
 class _RendererContentMixin:
@@ -111,8 +116,16 @@ class _RendererContentMixin:
                 #   （无浮窗覆盖的底层行；无 base_lines 时等价 render_line）。
                 self._line_callback(frame.render_content_line(idx) + "\n")
         except Exception:
-            # 裸吞异常补日志（exc_info 保留栈）。
-            _logger.debug("_emit_content_lines 行回调异常", exc_info=True)
+            # ★ 2026-10-23（关键异常可观测）：行回调失败会使输出历史静默
+            #   缺失（scrollback 落盘/恢复索引）。原 debug 级别在默认日志配置
+            #   下不可见——提升为限频 warning。
+            global _last_emit_error_warn_at
+            now = time.monotonic()
+            if now - _last_emit_error_warn_at >= _EMIT_ERROR_WARN_INTERVAL:
+                _last_emit_error_warn_at = now
+                _logger.warning("_emit_content_lines 行回调异常", exc_info=True)
+            else:
+                _logger.debug("_emit_content_lines 行回调异常", exc_info=True)
 
 
 __all__ = ["_RendererContentMixin"]

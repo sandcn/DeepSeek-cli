@@ -29,6 +29,7 @@ import itertools
 import logging
 import math
 import threading
+import time
 from typing import Any, Callable, TypeVar
 
 from .fiber import (
@@ -131,7 +132,16 @@ def _schedule_ctx(ctx: "HookContext") -> None:
         try:
             cb()
         except Exception:
-            _logger.debug("schedule 回调异常", exc_info=True)
+            # ★ 2026-10-23（关键异常可观测）：调度回调失败 = 状态更新后界面
+            #   不再重渲染（用户看到画面冻结）。原 debug 级别不可见——限频
+            #   warning；降级语义不变（不向 setState 调用方抛异常）。
+            global _last_schedule_warn_at
+            now = time.monotonic()
+            if now - _last_schedule_warn_at >= _SCHEDULE_WARN_INTERVAL:
+                _last_schedule_warn_at = now
+                _logger.warning("重渲染调度回调异常（界面可能停止刷新）", exc_info=True)
+            else:
+                _logger.debug("schedule 回调异常", exc_info=True)
 
 
 def _schedule() -> None:
@@ -193,6 +203,11 @@ _INIT_PENDING = object()
 #: 用户更新函数在锁外应用（避免用户代码持锁、避免锁顺序问题）。
 #: 锁顺序：本文件只获取这一把锁，不嵌套其它锁，无死锁风险。
 _STATE_QUEUE_LOCK = threading.RLock()
+
+#: 重渲染调度回调异常告警限频（秒）——回调失败会让界面停止刷新（用户可见），
+#: 但可能逐次 setState 触发，故限频 warning。
+_SCHEDULE_WARN_INTERVAL = 5.0
+_last_schedule_warn_at = 0.0
 
 
 def _take_state_queue(hook: StateHook) -> list | None:

@@ -99,9 +99,12 @@ def _mark_depths(root: Fiber) -> int:
             max_depth = depth
         child = fiber.child
         while child is not None:
-            host = child
-            while host is not None and host.is_function:
-                host = host.child
+            # 沿 function 链下降到 host 子节点（``cur`` 可空，显式标注供
+            # mypy 正确收窄；原写法把 ``Fiber | None`` 赋给推断为 Fiber 的变量）。
+            cur: Fiber | None = child
+            while cur is not None and cur.is_function:
+                cur = cur.child
+            host = cur
             if host is not None:
                 if host.is_host and host.type == "fragment":
                     sub = host.child

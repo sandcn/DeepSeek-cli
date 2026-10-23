@@ -112,6 +112,20 @@ _KEEP_CONTENT_CMDS = frozenset({
 #:   本身不应依赖生产者的无限等待。
 _PUT_NO_DROP_TIMEOUT = 2.0
 
+#: 「事件循环线程不阻塞」告警限频时刻（模块级；低频异常路径共享即可）。
+_last_loop_backpressure_warn_at = 0.0
+
+
+def _running_async_loop_here() -> bool:
+    """当前线程是否正在运行 asyncio 事件循环（用于避免阻塞事件循环）。"""
+    try:
+        import asyncio
+
+        asyncio.get_running_loop()
+    except Exception:
+        return False
+    return True
+
 #: 「最新值覆盖」语义命令集合 —— 真源在 ``_cmd_priority._COALESCE_CMDS``
 #: （2026-09-20 解析进度行卡住修复；本模块经上方 import re-export，消费方为
 #: ``push_cmd`` 就地替换——队列中同类状态命令恒至多一条且为最新值）。
@@ -366,8 +380,25 @@ class _SessionQueueMixin:
         丢弃告警路径，语义兼容）。
 
         Returns:
-            True — 已入队成功；False — 渲染线程已终止或背压超时，未入队。
+            True — 已入队成功；False — 渲染线程已终止、背压超时或调用线程
+            正在运行 asyncio 事件循环（不阻塞），未入队。
         """
+        # ★ 2026-10-23（事件循环零阻塞）：内容命令的生产者常常是 asyncio
+        #   事件循环线程（流式回调/工具回调）。在那里做最长 2s 的阻塞等待会
+        #   冻结整个应用（连渲染调度与用户输入都停摆），比丢弃一个内容块
+        #   严重得多。检测到当前线程有运行中的 loop 时**不阻塞**，直接返回
+        #   False（调用方走既有丢弃告警路径）；其它线程保持 2s 背压语义。
+        if _running_async_loop_here():
+            now = time.monotonic()
+            last = _last_loop_backpressure_warn_at
+            if now - last >= 5.0:
+                globals()["_last_loop_backpressure_warn_at"] = now
+                _logger.warning(
+                    "渲染队列已满且调用线程正在运行 asyncio 事件循环，"
+                    "跳过背压等待（避免冻结事件循环）: %s",
+                    _cmd_name(_get_cmd_id(cmd)),
+                )
+            return False
         deadline = time.monotonic() + _PUT_NO_DROP_TIMEOUT
         while self._render_running:
             try:
@@ -406,17 +437,37 @@ class _SessionQueueMixin:
             丢弃的命令条数。
         """
         dropped = 0
-        # ★ 2026-10-23（命令时间盒）：清空/过滤 deferred 命令（已出队但未应用）。
-        deferred = getattr(self, "_deferred_commands", None)
-        if deferred:
-            if keep_content:
-                self._deferred_commands = [
-                    cmd for cmd in deferred
-                    if _get_cmd_id(cmd) in _KEEP_CONTENT_CMDS
-                ]
-            else:
-                self._deferred_commands = []
-            dropped += len(deferred) - len(getattr(self, "_deferred_commands", []))
+        # ★ 2026-10-23（命令时间盒 + 跨线程竞态修复）：deferred 命令（已出队
+        #   但未应用）经会话的 ``_swap_deferred`` / ``_prepend_deferred`` 原子
+        #   存取——本方法可能由 flush 超时兜底线程调用，直接读写列表会与渲染
+        #   线程的 APPLY/DRAIN 并发（丢命令/重复应用）。
+        swap = getattr(self, "_swap_deferred", None)
+        prepend = getattr(self, "_prepend_deferred", None)
+        if callable(swap) and callable(prepend):
+            deferred = swap()
+            if deferred:
+                if keep_content:
+                    kept = [
+                        cmd for cmd in deferred
+                        if _get_cmd_id(cmd) in _KEEP_CONTENT_CMDS
+                    ]
+                    prepend(kept)
+                    dropped += len(deferred) - len(kept)
+                else:
+                    dropped += len(deferred)
+        else:  # 兼容桩对象（无会话 mixin 的测试宿主）
+            deferred = getattr(self, "_deferred_commands", None)
+            if deferred:
+                if keep_content:
+                    kept = [
+                        cmd for cmd in deferred
+                        if _get_cmd_id(cmd) in _KEEP_CONTENT_CMDS
+                    ]
+                    self._deferred_commands = kept
+                    dropped += len(deferred) - len(kept)
+                else:
+                    self._deferred_commands = []
+                    dropped += len(deferred)
         if keep_content:
             # ★ 保留内容命令：**不 get/put 重放**（会破坏 unfinished_tasks——
             # get_nowait+task_done 后 put 回去，resume 后 _drain_queue 的

@@ -104,6 +104,20 @@ _LARGE_REWRITE_WARN_INTERVAL = 1.0
 #: 只覆盖该区间（不含底部 live 区：状态栏/输入区/解析进度行）。
 _CONTENT_LINE_OFFSET = 1
 
+#: 状态自愈告警限频（秒）——持续损坏时每秒最多一条 warning（防日志刷屏）。
+_STATE_RECOVERY_WARN_INTERVAL = 5.0
+#: 上次状态自愈告警时刻（monotonic；模块级，跨实例共享即可）。
+_last_state_recovery_warn_at = 0.0
+
+
+class RendererStateError(RuntimeError):
+    """渲染器不变量被破坏（记账状态不可信，必须重置后全量重绘）。
+
+    与普通 ``RuntimeError`` 区分：只有本类会被 ``InkRenderer.render`` 捕获并
+    触发自愈路径；帧构建/行渲染等其它异常仍原样上抛（由会话错误帧兜底），
+    避免把无关异常误判为状态损坏。
+    """
+
 
 class InkRenderer(_RendererContentMixin):
     """非全屏帧差异渲染器。
@@ -494,31 +508,90 @@ class InkRenderer(_RendererContentMixin):
             解除锚定）。
         """
         if self._buf_h < 0:
-            raise RuntimeError(f"_buf_h 非负不变量被破坏: {self._buf_h}")
+            raise RendererStateError(f"_buf_h 非负不变量被破坏: {self._buf_h}")
         if not self._top_aligned and not (self._prev is not None and self._buf_h > 0):
-            raise RuntimeError(
+            raise RendererStateError(
                 "底部对齐（_top_aligned=False）仅在已渲染状态合法: "
                 f"prev={self._prev is not None} buf_h={self._buf_h}"
             )
         if self._prev is None and not (self._buf_h == 0 and self._top_aligned):
-            raise RuntimeError(
+            raise RendererStateError(
                 "未渲染状态（_prev is None）应满足 buf_h==0 且 top_aligned: "
                 f"buf_h={self._buf_h} top_aligned={self._top_aligned}"
             )
         if self._start_row is not None:
             if self._height <= 0:
-                raise RuntimeError("_start_row 锚定仅在已知屏幕高度时有效")
+                raise RendererStateError("_start_row 锚定仅在已知屏幕高度时有效")
             if self._top_aligned:
-                raise RuntimeError("_start_row 锚定与顶部对齐互斥")
+                raise RendererStateError("_start_row 锚定与顶部对齐互斥")
             if not 1 <= self._start_row <= self._height:
-                raise RuntimeError(
+                raise RendererStateError(
                     f"_start_row 越界: {self._start_row}（屏幕高度 {self._height}）"
                 )
             if self._buf_h > self._height:
-                raise RuntimeError(
+                raise RendererStateError(
                     f"锚定期间物理缓冲不应越过屏幕高度: buf_h={self._buf_h} "
                     f"height={self._height}"
                 )
+
+    def _recover_corrupted_state(self) -> None:
+        """不变量损坏后的**纯内存**重置（不做 I/O）。
+
+        ★ 2026-10-23（渲染故障自愈）：记账状态已不可信（``_prev`` / ``_buf_h``
+        / ``_top_aligned`` 相互矛盾）时，任何增量写入都只会把错误写进终端。
+        重置为「未渲染」状态并置 ``_clear_before_full``——下一次 ``_write_full``
+        先清可见区（ED2，不清 scrollback）再全量重绘，从任意记账损坏中恢复。
+
+        ``_content_line_count`` / ``_frame_content_count`` **故意保留**：输出
+        历史已记录的行不能回退，否则归零后下一帧会把全部 committed 行当作
+        新增行**重复写入历史**。
+        """
+        self._prev = None
+        self._cursor_row = 0
+        self._buf_h = 0
+        self._top_aligned = True
+        self._start_row = None
+        self._start_anchor_pending = False
+        self._painted_top = 0
+        self._placed_cursor = None
+        self._clear_before_full = True
+
+    def mark_corrupted(self) -> None:
+        """标记渲染器状态不可信（外部错误帧路径调用）。
+
+        仅重置内存记账、不写终端；下一次成功帧走全量重绘。会话在
+        ``_render_failure_frame`` 中调用（错误帧本身经 ``emit_error_line``
+        旁路直写，不进入帧/光标模型）。
+        """
+        self._recover_corrupted_state()
+
+    def emit_error_line(self, text: str) -> None:
+        """旁路直写一行错误提示（**不经过帧/光标记账**）。
+
+        渲染帧构建异常时，终端内容与渲染器记账已经不一致——再调用
+        ``render()`` 写错误帧会进一步破坏 ``_prev``/``_buf_h``（修复前实现
+        正是如此：错误帧把整篇文档替换成 1 行，恢复时依赖漂移路径重新对齐）。
+        这里只在当前光标行覆盖写一行提示，不改任何帧状态；随后由
+        ``mark_corrupted`` 让下一次成功帧全量重绘。
+        """
+        if not text:
+            return
+        try:
+            self._stream.write("\r" + _CLEAR_EOL + text)
+            self._stream.flush()
+        except (OSError, ValueError):
+            _logger.debug("错误提示旁路写入失败", exc_info=True)
+
+    def _handle_state_error(self, exc: RendererStateError) -> None:
+        """状态不变量错误：限频告警 + 重置（供 ``render`` 自愈路径调用）。"""
+        global _last_state_recovery_warn_at
+        now = time.monotonic()
+        if now - _last_state_recovery_warn_at >= _STATE_RECOVERY_WARN_INTERVAL:
+            _last_state_recovery_warn_at = now
+            _logger.warning(
+                "渲染器状态不变量被破坏，已重置并全量重绘: %s", exc,
+            )
+        self._recover_corrupted_state()
 
     def render(self, frame: Frame) -> None:
         """渲染新帧（最小差异写入）。
@@ -528,10 +601,18 @@ class InkRenderer(_RendererContentMixin):
         行区间」无关：修复前各渲染分支用 ``[prev_h, new_h)`` 推断新增行，
         把文档末尾的 live 行（状态栏/输入区/时间线/边框）当作新增内容反复
         写入输出历史，且真正新增的内容行（插入在文档中部）大量漏记。
+
+        ★ 2026-10-23（渲染故障自愈）：不变量校验失败（``RendererStateError``）
+        时重置记账并用**同一帧重试一次**（重置后走全量写入）；单帧最多自愈
+        一次，二次失败原样上抛，由会话错误帧旁路兜底。
         """
         prev_before = self._prev
         try:
-            self._render_frame_impl(frame)
+            try:
+                self._render_frame_impl(frame)
+            except RendererStateError as exc:
+                self._handle_state_error(exc)
+                self._render_frame_impl(frame)
         finally:
             self._sync_start_row_anchor(frame.height)
             self._emit_content_lines(frame)
@@ -1747,4 +1828,4 @@ class InkRenderer(_RendererContentMixin):
         return self._cursor_row
 
 
-__all__ = ["InkRenderer"]
+__all__ = ["InkRenderer", "RendererStateError"]

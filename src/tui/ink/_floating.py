@@ -620,6 +620,10 @@ def apply_floating_layout(root_fiber, width: int, viewport_height: int = 0) -> i
                     })
                 continue
 
+            if rect is None:
+                # 防御：``_resolve_rect`` 返回 None 时上面已置 reason 并
+                # continue；此分支只用于类型收窄（逻辑上不可达）。
+                continue
             x, y, vis_h, src_row, win_w, content_h = rect
             box = fiber.layout_box
             dx = int(x - box.x)

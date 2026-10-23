@@ -95,17 +95,18 @@ _JOIN_RENDER_HARD_TIMEOUT = 30.0
 _FLUSH_HARD_CEILING = 60.0
 
 # ── 60Hz 节拍精度（2026-10-20 用户需求：render 线程跟 input 处理改成 60hz） ──
-#: 节拍尾段自旋保护（秒）——Windows/Cygwin 的 ``Event.wait`` 粒度在
-#: ``timeBeginPeriod(1)`` 后仍约 1ms；等待到「还剩 ≤1ms」后自旋补齐，
-#: 避免 wait 粒度把 16.67ms 的 60Hz 节拍拉低到 ~58Hz。
-#: 尾段自旋保留常量（2026-10-23 起渲染循环不再自旋，仅保持旧导入/测试兼容）。
-_TICK_SPIN_GUARD = 0.001
+# （历史 ``_TICK_SPIN_GUARD`` 已于 2026-10-23 渲染循环去自旋后删除——常量
+#   无任何消费方，保留只会误导读者以为仍有尾段自旋。）
 
 #: 单帧输入处理预算（秒，2026-10-23 输入时间盒）：剩余字节留待下一帧。
 _INPUT_FRAME_BUDGET = 0.008
 
 #: 单帧命令应用预算（秒，2026-10-23 命令时间盒）：剩余命令留待下一帧。
 _APPLY_FRAME_BUDGET = 0.010
+
+#: 慢帧告警阈值（秒）——单帧（输入+命令+渲染）超过该值时限频告警；长帧会
+#: 推迟下一次输入处理，是按键卡顿的直接线索（仅观测，不改变调度）。
+_SLOW_FRAME_WARN_SEC = 0.5
 #: 高分辨率定时器请求（仅 Windows/Cygwin）：线程所有者集合 + winmm 句柄。
 #: 每个渲染线程在进入 ``_render`` 时申请、退出时释放；多个渲染线程/会话
 #: 并存时只申请一次，最后一个线程退出时恢复系统默认分辨率。
@@ -258,9 +259,17 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         # ★ 2026-10-23（命令时间盒）：本帧未应用完的命令（已出队/task_done，
         #   下一帧 DRAIN 阶段优先取回，保持原顺序）。
         self._deferred_commands: list = []
+        # ★ 2026-10-23（跨线程竞态修复）：deferred 列表由渲染线程（APPLY 产生 /
+        #   DRAIN 取回）与 flush 超时兜底线程（_drain_queue_safe）共同读写——
+        #   统一经本锁做「取空/前插」原子操作。锁序约定：**只在 _cmd_queue
+        #   锁外**持有本锁（禁止嵌套），避免与 queue 的 mutex 形成锁序环。
+        self._deferred_lock = threading.Lock()
         #: APPLY 阶段进行中标志（flush 等待方据此避免「命令已出队但未应用」
         #: 时提前返回）。
         self._apply_in_progress = False
+        #: DRAIN 阶段进行中标志（deferred 在前插/取回窗口内短暂不在共享列表，
+        #: flush 等待方须把该窗口也算作「未排空」）。
+        self._drain_in_progress = False
         self._cmd_event = threading.Event()
         self._render_thread: threading.Thread | None = None
         self._render_running = False
@@ -858,6 +867,48 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                 ]
         return done
 
+    # ── deferred 命令（跨线程安全） ─────────────────
+
+    def _swap_deferred(self) -> list:
+        """原子取出并清空未应用命令（跨线程安全；返回新列表）。
+
+        渲染线程 APPLY 阶段与 flush/suspend 的兜底清理可能并发访问
+        ``_deferred_commands``——统一经 ``_deferred_lock`` 做整体 swap，避免
+        一边遍历一边被另一线程替换（丢命令 / 重复应用）。
+        """
+        lock = getattr(self, "_deferred_lock", None)
+        if lock is None:
+            deferred = list(getattr(self, "_deferred_commands", None) or [])
+            self._deferred_commands = []
+            return deferred
+        with lock:
+            deferred = list(getattr(self, "_deferred_commands", None) or [])
+            self._deferred_commands = []
+        return deferred
+
+    def _prepend_deferred(self, commands: list) -> None:
+        """把命令前插到 deferred 队列（保持相对顺序；跨线程安全）。"""
+        if not commands:
+            return
+        lock = getattr(self, "_deferred_lock", None)
+        if lock is None:
+            self._deferred_commands = list(commands) + list(
+                getattr(self, "_deferred_commands", None) or []
+            )
+            return
+        with lock:
+            self._deferred_commands = list(commands) + list(
+                getattr(self, "_deferred_commands", None) or []
+            )
+
+    def _has_deferred(self) -> bool:
+        """是否存在未应用命令（跨线程安全读取）。"""
+        lock = getattr(self, "_deferred_lock", None)
+        if lock is None:
+            return bool(getattr(self, "_deferred_commands", None))
+        with lock:
+            return bool(getattr(self, "_deferred_commands", None))
+
     def request_clear(self) -> None:
         """请求全帧清屏重绘（useApp().clear 触发）。
 
@@ -889,15 +940,14 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   共用 _try_acquire_output_lock（同一 output lock）——避免 suspend
         #   期间同步渲染与外部输出竞争撕裂；locked=False（锁超时）时跳过
         #   并记 debug（弹窗显示延迟一帧可接受，与 _drain_queue 超时跳过一致）。
-        #   ★ P3-20 竞态窗口说明（review 方向，2026-08-19 修正表述）：
-        #   ``not self._render_running`` 检查与同步渲染之间存在竞态窗口——
-        #   render 线程可能恰在检查后启动（start()/resume() 并发调用）→
-        #   本帧同步渲染与线程渲染并行。注意：渲染线程的 RENDER 阶段在
-        #   output lock **外**执行（InkRenderer 内部无锁），output lock 只
-        #   串行化「同步帧 + DRAIN 阶段」与「外部写入方」，**不能**阻止
-        #   同步帧与线程帧并发写 stream——已知权衡：双帧内容一致（同一
-        #   模型状态），后写覆盖先写，最终显示一致；彻底消除需独立渲染
-        #   互斥（见 _drain_queue P3-20 注释，未来方向）。
+        #   ★ P3-20 竞态窗口说明（review 方向，2026-08-19 修正表述；
+        #   ★ 2026-10-23 再修正）：``not self._render_running`` 检查与同步渲染
+        #   之间存在竞态窗口——render 线程可能恰在检查后启动。**当前实现下
+        #   该窗口不再造成并发写 stream**：两条路径都经 ``_render_frame`` 内的
+        #   ``_render_lock``（可重入）串行化整帧执行（含调和/绘制/写流），
+        #   output lock 另负责串行化「同步帧 + DRAIN 阶段」与外部写入方。
+        #   历史注释「彻底消除需独立渲染互斥（未来方向）」已过时——该互斥
+        #   已由 ``_render_lock`` 落地。
         if not self._render_running:
             with _try_acquire_output_lock(
                 name="ink_session.sync_render",
@@ -1341,7 +1391,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         except Exception:
             _logger.debug("还原终端窗口标题异常", exc_info=True)
 
-    def flush(self, timeout: float | None = 5.0) -> None:
+    def flush(self, timeout: float | None = 5.0, hard_timeout: float | None = None) -> None:
         """等待队列处理完成。
 
         超时后若渲染线程仍存活（仅消费慢，非崩溃/停止），继续等待队列排空
@@ -1350,6 +1400,12 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         思考/回答命令被丢弃（工具卡因 CRITICAL 阻塞语义不丢），视觉上「只显示
         工具调用」。渲染线程存活则持续消费，等待直至排空；仅当渲染线程停止
         （``_render_running=False`` / 线程退出）才丢弃兜底，避免无限等待。
+
+        Args:
+            timeout: 无进展软超时（秒）——渲染线程仍存活时的分段等待上限。
+            hard_timeout: 总硬上限（秒）。None 时用 ``_FLUSH_HARD_CEILING``
+                （60s）；``suspend()`` 等会阻塞交互的调用方传更短值（修复前
+                挂起路径最长可阻塞 60s → user_select/外部编辑器无响应）。
         """
         if self._render_thread is None or not self._render_thread.is_alive():
             self._drain_queue_safe()
@@ -1370,8 +1426,14 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             """
             while True:
                 self._cmd_queue.join()
-                if not getattr(self, "_deferred_commands", None) and not getattr(
-                    self, "_apply_in_progress", False,
+                # ★ 2026-10-23（跨线程竞态修复）：deferred 读取经 _has_deferred
+                #   加锁（flush 兜底线程与渲染线程并发访问）；DRAIN 阶段
+                #   deferred 短暂在前插窗口内不在共享列表，该窗口同样视为
+                #   「未排空」。
+                if (
+                    not self._has_deferred()
+                    and not getattr(self, "_apply_in_progress", False)
+                    and not getattr(self, "_drain_in_progress", False)
                 ):
                     return
                 time.sleep(0.002)
@@ -1392,18 +1454,29 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             #   （可能是事件循环/退出流程）永久挂起；其它等待方
             #   （``_ROUTER_FLUSH_HARD_CEILING``/``_RENDER_FLUSH_HARD_TIMEOUT``/
             #   ``_JOIN_RENDER_HARD_TIMEOUT``）均有硬上限，本处是唯一缺口。
-            hard_deadline = time.monotonic() + max(wait_timeout, _FLUSH_HARD_CEILING)
+            hard_limit = (
+                hard_timeout
+                if (hard_timeout is not None and hard_timeout > 0)
+                else _FLUSH_HARD_CEILING
+            )
+            hard_deadline = time.monotonic() + max(wait_timeout, hard_limit)
             while (
                 drain_waiter.is_alive()
                 and self._render_running
                 and self._render_thread is not None
                 and self._render_thread.is_alive()
             ):
-                drain_waiter.join(timeout=1.0)
+                # ★ 2026-10-23（硬上限响应性）：按「剩余时间」分段 join（最长
+                #   0.2s）——原固定 1s 让命中硬上限时仍多等近 1s（suspend 等
+                #   交互路径可感知）。
+                remain = hard_deadline - time.monotonic()
+                if remain <= 0:
+                    break
+                drain_waiter.join(timeout=min(0.2, remain))
                 if time.monotonic() >= hard_deadline:
                     _logger.warning(
-                        "flush 排队排空超过硬上限 %.0fs，降级丢弃未消费命令",
-                        max(wait_timeout, _FLUSH_HARD_CEILING),
+                        "flush 排队排空超过硬上限 %.1fs，降级丢弃未消费命令",
+                        max(wait_timeout, hard_limit),
                     )
                     break
             if drain_waiter.is_alive():
@@ -1424,7 +1497,11 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         使同步渲染从干净位置开始。
         """
         try:
-            self.flush()
+            # ★ 2026-10-23（交互工具响应性修复）：suspend 会阻塞交互工具
+            #   （user_select / 外部编辑器）的进入——使用短上限（软 2s / 硬 5s），
+            #   不再沿用 flush 默认的 60s 硬上限（渲染线程停滞时交互工具
+            #   最长无响应 60s）。
+            self.flush(timeout=2.0, hard_timeout=5.0)
         except Exception:
             _logger.debug("suspend flush 异常", exc_info=True)
         self._render_running = False
@@ -1575,9 +1652,32 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                     except Exception:
                         pass
                 next_loop += interval
+                # ★ 2026-10-23（慢帧不补跑）：起算时刻仅用于度量本帧耗时；
+                #   若本帧耗时超过节拍，在下方 ``finally`` 里把节拍重新锚定到
+                #   「帧结束 + 一个间隔」，避免连续补跑（补偿风暴）。
+                frame_started = time.monotonic()
                 try:
                     # 方向5（死代码清理）：返回值未使用——has_content 删除。
                     self._drain_queue()
+                    # ★ 2026-10-23（慢帧可观测）：单帧耗时超过阈值时限频告警
+                    #   （默认 0.5s，5s 内至多一条）——长帧会让输入处理推迟，
+                    #   日志是定位「按键卡顿」的唯一线索。
+                    frame_elapsed = time.monotonic() - frame_started
+                    if frame_elapsed >= _SLOW_FRAME_WARN_SEC:
+                        now_slow = time.monotonic()
+                        last_slow = float(
+                            getattr(self, "_last_slow_frame_log", 0.0) or 0.0
+                        )
+                        if now_slow - last_slow >= 5.0:
+                            self._last_slow_frame_log = now_slow
+                            _logger.warning(
+                                "单帧耗时 %.3fs 超过阈值 %.2fs（输入处理被推迟；"
+                                "队列=%d deferred=%s）",
+                                frame_elapsed,
+                                _SLOW_FRAME_WARN_SEC,
+                                self._cmd_queue.qsize(),
+                                self._has_deferred(),
+                            )
                     self._cmd_event.clear()
                     # ★ 重绘请求未消费时保持唤醒（下一轮节流等待立即返回后仍
                     #   等到 ``next_loop``，帧率恒定 60Hz）。
@@ -1607,6 +1707,18 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                         return
                     else:
                         break
+                finally:
+                    # ★ 2026-10-23（慢帧不补跑）：本帧耗时超过节拍时，下一拍
+                    #   从「当前时刻 + 一个间隔」重新起算——否则 ``next_loop``
+                    #   落在过去会让后续帧**连续无等待补跑**（0.5s 慢帧后约 30
+                    #   帧连跑，CPU 100%、输入节奏被打乱）。慢帧后只等一个完整
+                    #   间隔，不累积追帧。
+                    if not self._render_running:
+                        pass
+                    else:
+                        _now = time.monotonic()
+                        if next_loop <= _now:
+                            next_loop = _now + interval
         finally:
             if _ctx is not None:
                 _hooks.pop_context()
@@ -1701,19 +1813,25 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                     #   不会在模型半更新时取帧。
                     _apply_lock = getattr(self, "_render_lock", None)
                     self._apply_in_progress = True
+                    # ★ 2026-10-23（UnboundLocalError 防御）：先置空——修复前
+                    #   ``_apply_commands`` 抛异常时 finally 后仍引用 ``deferred``
+                    #   → UnboundLocalError 掩盖真实异常（渲染线程按崩溃恢复处理）。
+                    deferred: list = []
                     try:
                         if _apply_lock is None:
                             deferred = self._apply_commands(commands, budget=_APPLY_FRAME_BUDGET)
                         else:
                             with _apply_lock:
                                 deferred = self._apply_commands(commands, budget=_APPLY_FRAME_BUDGET)
+                        # ★ 2026-10-23（flush 一致性）：前插必须发生在清除
+                        #   ``_apply_in_progress`` **之前**——否则「命令已出队、尚未
+                        #   进 deferred」的窗口会让 flush 误判已排空提前返回。
+                        #   经 _prepend_deferred 在独立锁内前插（flush 超时兜底
+                        #   线程可能并发清理）。
+                        if deferred:
+                            self._prepend_deferred(deferred)
                     finally:
                         self._apply_in_progress = False
-                    if deferred:
-                        # ★ 2026-10-23（命令时间盒）：未应用完的命令留待下一帧
-                        #   优先处理（顺序不变；已出队命令的 task_done 已由
-                        #   DRAIN 阶段完成）。
-                        self._deferred_commands = deferred + self._deferred_commands
                     # ★ BUG（2026-10-07 空闲帧复用引入）：命令即模型变更，必须
                     #   置脏——``_should_render`` 据此落位 ``_idle_ok=False``，
                     #   禁止本拍复用上一帧。修复前命令在 DRAIN_COMMANDS 阶段已
@@ -1803,26 +1921,34 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
               - locked:   True=锁已获取；False=锁超时（调用方跳过本帧）。
         """
         commands: list = []
-        with _try_acquire_output_lock(
-            name="ink_session.drain_queue",
-            timeout=self._config.drain_lock_timeout,
-        ) as locked:
-            if not locked:
-                return [], False, False
-            # ★ 2026-10-23（命令时间盒）：上一帧未应用完的命令优先取回
-            #   （顺序先于本帧新命令）。
-            deferred = getattr(self, "_deferred_commands", None)
-            if deferred:
-                commands.extend(deferred)
-                self._deferred_commands = []
-            while True:
-                try:
-                    _, _, cmd = self._cmd_queue.get_nowait()
-                    self._cmd_queue.task_done()
-                    commands.append(cmd)
-                except queue.Empty:
-                    break
-        return commands, bool(commands), True
+        # ★ 2026-10-23（flush 等待一致性）：DRAIN 窗口（deferred 已取出但尚未
+        #   并入 commands）同样算「未排空」——避免 flush 在该微窗口提前返回。
+        self._drain_in_progress = True
+        try:
+            # ★ 2026-10-23（跨线程竞态修复）：先原子取回 deferred（独立锁，**不**
+            #   与 _cmd_queue 锁嵌套）；取不到输出锁时原样放回，避免命令丢失。
+            deferred = self._swap_deferred()
+            with _try_acquire_output_lock(
+                name="ink_session.drain_queue",
+                timeout=self._config.drain_lock_timeout,
+            ) as locked:
+                if not locked:
+                    self._prepend_deferred(deferred)
+                    return [], False, False
+                # ★ 2026-10-23（命令时间盒）：上一帧未应用完的命令优先取回
+                #   （顺序先于本帧新命令）。
+                if deferred:
+                    commands.extend(deferred)
+                while True:
+                    try:
+                        _, _, cmd = self._cmd_queue.get_nowait()
+                        self._cmd_queue.task_done()
+                        commands.append(cmd)
+                    except queue.Empty:
+                        break
+            return commands, bool(commands), True
+        finally:
+            self._drain_in_progress = False
 
     def _should_render(self) -> bool:
         """是否需渲染本帧：**恒定 True**——渲染线程每拍都渲染。

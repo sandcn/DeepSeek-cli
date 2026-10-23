@@ -382,6 +382,11 @@ class Fiber:
     #: useFocus 分配的焦点 id（显式 id 或自动 ``__focus_<n>__``）——组件卸载时
     #: ``_clear_focus_active`` 据此清空指向自身的激活焦点（防焦点悬挂）。
     _focus_id: Any = None
+    #: 本帧是否声明了 useFocus（**仅组件函数真正执行时**由 reconciler 复位、
+    #: useFocus 置位）——memo 短路（组件函数不执行）时保持上次值，供
+    #: reconciler 回放子树焦点 id（否则每帧清空的焦点表会丢掉 memo 组件的
+    #: 焦点：Tab/focus(id)/isFocused 在 2 帧后失效）。
+    _focus_declared: bool = False
     #: TEXT 换行结果缓存 ``(ref, cache_wt, style_fp, lines, ref_len)``——
     #: ``_layout_measure`` 维护（同 props 引用/宽度/样式指纹的帧免重复换行）。
     _wrap_cache: Any = None

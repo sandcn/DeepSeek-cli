@@ -59,6 +59,53 @@ def _resolve_focus_id(fiber: Fiber) -> str:
     return fid
 
 
+def _prune_focus_active() -> None:
+    """收口焦点 active：指向本帧未声明的 id 时清空。
+
+    ``_reset_focus_ids`` 只在 **pass 开始**校验 active；组件在本次 pass 中
+    停止调用 useFocus（或从树中移除）时，active 会悬挂到不存在的 id 直到
+    下一 pass。``Reconciler.render`` 在调和完成后调用本函数，保证
+    ``focus_active`` 始终指向本帧实际声明过的可聚焦组件。
+    """
+    active = _hooks_module._focus_active
+    if active is not None and active not in _hooks_module._focus_ids:
+        _hooks_module._focus_active = None
+
+
+def _replay_focus_ids(fiber: Fiber) -> None:
+    """memo 短路时回放子树焦点 id（组件函数本帧未执行）。
+
+    ``Reconciler.render`` 每 pass 调用 ``_reset_focus_ids`` 清空焦点表，只有
+    **真正执行**的组件才会在渲染期重新注册 id。memo 命中时整棵子树跳过渲染
+    ——若不回放，其焦点 id 在下一 pass 消失，``_reset_focus_ids`` 随即把
+    ``_focus_active``（指向该 id）清空 → Tab/focus(id)/isFocused 在 2 帧后
+    失效（memo 组件的焦点被静默丢弃）。
+
+    仅回放 ``_focus_declared`` 为真的 fiber：该标志由 reconciler 在组件函数
+    执行前复位、``useFocus`` 置位——memo 短路保留上次值（正确）；组件真正
+    渲染且不再调用 useFocus 时标志为 False（不会回放陈旧 id）。
+
+    遍历为前序（与渲染期注册顺序一致，保证 Tab 顺序稳定），显式栈迭代
+    （深树不递归）。
+    """
+    stack: list[Fiber | None] = [fiber]
+    while stack:
+        f: Fiber | None = stack.pop()
+        while f is not None:
+            if getattr(f, "deleted", False):
+                f = f.sibling
+                continue
+            if getattr(f, "_focus_declared", False):
+                fid = getattr(f, "_focus_id", None)
+                if fid is not None:
+                    _register_focus_id(fid)
+            if f.child is not None:
+                stack.append(f.sibling)
+                f = f.child
+            else:
+                f = f.sibling
+
+
 def _clear_focus_active(fiber: Fiber) -> None:
     """组件卸载时清空指向自身的焦点激活（防焦点悬挂，P3 修复）。
 
@@ -189,6 +236,10 @@ def useFocus(options: "bool | dict | None" = None) -> dict:
         fid = None
     # 焦点管理器注册（React Ink v6）：active 组件进入可聚焦列表。
     if is_active:
+        # ★ 2026-10-23（memo 焦点修复）：标记「本帧声明了 useFocus」——组件
+        #   函数未被调用（memo 短路）时该标志保持上次值，reconciler 经
+        #   ``_replay_focus_ids`` 回放其焦点 id。
+        fiber._focus_declared = True
         if fid is None:
             # ★ P3-8（review 方向）：无 id 分支先清除显式 id 残留——组件从
             #   显式 id（``useFocus({"id": "my-id"})``）切换到无 id 渲染时
@@ -251,6 +302,8 @@ __all__ = [
     "_reset_focus_ids",
     "_register_focus_id",
     "_resolve_focus_id",
+    "_prune_focus_active",
+    "_replay_focus_ids",
     "_clear_focus_active",
     "_focus_next",
     "_focus_previous",

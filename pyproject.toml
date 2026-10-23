@@ -59,11 +59,14 @@ omit = ["*/__pycache__/*", "*/tests/*"]
 
 [tool.coverage.report]
 # ★ 2026-10-23（tests 目录历史删除后的基线）：仓库在 ``dbcb3777`` 删除了
-# tests 目录（605 个测试文件），当前工作区仅保留 40 个测试文件；实测
+# tests 目录（605 个测试文件），当前工作区仅保留 52 个测试文件；实测
 # ``python -m pytest tests --cov=src`` 为 25.99%（历史门槛 72 是在完整测试集
 # 下达成的）。门槛按当前可运行测试集下调为 25，避免 CI 因测试集缺失恒红；
 # **新增代码不得继续拉低覆盖率**，恢复/补充测试后须同步上调门槛。
 # （历史：60 → 72 → 25）
+# ★ 2026-10-23 补注：本轮修复为渲染自愈/并发/焦点等新增了
+# ``tests/tui/ink/test_fix_regressions.py``，覆盖率门槛暂不上调（未跑全量
+# 覆盖率基线）；后续恢复测试集时一并重新评估。
 fail_under = 25
 show_missing = true
 
@@ -98,8 +101,10 @@ warn_unused_ignores = true
 files = ["src/"]
 # ★ 类型检查基线（P0-2）：本框架大量使用动态属性（Fiber/hook 槽位、模型
 #   属性按需挂载）与运行时装饰器（src._compat.dataclass），mypy 无法全部
-#   静态化。当前基线见 tests/test_type_baseline.py（_MYPY_ERROR_BASELINE）。
+# ★ 类型检查基线：``tests/test_type_baseline.py`` 随历史测试集删除已不存在
+#   （原基线数值一并失效，勿再引用）。现行约定（2026-10-23）：``src/tui/ink``
+#   保持 **0 个 mypy error**（已修复 staticlines/_floating/layout/
+#   _session_frame_mixin 的历史错误）；其余模块的历史错误待逐步收敛。
 #   ``src/_compat.py`` 的 ``dataclass`` 已加 ``@dataclass_transform``（PEP 681），
 #   类型检查器可正确推断其生成的 ``__init__`` 签名——历史 1000+ 条 dataclass
-#   构造误报已消除；剩余错误为动态属性/联合类型收窄等已知模式，新增错误须
-#   修复或将基线下调后再更新基线值（防错误数回升）。
+#   构造误报已消除；新增错误须修复（没有基线文件可以「下调」）。

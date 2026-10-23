@@ -228,46 +228,59 @@ class _SessionFrameMixin:
                 self._frame_active = False
 
     def _render_failure_frame(self, exc: Exception) -> None:
-        """渲染/布局异常 → 绘制可见错误帧（不静默、不阻塞输入线程）。
+        """渲染/布局异常 → 旁路输出可见错误提示（不静默、不破坏渲染器记账）。
 
         ★ 2026-10-23（异常可观测性）：修复前帧构建异常由 session 层按指数
-        退避 ``time.sleep(0.1~1.0)`` 重试——界面冻结且用户无任何提示。现在
-        在本层收口：记录结构化日志（限频 5s）+ 直接把错误帧写到终端，
-        渲染线程继续按 60Hz 运转（下一帧重试正常路径）。错误帧内容含异常
-        类型与消息，便于用户/开发者定位。
+        退避 ``time.sleep(0.1~1.0)`` 重试——界面冻结且用户无任何提示。
+
+        ★ 2026-10-23（渲染故障自愈，第二轮修复）：修复前的错误帧走
+        ``InkRenderer.render(Frame([错误行]))``——把整篇文档模型替换成 1 行，
+        恢复时依赖漂移/重写路径重新对齐；若渲染器记账已损坏，错误帧自身
+        也会再次抛错（兜底失效）。现改为：
+          1. ``emit_error_line`` **旁路直写**当前光标行（限频 1s），不进入
+             帧/光标模型，不修改 ``_prev``/``_buf_h``；
+          2. ``mark_corrupted`` 重置渲染器记账并置「下次全量重绘」——下一帧
+             成功时清可见区（ED2，不清 scrollback）后完整重画，从任意损坏中
+             恢复；
+          3. 清空 ``_last_frame``（禁止空闲复用陈旧帧）并置脏（下一拍重试）。
         """
         now = time.monotonic()
         last = float(getattr(self, "_last_render_fault_log", 0.0) or 0.0)
         if now - last >= 5.0:
             self._last_render_fault_log = now
             _logger.error(
-                "渲染帧构建异常（已输出可见错误帧）",
+                "渲染帧构建异常（已输出可见错误提示）",
                 exc_info=True,
                 extra={
                     "ink_error_type": type(exc).__name__,
                     "ink_error": str(exc),
                 },
             )
-        try:
-            from .output import Frame, Line
-            from src.tui.core.style import Style
-
+        # ★ 可见错误提示：旁路直写（限频 1s——持续异常时不刷屏/不抖动）。
+        last_show = float(getattr(self, "_last_render_fault_show", 0.0) or 0.0)
+        if now - last_show >= 1.0:
+            self._last_render_fault_show = now
             text = f"[render error: {type(exc).__name__}: {exc}]"
-            width = 0
             try:
                 width = int(self._width_cache.get_width())
             except Exception:
                 width = 80
             if width > 0:
                 text = text[:width]
-            line = Line()
-            line.append(text, Style(fg=196, bold=True))
-            frame = Frame([line])
-            self._ink_renderer.render(frame)
-            self._last_frame = frame
-            self._last_frame_lines = len(frame.lines)
+            try:
+                self._ink_renderer.emit_error_line(text)
+            except Exception:
+                # 错误提示输出失败本身必须可见（限频由外层 5s 日志覆盖）。
+                _logger.error("错误提示旁路输出失败", exc_info=True)
+        # ★ 标记渲染器损坏：下一次成功帧全量重绘（仅内存重置，不做 I/O）。
+        try:
+            self._ink_renderer.mark_corrupted()
         except Exception:
-            _logger.debug("错误帧输出失败", exc_info=True)
+            _logger.error("渲染器损坏标记失败", exc_info=True)
+        # 禁止空闲帧复用陈旧帧；置脏保证下一拍重试正常路径。
+        self._last_frame = None
+        self._last_frame_lines = 1
+        self._dirty = True
 
     def _poll_terminal_size(self) -> None:
         """SIGWINCH 兜底：定期主动重探终端尺寸（刷新 ``_width_cache``）。
@@ -405,6 +418,8 @@ class _SessionFrameMixin:
         if view is None:
             return False
         raw = getattr(view, "_ink_refresh_interval", None)
+        if raw is None:
+            return False
         try:
             interval = float(raw)
         except (TypeError, ValueError, OverflowError):

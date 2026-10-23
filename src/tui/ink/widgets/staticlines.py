@@ -248,7 +248,8 @@ def _paint(fiber, canvas) -> None:
     from .._paint_canvas import _canvas_row_to_line, _merge_line
 
     cache = fiber._merged_rows_cache
-    entries: list = ()
+    # 条目容器初始为空元组（mypy 收窄；命中缓存后替换为 list）。
+    entries: "list | tuple" = ()
     if cache is not None and cache[0] is lines and cache[1] == (box.x, box.w):
         entries = cache[2]
     new_entries: list = []

@@ -14,6 +14,7 @@ React 风格调和：
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Callable, Mapping
 
 from .fiber import (
@@ -34,6 +35,46 @@ from . import hooks as _hooks
 from . import layout as _layout
 
 _logger = logging.getLogger(__name__)
+
+#: 「焦点管理器存在但无聚焦组件 → 按键被吞」告警限频间隔（秒）。
+_FOCUS_SWALLOW_WARN_INTERVAL = 5.0
+#: 上次该告警时刻（monotonic；模块级，低频异常路径共享即可）。
+_last_focus_swallow_warn = 0.0
+
+
+def _warn_focus_swallow_once() -> None:
+    """限频提示「焦点管理器存在但无聚焦组件」（按键被吞，语义保留）。"""
+    global _last_focus_swallow_warn
+    now = time.monotonic()
+    if now - _last_focus_swallow_warn < _FOCUS_SWALLOW_WARN_INTERVAL:
+        return
+    _last_focus_swallow_warn = now
+    _logger.warning(
+        "焦点管理器存在但无聚焦组件：按键被吞掉（请对目标组件使用 "
+        "useFocus({\"autoFocus\": True}) 或先按 Tab 聚焦）",
+    )
+
+
+#: 输入 handler 异常告警限频间隔（秒）——用户 handler 可能逐键失败。
+_INPUT_HANDLER_WARN_INTERVAL = 5.0
+_last_input_handler_warn = 0.0
+
+
+def _warn_input_handler_error() -> None:
+    """限频 warning：use_input/usePaste/useMouseInput handler 异常。
+
+    ★ 2026-10-23（关键异常可观测）：handler 异常被按「未消费」放行是正确的
+    降级，但原 debug 级别让「按键没反应」完全不可诊断；限频 warning 兼顾
+    可观测性与防刷屏。
+    """
+    global _last_input_handler_warn
+    now = time.monotonic()
+    if now - _last_input_handler_warn < _INPUT_HANDLER_WARN_INTERVAL:
+        return
+    _last_input_handler_warn = now
+    _logger.warning(
+        "输入 handler 异常（已按未消费放行）", exc_info=True,
+    )
 
 
 class _MaskedCharEvent:
@@ -316,6 +357,9 @@ class Reconciler:
             # ★ 发布 composite input router（use_input 钩子，INK-1）
             # 用合并遍历已收集的 hooks 构建（免再次全树收集——PERF-25）。
             # 最后一次 pass 的 hooks 为最终状态（layout effect 更新已提交）。
+            # ★ 2026-10-23（焦点收口）：本 pass 内停止声明 useFocus / 被移除的
+            #   组件会让 active 悬挂——调和完成后统一裁剪。
+            _hooks._prune_focus_active()
             router = self._build_input_router_from_hooks(input_hooks, paste_hooks, mouse_hooks)
             _hooks._publish_input_router(router, ctx=self._hook_ctx)
             return pending_update
@@ -611,6 +655,10 @@ class Reconciler:
                         memo_skip = True
                         rendered = None
                     else:
+                        # ★ 2026-10-23（memo 焦点修复）：组件函数将真正执行 →
+                        #   复位焦点声明标志；本次渲染未调用 useFocus 时保持
+                        #   False（memo 短路不执行本行，保留上次值供回放）。
+                        fiber._focus_declared = False
                         fiber._is_boundary = False
                         if item.children:
                             call_props = dict(fiber.props)
@@ -637,6 +685,11 @@ class Reconciler:
                 finally:
                     _hooks._pop_current()
                 if memo_skip:
+                    # ★ 2026-10-23（memo 焦点修复）：组件函数未执行 → useFocus
+                    #   不会重新注册；回放子树焦点 id，避免 _reset_focus_ids
+                    #   清空后焦点在下一 pass 消失（active 被清、Tab/focus(id)/
+                    #   isFocused 失效）。
+                    _hooks._replay_focus_ids(fiber)
                     continue
                 if fiber.hook_index < len(fiber.hooks):
                     _logger.warning(
@@ -1103,7 +1156,7 @@ class Reconciler:
                         if mhook.handler is not None and mhook.handler(event):
                             return True
                     except Exception:
-                        _logger.debug("useMouseInput handler 异常", exc_info=True)
+                        _warn_input_handler_error()
                         continue
                 return any(h.is_active for h in fullscreen_hooks)
             # ── 粘贴优先（React Ink usePaste 独立通道）──
@@ -1123,7 +1176,7 @@ class Reconciler:
                             if phook.handler is not None:
                                 phook.handler(text)
                         except Exception:
-                            _logger.debug("usePaste handler 异常", exc_info=True)
+                            _warn_input_handler_error()
                             continue
                     return True
             # ── Tab/Shift+Tab 焦点切换（React Ink useFocusManager）──
@@ -1147,9 +1200,9 @@ class Reconciler:
                         if ihook.handler(ev):
                             return True
                 except Exception:
-                    # ★ P3（review）：handler 异常不再静默——记 debug（按键
-                    #   「无响应」时可观测）；语义不变（异常视为未消费，放行）。
-                    _logger.debug("use_input handler 异常", exc_info=True)
+                    # ★ 2026-10-23（关键异常可观测）：异常视为未消费（放行）的
+                    #   语义不变；限频 warning 让「按键无响应」可定位。
+                    _warn_input_handler_error()
                     continue
             # ── 模态全屏视图（use_fullscreen，2026-08-17）：全部 handler 未
             #   消费 → 全屏激活时吞掉事件（返回 True）→ InputDispatcher 跳过
@@ -1165,6 +1218,11 @@ class Reconciler:
             #   （不落入旧输入缓冲）。此前回退到全部 hook，未聚焦组件仍收到
             #   输入；现在焦点管理器存在时“无聚焦=无输入”，Tab 可切换焦点。
             if has_focus_ids:
+                # ★ 2026-10-23（可诊断性）：焦点管理器存在但无聚焦组件时事件
+                #   被吞（产品语义保留：先按 Tab 聚焦）。原实现完全静默——用户
+                #   只看到「键盘失灵」；限频 warning 让该状态可定位。
+                if not input_hooks:
+                    _warn_focus_swallow_once()
                 return True
             return False
 
