@@ -156,6 +156,9 @@ def test_key_function_contracts_after_trimming() -> None:
 
     user_select = schemas["user_select"]
     assert "1 分钟没有任何操作" in user_select["function"]["description"]
+    # 未回答（answered=false）与用户取消语义必须对模型可见。
+    assert "answered=false" in user_select["function"]["description"]
+    assert "未答复" in user_select["function"]["description"]
     header = user_select["function"]["parameters"]["properties"]["header"]
     assert "12" in header["description"]
 

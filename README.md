@@ -843,7 +843,7 @@ chat_ui.clear_floating_windows()                            # 关闭全部
 ├── prompts/               # 系统提示词（8 个文件）
 │   ├── prompts_export_main.md    # 主 Agent 系统提示词（标准模式：子代理编排范式）
 │   ├── prompts_export_main_simple.md  # 主 Agent 系统提示词（简单模式：命令式精简规则集）
-│   ├── prompts_export_main_empty.md  # 主 Agent 系统提示词（空模式：单体完整规则集；「空」指不含子代理编排，非规则量最少）
+│   ├── prompts_export_main_empty.md  # 主 Agent 系统提示词（空模式：单体完整规则集；已去重并加入正向授权判据与分级交付；「空」指不含子代理编排）
 │   ├── prompts_export_map.md     # map SubAgent 探底提示词
 │   ├── prompts_export_plan.md    # plan SubAgent 计划提示词
 │   ├── prompts_export_execute.md  # execute SubAgent 提示词

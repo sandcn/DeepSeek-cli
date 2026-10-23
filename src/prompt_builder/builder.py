@@ -59,7 +59,7 @@ _PROMPTS_DIR: str | None = None
 # ── 主 agent 运行模式（Ctrl+B 循环切换，默认空模式） ─────────
 # 三态是三种**提词范式**，不是「规则量递增」的三档：
 #   empty    : prompts_export_main_empty.md（单体执行范式：第零条授权闸门 +
-#              工具与验证 + 交付输出的完整单体规则集，规则量最大、禁止 subagent）
+#              工具与验证 + 交付输出的完整单体规则集，规则完整、禁止 subagent）
 #   simple   : prompts_export_main_simple.md（命令式精简规则集，规则量最小）
 #   standard : prompts_export_main.md（子代理编排范式：map/plan/execute/review）
 # 「空」指不含子代理编排，不表示规则更少或约束更松。默认 empty：启动即进入空模式。

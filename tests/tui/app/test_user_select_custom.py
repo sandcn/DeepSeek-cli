@@ -607,6 +607,8 @@ def test_tool_returns_explicit_empty_multi_submit(monkeypatch) -> None:
     payload = json.loads(out[0])
     assert payload["action"] == "confirmed"
     assert payload["selected"] == []
+    # 用户主动提交（含空选择）算已作答；空选择语义由提词判为未授权。
+    assert payload["answered"] is True
 
 
 # ══════════════════════════════════════════════════════════
@@ -1074,3 +1076,96 @@ def test_submit_page_renders_multiline_answer() -> None:
     assert "X" in text
     assert "Y" in text
     assert "X\u23ceY" not in text
+
+
+def test_non_interactive_fallback_marks_unanswered(monkeypatch) -> None:
+    """非交互回退 answered=False：用户没答，不等于拒绝或未授权。"""
+    import asyncio
+    import json
+
+    import src.tools.user_select as tool_mod
+
+    monkeypatch.setattr(tool_mod, "_interactive_stdin", lambda: False)
+    func = tool_mod.UserSelectFunc(
+        title="Q",
+        options=[{"label": "A"}, {"label": "B"}],
+        default_options=["A"],
+    )
+    payload = json.loads(asyncio.run(func.execute()))
+    assert payload == {
+        "selected": ["A"],
+        "action": "non_interactive",
+        "answered": False,
+    }
+
+
+def test_error_fallback_marks_unanswered(monkeypatch) -> None:
+    """ChatUI 未激活时 answered=False，且回退默认项不丢失。"""
+    import asyncio
+    import json
+
+    import src.tools.user_select as tool_mod
+
+    monkeypatch.setattr(tool_mod, "_interactive_stdin", lambda: True)
+    monkeypatch.setattr(tool_mod, "get_display_target", lambda: None)
+    func = tool_mod.UserSelectFunc(
+        title="Q",
+        options=[{"label": "A"}],
+        default_options=["A"],
+    )
+    payload = json.loads(asyncio.run(func.execute()))
+    assert payload["action"] == "error: ChatUI 未激活"
+    assert payload["selected"] == ["A"]
+    assert payload["answered"] is False
+
+
+def test_timeout_fallback_marks_unanswered(monkeypatch) -> None:
+    """空闲超时 answered=False；回退结果采用非空 default_options。"""
+    import asyncio
+    import json
+    import threading
+
+    import src.tools.user_select as tool_mod
+
+    model = SimpleNamespace(
+        user_select=UserSelectState(), user_selects=[], bottom_view="",
+    )
+
+    class _UI:
+        bottom_bar = None
+
+        def get_model(self):
+            return model
+
+        def request_bottom_redraw(self):
+            pass
+
+        def get_input_component(self):
+            return None
+
+        def flush_input_router(self, timeout):
+            pass
+
+    monkeypatch.setattr(tool_mod, "_interactive_stdin", lambda: True)
+    monkeypatch.setattr(tool_mod, "get_display_target", lambda: _UI())
+    # 把空闲窗口压到 0.05s，避免测试真的等 60 秒（只验证语义，不验证时长）。
+    monkeypatch.setattr(tool_mod, "IDLE_TIMEOUT_SECONDS", 0.05)
+
+    out: list = []
+
+    def run() -> None:
+        func = tool_mod.UserSelectFunc(
+            title="Q",
+            options=[{"label": "A"}, {"label": "B"}],
+            default_options=["A"],
+        )
+        out.append(asyncio.run(func.execute()))
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    payload = json.loads(out[0])
+    assert payload["action"] == "timeout"
+    assert payload["selected"] == ["A"]
+    assert payload["answered"] is False

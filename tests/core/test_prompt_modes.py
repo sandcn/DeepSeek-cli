@@ -1,7 +1,7 @@
 """主 Agent 运行模式与静态提词契约测试。
 
 守护「空 / 简单 / 标准」三模式的真实语义：三者是**三种提词范式**，不是
-规则量递增的三档——`empty` 为单体完整规则集（规则量最大）、`simple` 为
+规则量递增的三档——`empty` 为单体完整规则集（规则完整、禁止子代理）、`simple` 为
 命令式精简规则集（最小）、`standard` 为子代理编排范式。
 
 同时锁定两处已修复的规则文本矛盾（防回归）：
@@ -111,3 +111,46 @@ def test_prompt_contradictions_fixed_in_empty_mode() -> None:
     assert "唯一保留的约束是不外泄凭据值" not in content
     assert "当场多选" not in content
     assert "当场申请授权" not in content
+
+
+def test_empty_prompt_has_positive_authorization_path() -> None:
+    """正向授权判据：满足条件即执行，禁止把催促当成「没有新信息」。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    assert "默认动作是执行" in content
+    assert "视为已获明确授权" in content
+    assert "这是授权确认" in content
+    assert "原地重复提问" in content
+    # 提问必须收敛：只在互斥方向 / 破坏性 / 对象无法定位时问，且最多一轮
+    assert "最多一轮" in content
+    assert "纯文本答复与弹窗选择同等有效" in content
+
+
+def test_empty_prompt_distinguishes_unanswered_from_rejection() -> None:
+    """未回答（answered=false）不得被判成拒绝或未授权。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    assert "未回答 ≠ 拒绝" in content
+    assert "answered=false" in content
+    assert "`action=cancel`" in content
+    # 既有约束不得被新条款顶掉
+    assert "`selected` 为空视为未授权" in content
+
+
+def test_empty_prompt_allows_graded_delivery() -> None:
+    """完成标准分级：如实报告未完成项不判失败，谎报才判失败。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    assert "如实报告 ≠ 失败" in content
+    assert "分级交付" in content
+    assert "只有以下情况判失败" in content
+
+
+def test_simple_prompt_has_positive_authorization_and_graded_delivery() -> None:
+    """简单模式同步具备正向授权、未回答语义与分级交付。"""
+    content = builder._load_prompt("prompts_export_main_simple")
+
+    assert "默认执行（红线" in content
+    assert "未回答 ≠ 拒绝" in content
+    assert "如实报告未完成项不判失败" in content
+    assert "仅在必要时提问" in content

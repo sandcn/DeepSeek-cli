@@ -199,7 +199,10 @@ class UserSelectFunc(Func):
                     "向用户显示交互式选择界面，返回 JSON（selected/action）；"
                     "支持单选/多选，多个问题可在同一轮并发弹出、以 tab 切换。"
                     "1 分钟没有任何操作（按键/滚动）即超时并回退 default_options；"
-                    "非交互环境同样回退。"
+                    "非交互环境同样回退。未回答（answered=false，action 为 "
+                    "timeout/non_interactive/error/empty）与用户主动取消（cancel）"
+                    "语义不同：前者表示用户未答复，不得据此判定为拒绝或未授权；"
+                    "提问时必须传非空 default_options。"
                     "例：user_select({\"title\": \"选择方向\", \"options\": "
                     "[{\"label\": \"方案A\", \"description\": \"说明\"}], "
                     "\"multi_select\": true})"
@@ -244,7 +247,10 @@ class UserSelectFunc(Func):
                         "default_options": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "默认选项 label 列表（超时/非交互回退）",
+                            "description": (
+                                "默认选项 label 列表（超时/非交互回退）；"
+                                "提问时必须传非空列表，否则未回答时无默认项可回退"
+                            ),
                             "default": []
                         }
                     },
@@ -281,7 +287,10 @@ class UserSelectFunc(Func):
     async def execute(self):
         """异步执行选择并返回结果"""
         if not self.options:
-            return json.dumps({"selected": [], "action": "empty"}, ensure_ascii=False)
+            return json.dumps(
+                {"selected": [], "action": "empty", "answered": False},
+                ensure_ascii=False,
+            )
 
         # 终端模式：React Ink 弹窗（UserSelectPopup 组件渲染 + use_input 交互）
         return await self._execute_terminal_async()
@@ -310,7 +319,8 @@ class UserSelectFunc(Func):
             )
             return json.dumps({
                 "selected": list(self.default_options or []),
-                "action": "non_interactive"
+                "action": "non_interactive",
+                "answered": False,
             }, ensure_ascii=False)
 
         # 获取 ChatUIConsumer 与 AppModel
@@ -319,12 +329,14 @@ class UserSelectFunc(Func):
             return json.dumps({
                 "selected": list(self.default_options or []),
                 "action": "error: ChatUI 未激活",
+                "answered": False,
             }, ensure_ascii=False)
         model = chat_ui.get_model() if hasattr(chat_ui, "get_model") else None
         if model is None or not hasattr(model, "user_select"):
             return json.dumps({
                 "selected": list(self.default_options or []),
                 "action": "error: ChatUI 模型不可用",
+                "answered": False,
             }, ensure_ascii=False)
 
         default_opts = list(self.default_options or [])
@@ -447,6 +459,10 @@ class UserSelectFunc(Func):
             payload = {
                 "selected": result,
                 "action": action,
+                # ★ 未回答（timeout / error）与用户主动取消（cancel）语义不同：
+                #   只有 confirmed / cancel 是用户已作答，模型据此区分
+                #   「用户没答」与「用户拒绝」，避免把超时空回退当未授权。
+                "answered": action in ("confirmed", "cancel"),
             }
             # ★ 2026-10-21（用户需求）：自由输入时额外返回 custom 字段标记——
             #   不复用 selected 中的同名文本做推断（选项文本可能恰好相同）。
@@ -459,6 +475,7 @@ class UserSelectFunc(Func):
             return json.dumps({
                 "selected": list(self.default_options or []),
                 "action": f"error: {error_msg}",
+                "answered": False,
             }, ensure_ascii=False)
         finally:
             # 清理弹窗状态 + 主动重绘（底部栏立即恢复正常显示）。
