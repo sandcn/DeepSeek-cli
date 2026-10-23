@@ -52,13 +52,11 @@ import time
 
 from . import grid as grid_module
 from . import png, proctree, transform, winapi
-from .elements import ElementInfo
 from .monitors import Monitor
 from .result import CaptureResult, NoWindowError, ScreenshotError
 from .transform import CropError, CropRegion
 from .windows import (
     DEFAULT_SELECTOR,
-    WindowControlRequest,
     WindowInfo,
     indexed_summary,
     main_window,
@@ -95,10 +93,6 @@ _MAX_TREE_DEPTH = 32
 
 #: 前置窗口后等待重绘的时间（秒）——BitBlt 回退前让画面刷新
 _RAISE_SETTLE_SECONDS = 0.25
-
-#: 窗口控制（移动 / 缩放 / 最大化等）后等待状态生效的时间（秒）
-_CONTROL_SETTLE_SECONDS = 0.15
-
 
 def select_window(candidates: list[WindowInfo]) -> WindowInfo | None:
     """从候选窗口中选择最可能的「主窗口」（保留自早期接口）。
@@ -197,7 +191,7 @@ class WindowsBackend:
         )
 
     def list_windows(self, pid: int) -> list[WindowInfo]:
-        """枚举该进程树的全部可操作窗口（``op=windows`` 数据源）。"""
+        """枚举该进程树的全部可操作窗口（截图 / 输入共用）。"""
         return list_windows(pid)
 
     def list_monitors(self) -> list[Monitor]:
@@ -247,15 +241,6 @@ class WindowsBackend:
                          "width": monitor.width, "height": monitor.height},
         )
 
-    def list_elements(self, pid: int, window: str | None = None) -> list[ElementInfo]:
-        """枚举被选窗口内的控件（``op=elements`` 数据源）。"""
-        return list_elements(pid, window)
-
-    def control(self, pid: int, request: WindowControlRequest) -> dict:
-        """对被选窗口执行激活 / 最大化 / 最小化 / 还原 / 关闭 / 移动 / 缩放。"""
-        return control_window(pid, request)
-
-
 def resolve_window_pids(pid: int) -> set[int]:
     """把目标 PID 解析为「窗口归属的 Windows PID 集合」（含全部子进程）。
 
@@ -267,9 +252,8 @@ def resolve_window_pids(pid: int) -> set[int]:
     ★ 原生 Windows 同样需要 Job / 按名兜底（2026-10-20 修复）：Store /
     打包应用（Notepad、Windows Terminal、计算器等）由 App Execution Alias
     在**别的进程**里激活，父链指向 svchost / explorer，不是任务根进程的
-    后代；只按 ``{pid}`` 展开会完全找不到它们的窗口（``op=wait_window``
-    超时、``op=screenshot`` 报无窗口），与 ``op=kill``（有采样器记录，
-    能杀掉）行为不一致。
+    后代；只按 ``{pid}`` 展开会完全找不到它们的窗口（``op=screenshot`` 报
+    无窗口），与 ``op=kill``（有采样器记录，能杀掉）行为不一致。
 
     ★ 归属分两级（2026-10-20 串窗修复）：
 
@@ -308,7 +292,7 @@ def resolve_window_pids(pid: int) -> set[int]:
     #   Terminal、计算器等）在**原生 Windows** 上同样不是任务根进程的后代：
     #   别名激活出的进程父链指向 svchost / explorer，PPID 链断裂后
     #   Toolhelp32 展开找不到它——修复前 native 分支直接返回 {pid}，导致
-    #   ``op=windows`` / ``screenshot`` / ``op=click`` 全部报「没有可见窗口」，
+    #   ``op=screenshot`` / ``op=click`` 全部报「没有可见窗口」，
     #   而 ``op=kill`` 却因为采样器记录过它而能杀掉（行为不一致）。
     if _task_winpid is not None:
         # Job 成员：覆盖 Toolhelp32 父子链断开的原生子进程
@@ -454,294 +438,12 @@ def enumerate_candidates(window_pids: set[int]) -> list[WindowInfo]:
 
 
 def list_windows(pid: int) -> list[WindowInfo]:
-    """返回 ``pid`` 及其子进程的全部可操作窗口（``op=windows`` 的数据源）。"""
+    """返回 ``pid`` 及其子进程的全部可操作窗口（截图 / 输入共用）。"""
     winapi.ensure_process_dpi_aware()
     window_pids = resolve_window_pids(pid)
     if not window_pids:
         return []
     return enumerate_window_infos(window_pids)
-
-
-def list_elements(pid: int, window: str | None = None) -> list[ElementInfo]:
-    """返回被选窗口内的全部控件（``op=elements`` 的数据源）。
-
-    控件来自 ``EnumChildWindows``（递归枚举整棵子窗口树），按「从上到下、
-    从左到右」排序，便于与截图 / 清单顺序对照。经典 Win32 控件（按钮、
-    编辑框、列表）都能枚举到；Chrome / Electron / 游戏等自绘界面内部没有
-    标准子窗口，结果会很少或为空（此时改用截图 + 像素坐标操作）。
-
-    Raises:
-        SelectorError: 窗口选择器非法或没有匹配窗口。
-    """
-    winapi.ensure_process_dpi_aware()
-    window_pids = resolve_window_pids(pid)
-    if not window_pids:
-        return []
-    infos = enumerate_window_infos(window_pids)
-    if not infos:
-        return []
-    target = pick_window(infos, window)
-    return list_child_elements(target)
-
-
-def list_child_elements(target: WindowInfo) -> list[ElementInfo]:
-    """枚举 ``target`` 窗口内的控件并转为统一描述（按位置排序）。
-
-    优先走 **UI Automation**（``_screenshot/uia.py``）：UIA 能看到 Chrome /
-    Electron / Qt / WPF / UWP 等自绘界面暴露的无障碍节点，远胜「只认标准
-    子窗口」的 ``EnumChildWindows``。UIA 不可用（非 Windows、COM 创建失败）
-    或未枚举到任何元素时，回退 ``EnumChildWindows``（经典 Win32 控件稳）。
-
-    坐标为**屏幕像素**；工具层再用输入后端的窗口 frame 换算成窗口内坐标，
-    保证与 ``op=screenshot`` 产物、输入坐标一一对应。
-    """
-    elements = _list_elements_via_uia(target.handle)
-    if elements:
-        elements.sort(key=lambda item: (item.top, item.left))
-        return elements
-    return _list_elements_via_win32(target)
-
-
-def _list_elements_via_uia(hwnd: int) -> list[ElementInfo]:
-    """用 UI Automation 枚举控件（不可用 / 失败返回空列表）。"""
-    try:
-        from . import uia
-    except ImportError:  # pragma: no cover - 模块随包发布
-        return []
-    if not uia.available():
-        return []
-    try:
-        return list(uia.enumerate_elements(winapi.hwnd_value(hwnd)))
-    except Exception as exc:  # noqa: BLE001 - 任何失败都回退经典枚举
-        logger.debug("UIA 枚举失败，回退 EnumChildWindows: %s", exc)
-        return []
-
-
-def _list_elements_via_win32(target: WindowInfo) -> list[ElementInfo]:
-    """经典 Win32 子窗口枚举（UIA 不可用时的回退）。"""
-    elements: list[ElementInfo] = []
-    for hwnd in winapi.enum_child_windows(target.handle):
-        left, top, right, bottom = winapi.window_rect(hwnd)
-        width, height = right - left, bottom - top
-        if width <= 0 or height <= 0:
-            continue
-        elements.append(ElementInfo(
-            handle=winapi.hwnd_value(hwnd),
-            pid=winapi.window_pid(hwnd),
-            class_name=winapi.window_class(hwnd),
-            text=winapi.window_text(hwnd),
-            left=left,
-            top=top,
-            width=width,
-            height=height,
-            enabled=winapi.is_window_enabled(hwnd),
-            visible=winapi.is_window_visible(hwnd),
-            depth=winapi.window_depth(hwnd, target.handle),
-            source="win32",
-        ))
-    elements.sort(key=lambda item: (item.top, item.left))
-    return elements
-
-
-def control_window(pid: int, request: WindowControlRequest) -> dict:
-    """对 ``pid`` 进程树中被选中的窗口执行状态 / 几何控制。
-
-    支持激活（置前）、最大化、最小化、还原、关闭请求，以及按屏幕坐标移动 /
-    缩放窗口；返回动作前后的窗口状态，便于确认结果（例如调整窗口大小后，
-    输入坐标与截图尺寸都更可预测）。
-
-    Raises:
-        NoWindowError: 进程树内没有可操作窗口。
-        SelectorError: 窗口选择器非法或没有匹配窗口。
-    """
-    winapi.ensure_process_dpi_aware()
-    window_pids = resolve_window_pids(pid)
-    infos = enumerate_window_infos(window_pids) if window_pids else []
-    if not infos:
-        raise NoWindowError(
-            f"进程 {pid} 及其子进程没有可操作窗口（纯命令行进程无 GUI 窗口；"
-            f"窗口已最小化/被隐藏时也找不到；GUI 程序若经 App Execution Alias "
-            f"或其它进程（explorer 等）启动，窗口可能不属于本任务进程树）"
-        )
-    target = pick_window(infos, request.selector)
-    action = request.action
-    before = window_state(target.handle)
-    if action == "activate":
-        _activate_window(target)
-    elif action == "maximize":
-        winapi.show_window(target.handle, winapi.SW_MAXIMIZE)
-    elif action == "minimize":
-        winapi.show_window(target.handle, winapi.SW_MINIMIZE)
-    elif action == "restore":
-        winapi.show_window(target.handle, winapi.SW_RESTORE)
-    elif action == "close":
-        winapi.close_window(target.handle)
-    elif action == "move":
-        winapi.set_window_pos(
-            target.handle, int(request.x), int(request.y), 0, 0,
-            winapi.SWP_NOSIZE | winapi.SWP_NOZORDER | winapi.SWP_NOACTIVATE,
-        )
-    elif action == "resize":
-        winapi.set_window_pos(
-            target.handle, 0, 0, int(request.width), int(request.height),
-            winapi.SWP_NOMOVE | winapi.SWP_NOZORDER | winapi.SWP_NOACTIVATE,
-        )
-    elif action == "fit":  # pragma: no branch - 动作集合由上层校验
-        winapi.set_window_pos(
-            target.handle, int(request.x), int(request.y),
-            int(request.width), int(request.height),
-            winapi.SWP_NOZORDER | winapi.SWP_NOACTIVATE,
-        )
-    elif action == "always_on_top":
-        winapi.set_window_topmost(target.handle, topmost=True)
-    elif action == "not_on_top":
-        winapi.set_window_topmost(target.handle, topmost=False)
-    time.sleep(_CONTROL_SETTLE_SECONDS)
-    after = window_state(target.handle)
-    retry = None
-    if action in ("move", "resize", "fit"):
-        retry, after = _compensate_geometry(
-            target.handle, action, request, before, after)
-    detail = {
-        "window_action": action,
-        "handle": target.handle,
-        "handle_hex": target.handle_hex,
-        "window_title": target.title,
-        "before": before,
-        "after": after,
-    }
-    if action in ("move", "resize", "fit"):
-        # 如实回报请求的几何值：模型可据此判断目标程序是否又改写了窗口
-        detail["requested"] = request.to_dict()
-    if retry is not None:
-        detail["geometry_retry"] = retry
-    if action == "activate":
-        activated = _application_foreground(target)
-        detail["foreground"] = activated
-        owner = winapi.window_owner(target.handle)
-        if owner and owner != target.handle:
-            detail["owner_handle"] = f"0x{owner:X}"
-        if not activated:
-            detail["warning"] = (
-                f"窗口未能取得前台（当前前台: {winapi.foreground_description()}）。"
-                f"Windows 前台锁定策略会拒绝后台进程的置前请求：若目标窗口已最小化，"
-                f"先试 window_action=restore 再 activate；若其它程序（如全屏游戏）"
-                f"持续抢占前台，需先处理该程序，或改用 SendInput 之外的 "
-                f"method='message' 投递通道"
-            )
-    return detail
-
-
-#: 几何校验容差（像素）：窗口位置 / 尺寸与请求的偏差超过该值才补偿。
-_GEOMETRY_TOLERANCE_PX = 2
-
-
-def _geometry_matches(state: dict, *,
-                      x: int | None = None, y: int | None = None,
-                      width: int | None = None,
-                      height: int | None = None) -> bool:
-    """窗口状态是否与期望几何一致（``None`` 的维度不校验，容差 2px）。"""
-    if not state.get("exists"):
-        return False
-    for key, want in (("x", x), ("y", y), ("width", width), ("height", height)):
-        if want is None:
-            continue
-        if abs(int(state.get(key, 0)) - int(want)) > _GEOMETRY_TOLERANCE_PX:
-            return False
-    return True
-
-
-def _compensate_geometry(handle, action: str, request: WindowControlRequest,
-                         before: dict, after: dict) -> tuple[dict | None, dict]:
-    """几何动作被目标程序改写时补一次修正（游戏在改尺寸后自行居中）。
-
-    现象：``fit`` / ``resize`` 调用成功后，目标程序（如 Terraria 这类
-    WinForms 游戏）收到 ``WM_SIZE`` 时按自己的逻辑重新居中窗口，导致位置
-    与请求不一致；``move`` 也可能被程序的布局逻辑改写。这里读回实际几何，
-    与请求比对，偏差超过 ``_GEOMETRY_TOLERANCE_PX`` 时先补尺寸、再补位置
-    （各最多一次），避免与程序互相拉扯。
-
-    Returns:
-        ``(retry 说明或 None, 补偿后的窗口状态)``。retry 含 ``steps``
-        （补发的动作）与 ``matched``（补偿后是否与请求一致）。
-    """
-    if action not in ("move", "resize", "fit") or not after.get("exists"):
-        return None, after
-    wants: dict[str, int] = {}
-    if action in ("move", "fit"):
-        wants["x"], wants["y"] = int(request.x), int(request.y)
-    if action in ("resize", "fit"):
-        wants["width"], wants["height"] = int(request.width), int(request.height)
-    if action == "resize" and before.get("exists"):
-        # resize 只改尺寸：位置漂移时按原位置还原
-        wants["x"], wants["y"] = int(before["x"]), int(before["y"])
-    steps: list[str] = []
-    if "width" in wants and not _geometry_matches(
-            after, width=wants["width"], height=wants["height"]):
-        winapi.set_window_pos(
-            handle, 0, 0, wants["width"], wants["height"],
-            winapi.SWP_NOMOVE | winapi.SWP_NOZORDER | winapi.SWP_NOACTIVATE)
-        steps.append("resize")
-        time.sleep(_CONTROL_SETTLE_SECONDS)
-        after = window_state(handle)
-    if ("x" in wants or "y" in wants) and not _geometry_matches(
-            after, x=wants.get("x"), y=wants.get("y")):
-        winapi.set_window_pos(
-            handle, wants["x"], wants["y"], 0, 0,
-            winapi.SWP_NOSIZE | winapi.SWP_NOZORDER | winapi.SWP_NOACTIVATE)
-        steps.append("move")
-        time.sleep(_CONTROL_SETTLE_SECONDS)
-        after = window_state(handle)
-    if not steps:
-        return None, after
-    info: dict = {"steps": steps,
-                  "matched": _geometry_matches(after, **wants)}
-    if not info["matched"]:
-        info["hint"] = (
-            "目标程序在窗口几何变化后自行调整了窗口（例如游戏在分辨率变化后"
-            "重新居中），已按请求补发一次修正仍未完全一致；可用 "
-            "window_action=move 再校正位置")
-    return info, after
-
-
-def _activate_window(target: WindowInfo) -> bool:
-    """把窗口置于前台；工具窗口（弹层 / 菜单）优先激活其属主窗口。
-
-    ``SetForegroundWindow`` 对 ``WS_EX_TOOLWINDOW`` 窗口无效——这类窗口
-    （右键菜单、下拉浮层、Chrome/Electron 弹出层）不参与前台切换，直接激活
-    只会一直失败；它们的属主才是该应用的主窗口，激活属主即可让整个应用
-    取得焦点（浮层也随之可交互）。属主激活失败时再退回尝试窗口自身。
-    """
-    owner = winapi.window_owner(target.handle) if target.tool_window else 0
-    if owner and winapi.set_foreground(owner):
-        return True
-    return winapi.set_foreground(target.handle)
-
-
-def _application_foreground(target: WindowInfo) -> bool:
-    """该窗口（或其属主）当前是否持有前台（工具窗口自身几乎不会是前台）。"""
-    if winapi.is_foreground(target.handle):
-        return True
-    owner = winapi.window_owner(target.handle)
-    return bool(owner) and winapi.is_foreground(owner)
-
-
-def window_state(handle) -> dict:
-    """读取窗口当前状态（几何 + 最小化 / 可见 / 前台 / 置顶 / 存在性）。"""
-    if not winapi.is_window(handle):
-        return {"exists": False}
-    left, top, right, bottom = winapi.window_rect(handle)
-    return {
-        "exists": True,
-        "x": left,
-        "y": top,
-        "width": right - left,
-        "height": bottom - top,
-        "minimized": winapi.is_window_minimized(handle),
-        "visible": winapi.is_window_visible(handle),
-        "foreground": winapi.is_foreground(handle),
-        "topmost": winapi.window_is_topmost(handle),
-    }
 
 
 def visible_region(candidate: WindowCandidate) -> CropRegion | None:
@@ -1186,15 +888,11 @@ __all__ = [
     "WindowsBackend",
     "capture_screen_pixels",
     "capture_window_pixels",
-    "control_window",
     "enumerate_candidates",
     "enumerate_window_infos",
-    "list_child_elements",
-    "list_elements",
     "list_windows",
     "resolve_window_pids",
     "screen_region_intersection",
     "select_window",
     "visible_region",
-    "window_state",
 ]

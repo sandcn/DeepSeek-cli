@@ -20,7 +20,6 @@ import logging
 import shutil
 import subprocess
 import sys
-import time
 from dataclasses import dataclass
 
 from . import png, proctree, transform
@@ -30,7 +29,6 @@ from .result import CaptureResult, NoWindowError, ScreenshotError
 from .transform import CropRegion
 from .windows import (
     DEFAULT_SELECTOR,
-    WindowControlRequest,
     WindowInfo,
     indexed_summary,
     mark_main,
@@ -41,8 +39,6 @@ from .windows import (
 logger = logging.getLogger(__name__)
 
 _COMMAND_TIMEOUT = 30.0
-#: 窗口控制（移动 / 缩放 / 最大化等）后等待状态生效的时间（秒）
-_CONTROL_SETTLE_SECONDS = 0.2
 
 
 @dataclass
@@ -165,17 +161,13 @@ class MacOSBackend:
         )
 
     def list_windows(self, pid: int) -> list[WindowInfo]:
-        """枚举该进程树的全部可见窗口（``op=windows`` 数据源）。"""
+        """枚举该进程树的全部可见窗口（截图 / 输入共用）。"""
         pids = proctree.collect_process_tree(pid)
         if not pids:
             return []
         windows = _process_windows(pids)
         return mark_main([to_window_info(item, index)
                           for index, item in enumerate(windows)])
-
-    def control(self, pid: int, request: WindowControlRequest) -> dict:
-        """对被选窗口执行激活 / 最大化 / 最小化 / 还原 / 关闭 / 移动 / 缩放。"""
-        return control_window(pid, request, runner=self._run)
 
     def list_monitors(self) -> list[Monitor]:
         """经 Quartz 枚举显示器（需 pyobjc；不可用返回空列表）。"""
@@ -339,159 +331,6 @@ def list_windows(pid: int) -> list[WindowInfo]:
                       for index, item in enumerate(windows)])
 
 
-def control_window(pid: int, request: WindowControlRequest, *,
-                   runner=None) -> dict:
-    """对 ``pid`` 进程树中被选窗口执行状态 / 几何控制（System Events）。
-
-    macOS 的窗口寻址经 System Events 完成，因此选择器最终都解析为「第 N 个
-    窗口」：``main`` / ``active`` / ``#N`` / ``title:子串`` / ``popup`` 均可用；
-    ``handle:`` 无法用 System Events 寻址，会给出改用建议。
-
-    Raises:
-        NoWindowError: 进程树内没有可用窗口。
-        SelectorError: 窗口选择器非法或没有匹配窗口。
-        ScreenshotError: 控制命令失败（通常是缺少「辅助功能」权限）。
-    """
-    run = runner or _run
-    pids = proctree.collect_process_tree(pid)
-    windows = _process_windows(pids) if pids else []
-    if not windows:
-        raise NoWindowError(
-            f"进程 {pid} 及其子进程没有可操作窗口（纯命令行进程没有图形窗口）"
-        )
-    infos = mark_main([to_window_info(item, index)
-                       for index, item in enumerate(windows)])
-    target_info = pick_window(infos, request.selector)
-    if request.action in ("always_on_top", "not_on_top"):
-        raise ScreenshotError(
-            "macOS 不支持对其它进程的窗口置顶 / 取消置顶（System Events 与 "
-            "Accessibility API 都没有该能力）；如需避免窗口被遮挡，可先 "
-            "window_action=activate 把目标应用置前，或用 window_action=fit "
-            "把窗口移到固定位置后立即操作"
-        )
-    index = next((position for position, item in enumerate(windows)
-                  if to_window_info(item).handle == target_info.handle), 0)
-    window_expr = f"window {index + 1}"
-    target = windows[index]
-    before = _window_bounds(pid, target)
-    statement = _control_statement(request.action, pid, window_expr, request)
-    _run_apple_script(run, statement, f"窗口动作 {request.action}")
-    time.sleep(_CONTROL_SETTLE_SECONDS)
-    after = _window_bounds(pid, target)
-    return {
-        "window_action": request.action,
-        "handle": target_info.handle,
-        "handle_hex": target_info.handle_hex,
-        "window_title": target_info.title,
-        "window_index": index + 1,
-        "before": before,
-        "after": after,
-    }
-
-
-def _control_statement(action: str, pid: int, window_expr: str,
-                       request: WindowControlRequest) -> str:
-    """把窗口动作翻译为 AppleScript 语句。"""
-    process = f'(first process whose unix id is {pid})'
-    if action == "activate":
-        return f'tell application "System Events" to set frontmost of {process} to true'
-    if action == "maximize":
-        return (
-            'tell application "Finder" to set _screen to bounds of window of desktop\n'
-            f'tell application "System Events" to tell {process}\n'
-            f"  set position of {window_expr} to {{0, 0}}\n"
-            f"  set size of {window_expr} to {{item 3 of _screen, item 4 of _screen}}\n"
-            "end tell"
-        )
-    if action == "minimize":
-        return (
-            f'tell application "System Events" to tell {process} to '
-            f'set value of attribute "AXMinimized" of {window_expr} to true'
-        )
-    if action == "restore":
-        return (
-            f'tell application "System Events" to tell {process} to '
-            f'set value of attribute "AXMinimized" of {window_expr} to false\n'
-            f'tell application "System Events" to set frontmost of {process} to true'
-        )
-    if action == "close":
-        return (
-            f'tell application "System Events" to tell {process} to '
-            f"click button 1 of {window_expr}"
-        )
-    if action == "move":
-        return (
-            f'tell application "System Events" to tell {process} to '
-            f"set position of {window_expr} to {{{request.x}, {request.y}}}"
-        )
-    if action == "resize":
-        return (
-            f'tell application "System Events" to tell {process} to '
-            f"set size of {window_expr} to {{{request.width}, {request.height}}}"
-        )
-    return (  # pragma: no branch - 动作集合由上层校验（fit）
-        f'tell application "System Events" to tell {process}\n'
-        f"  set position of {window_expr} to {{{request.x}, {request.y}}}\n"
-        f"  set size of {window_expr} to {{{request.width}, {request.height}}}\n"
-        "end tell"
-    )
-
-
-def _run_apple_script(run, script: str, label: str) -> None:
-    """执行 AppleScript（失败时附带辅助功能权限提示）。"""
-    osascript = shutil.which("osascript")
-    if not osascript:
-        raise ScreenshotError(f"{label}失败：osascript 不可用")
-    completed = run([osascript, "-e", script])
-    if completed is None:
-        raise ScreenshotError(f"{label}失败：osascript 执行超时或不可用")
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "").strip().splitlines()
-        summary = detail[-1] if detail else f"退出码 {completed.returncode}"
-        raise ScreenshotError(
-            f"{label}失败: {summary}（通常是没有「辅助功能」权限："
-            f"系统设置 → 隐私与安全性 → 辅助功能）"
-        )
-
-
-def _window_bounds(pid: int, window: _MacWindow) -> dict:
-    """读取窗口几何（Quartz 按窗口号精确读取，回退 System Events）。"""
-    bounds = None
-    if window.number is not None:
-        bounds = _quartz_bounds(window.number)
-    if bounds is None:
-        bounds = _osascript_bounds(pid)
-    if bounds is None:
-        bounds = (window.x, window.y, window.width, window.height)
-    x, y, width, height = bounds
-    return {"x": x, "y": y, "width": width, "height": height}
-
-
-def _quartz_bounds(number: int) -> tuple[int, int, int, int] | None:
-    """按 CGWindowNumber 读取窗口几何（无 pyobjc 返回 None）。"""
-    try:
-        import Quartz
-    except ImportError:
-        return None
-    try:
-        infos = Quartz.CGWindowListCopyWindowInfo(
-            Quartz.kCGWindowListOptionIncludingWindow, int(number)
-        )
-    except Exception as exc:  # pragma: no cover - 依赖系统框架
-        logger.debug("CGWindowListCopyWindowInfo(window) 失败: %s", exc)
-        return None
-    for info in infos or []:
-        try:
-            if int(info.get(Quartz.kCGWindowNumber, 0)) != int(number):
-                continue
-            bounds = info.get(Quartz.kCGWindowBounds) or {}
-            return (int(bounds.get("X", 0)), int(bounds.get("Y", 0)),
-                    int(bounds.get("Width", 0)), int(bounds.get("Height", 0)))
-        except (TypeError, ValueError) as exc:
-            logger.debug("窗口几何解析失败: %s", exc)
-    return None
-
-
 def _osascript_window(pids: list[int]) -> _MacWindow | None:
     """无 pyobjc 时用 osascript 探测「哪些 PID 有窗口」及其位置尺寸。"""
     for pid in pids:
@@ -585,6 +424,6 @@ def _run_checked(command: list[str]) -> None:
         raise ScreenshotError(f"screencapture 截图失败: {summary}")
 
 
-__all__ = ["MacOSBackend", "control_window", "find_platform_window",
+__all__ = ["MacOSBackend", "find_platform_window",
            "find_process_window", "list_windows", "select_macos_window",
            "to_window_info"]

@@ -1063,7 +1063,9 @@ class BashFunc(Func):
                     "危险命令（rm -rf / sudo / mkfs / dd 等）会被拒绝执行。"
                     "stdout/stderr 各最多保留 1000 行（超出保留尾部并标注截断）；"
                     f"前台超过 {cls._AUTO_BG_TIMEOUT} 秒未完成自动转后台（不终止进程），"
-                    "返回 task_id（bg-xxx），可用 bash_opt 继续 read/wait/kill；"
+                    "返回 task_id（bg-xxx）；转后台后可用 bash_opt 继续操作命令行"
+                    "（read/wait/kill/stdin，如 TUI 程序），也可操作 GUI 窗口"
+                    "（screenshot 截图、click/type 等键鼠输入）；"
                     "background=true 立即后台执行（任务无限运行）。"
                     "例：bash({\"command\": \"pytest -q\", \"background\": true})"
                 ),
@@ -1079,7 +1081,8 @@ class BashFunc(Func):
                         "background": {
                             "type": "boolean",
                             "description": (
-                                "true 立即后台执行并返回 task_id，默认 false"
+                                "true 立即后台执行并返回 task_id；转后台后可用 "
+                                "bash_opt 操作命令行与 GUI（截图/键鼠），默认 false"
                             ),
                             "default": False
                         }

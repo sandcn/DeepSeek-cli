@@ -1,119 +1,62 @@
 """
-bash_opt — 按 task_id 操作后台 bash 任务
+bash_opt — 按 task_id 操作后台 bash 任务或 GUI 窗口
 
 配合 bash 工具 background=True 模式使用。bash 后台启动后返回
-{"task_id": "bg-xxx", "status": "running"}，
-大模型可据此用 bash_opt 工具按 task_id 操作：
+{"task_id": "bg-xxx", "status": "running"}，大模型可据此用 bash_opt 工具
+按 task_id 操作：
 
 - op=read   读取后台命令**当前已产生**的全部输出并清空缓冲，立即返回（不等待完成）
-- op=wait   等待任务执行完成并获取结果（JSON：task_id/status/stdout/stderr/returncode；
-            超时同样返回 JSON：timeout=true / done=false / waited / hint，任务继续运行）
+- op=wait   等待任务执行完成并获取结果（JSON：task_id/status/stdout/stderr/
+            returncode；超时同样返回 JSON：timeout=true / done=false / waited /
+            hint，任务继续运行）
 - op=kill   杀死后台命令的所有进程树（进程组 + 全部递归后代），杀完后
             **校验**进程是否真正退出（僵尸视为已终止）；仍有存活则**自动
             补杀**（最多 3 轮尝试），返回信息报告校验结论与残留 PID
-- op=stdin  向后台命令的 stdin 发送文本输入（text 参数，newline 可选是否追加换行，
-            encoding 指定文本编码；缺省 **utf-8**——与 bash 工具为子进程统一设置
-            的 stdio 编码一致（包装脚本设置 Console Input/OutputEncoding 与
-            PYTHONIOENCODING / PYTHONUTF8，Python / Node / PowerShell 均按 UTF-8
-            读 stdin）。需要按系统 ANSI 代码页（中文 Windows = gbk）写入原生
-            控制台程序时显式传 encoding='gbk'）
+- op=stdin  向后台命令的 stdin 发送文本输入（text 参数，newline 可选是否追加
+            换行，encoding 指定文本编码；缺省 **utf-8**——与 bash 工具为子进程
+            统一设置的 stdio 编码一致）。需要按系统 ANSI 代码页（中文 Windows =
+            gbk）写入原生控制台程序时显式传 encoding='gbk'
 - op=close_stdin  关闭后台命令的 stdin（发送 EOF）：bash 任务统一在 PTY 中
-            运行，**没有真正的 EOF**——只是写入 EOT（ConPTY 为 \\x1a /
-            POSIX 为 \\x04）模拟按键，程序不一定会退出（实测 python REPL
-            收到 EOT 后继续运行）。依赖 stdin EOF 的命令请用 op=kill 结束
-            任务。**PTY 的 stdin 通道不会因此关闭**（EOT 只是一次按键），
-            之后仍可继续 op=stdin / op=keys
+            运行，**没有真正的 EOF**——只是写入 EOT（ConPTY 为 \x1a /
+            POSIX 为 \x04）模拟按键。依赖 stdin EOF 的命令请用 op=kill 结束
+            任务。**PTY 的 stdin 通道不会因此关闭**，之后仍可继续
+            op=stdin / op=keys
 - op=keys   向后台命令发送光标/键盘消息（自动路由：目标进程有 GUI 窗口时
             作为窗口级键盘消息注入该窗口，否则回退写入终端——跨平台
             ANSI/VT100 转义序列；支持 ctrl+c 等修饰键组合、esc/pageup 等
-            别名、单个字符与 f1-f24，repeat 可一次连按多次）。Ctrl+C 在
-            ConPTY 下对部分程序有效（实测可中断 Python 的 sleep），但不保证
-            中断所有程序；无响应时用 op=kill
+            别名、单个字符与 f1-f24）。无响应时用 op=kill
+
+典型 GUI 流程（先用 bash 后台启动程序，再用本工具操作）：
+
+1. ``bash({"command": "notepad.exe", "background": true})`` → 返回
+   ``{"task_id": "bg-xxx", "status": "running"}``。窗口创建有延迟，
+   screenshot / 输入 op 会自动等待窗口出现（约 5 秒）；
+2. ``bash_opt({"task_id": "bg-xxx", "op": "screenshot", "path": "shot.png"})``
+   → 用 ``read_image`` 查看界面，按截图左上角像素坐标定位控件；
+3. ``bash_opt({"task_id": "bg-xxx", "op": "click", "x": 120, "y": 80})`` /
+   ``bash_opt({"task_id": "bg-xxx", "op": "type", "text": "hello"})``
+   逐步操作；每次操作后可用 op=screenshot 截图复核；
+4. 结束：``bash_opt({"task_id": "bg-xxx", "op": "wait"})`` 取最终输出，
+   或 ``bash_opt({"task_id": "bg-xxx", "op": "kill"})`` 终止程序。
+
+GUI 能力只保留三类：**鼠标 / 光标操作、截图、键盘输入**。
+
 - op=screenshot  把后台命令（及其子进程）的窗口，或整个屏幕，截图保存为 PNG
                  （path 参数指定文件路径；可选 crop 指定只截取的像素区域，
-                 window 选择目标窗口，grid 叠加等距坐标参考线；
-                 screen=true（含字符串 'true'）/'primary'/序号 做整屏 / 多显示器
-                 截取（不需要进程句柄），element+margin 只截某个控件的区域）
-- op=windows     列出该进程树的全部窗口（句柄 / 标题 / 类名 / 位置尺寸 /
-                 Z 序 / 是否前台 / 是否主窗口），用于挑选目标窗口
-- op=window      控制被选窗口的状态与几何（window_action=activate / maximize /
-                 minimize / restore / close / move / resize / fit），
-                 配合 window 选择器与 x/y/width/height
-- op=move / hover / click / drag / scroll / key / type
+                 window 选择目标窗口；screen=true（含字符串 'true'）/
+                 'primary'/序号 做整屏 / 多显示器截取（不需要进程句柄））
+- op=move / hover / click / drag / scroll / key / type / release
                  向后台命令的 **GUI 窗口**注入鼠标 / 键盘 / 文本输入
-                 （window 选择目标窗口、settle 注入后等待、shot 注入后自动截图；
-                  鼠标按钮、双击、拖动、滚轮、组合键、任意 Unicode 文本；
-                  按键可分「按下 / 弹起 / 完整」阶段，见 phase 参数，
-                  并用 repeat 一次连按多次；hover 移动到目标点停留触发挥发性
-                  界面，move 另支持 dx/dy 相对当前光标偏移，click 另支持 hold
-                  长按与 interval 多击间隔，move 另支持 duration/steps 平滑移动）
-- op=sequence    一次调用按顺序执行多个动作（click / move / drag / scroll /
-                 key / type 与 wait / screenshot / window 步骤混排），
-                 减少往返、避免两次调用之间被抢焦点；on_error 决定遇错
-                 停止还是继续，可在整段前后自动截图比较变化
-- op=clipboard   读写系统剪贴板（clipboard_action=set / get / clear / append）；
-                 配合 type 的 via='clipboard'，把长文本 / 特殊字符（中文、
-                 emoji、多行）以「粘贴」方式可靠输入（游戏、Electron、
-                 远程桌面都接受）；粘贴后恢复原剪贴板内容前会留出片刻，
-                 避免目标程序（浏览器 / Electron）异步读剪贴板时拿到旧内容
-- op=wait_window 等待窗口**可用**（按 window 选择器，timeout 秒）；默认等到
-                 窗口可见且未最小化（能截图 / 能注入输入）才返回，避免启动
-                 初期拿到 visible=false 的窗口直接失败；确需操作隐藏 / 最小化
-                 窗口时传 allow_hidden=true
-- op=elements    列出窗口内的控件（名称 / 类型 / 类名 / 矩形 / 可用状态）；
-                 可用 element 参数（如 element='确定'）直接按控件名点击或
-                 输入，不必读图算像素（Windows 优先走 UI Automation，
-                 Chrome / Electron / Qt / WPF 等自绘界面也能枚举到无障碍
-                 节点；极少暴露元素时再回退截图 + 像素坐标，见 op=locate）
-- op=locate      在窗口截图里定位「局部图标」（template 模板匹配）或
-                 「文字」（query OCR），返回与输入 op 同源的坐标，可直接点击；
-                 适合没有可枚举控件的界面（游戏 / canvas / 图片按钮）
-- op=pixel       读取窗口截图像素颜色：mode=point 点取色、region 区域统计
-                 （均值 / 极值 / 主色）、find 查找目标颜色并按连通块返回候选
-                 位置；用于状态灯 / 进度条等无可枚举控件的判定
-- op=annotate    在截图上绘制矩形 / 十字 / 编号标签（可用 locate 结果复核），
-                 产出带标注的图；boxes / points / labels 描述标记
-- op=record      把一段操作序列（actions，与 sequence 同构）保存为命名宏
-- op=replay      回放命名宏（macro / path），times 可重复多次；重复性 GUI
-                 任务一次固化、随时重跑
-- op=release     释放按下的键与鼠标按钮（keys / buttons 可只释放指定目标）；
-                 清理 key/click 的 phase='down' 留下的悬空状态
+                 （window 选择目标窗口；鼠标按钮、双击、拖动、滚轮、组合键、
+                  任意 Unicode 文本；release 释放按下的键与鼠标按钮，清理
+                  长按留下的悬空状态）
 
-★ 无需 task_id 的 op：clipboard / record / release 与具体进程 / 窗口无关；
-  annotate 显式给 path（标注已有 PNG）、screenshot 用 screen=…（整屏 /
-  多显示器）时也可省略 task_id。其余 op 仍需要后台任务的进程句柄或窗口。
-
-★ 游戏操作增强（本工具对游戏场景的重点优化）：
-
-  - move 的 relative_event：发送**纯相对位移事件**做视角控制——第一人称 /
-    第三人称游戏读取的是相对位移，且不受游戏 ClipCursor（锁定光标到窗口
-    中心）影响；steps 拆分位移、interval 控制步间间隔；
-  - click 的 phase=down/up：把鼠标按下与弹起分离，实现「按住左键射击 /
-    拖框 / 按住右键瞄准」这类跨调用保持按键的操作；hold 一步完成长按；
-    count 上限放宽到 100（连点），interval 控制连点节奏；
-  - key 的 hold / interval：一步完成「按住某键 hold 秒」（持续移动 / 蓄力），
-    连发（repeat）可用 interval 自定义速率；
-  - hold_keys（任意鼠标 / 键盘动作通用）：动作期间按住任意键（如按住 W
-    同时点击、按住 Shift 跑动），比 modifiers 更通用（modifiers 仅限
-    修饰键）；必要时用 op=release 兜底释放，避免卡键；
-  - sequence / replay 期间自动开启「输入会话」：批量动作复用窗口定位与前台
-    确认，连续输入更跟手；
-  - screenshot 对 DirectX 独占全屏游戏：窗口自身 DC 拿不到画面时会自动从
-    桌面屏幕 DC 拷贝窗口区域，尽量截到真实游戏画面。
-
-★ 「一次调用把一组操作做完」的推荐组合：
-
-  - sequence + actions：点输入框 → 输入 → 回车 → 截图，一条调用完成；
-  - element + type：按控件名输入（先聚焦再输入，内部自动换算坐标）；
-  - type 的 via='clipboard'：长文本粘贴（比逐字符输入快且不掉字；目标程序
-    读取剪贴板较慢时配 restore_clipboard=false 更稳）；
-  - wait_for='change' / diff：操作后等界面真的变了再返回，确认生效。
-
-坐标语义（输入 op 与 sequence 通用）：x / y 除像素整数外，还支持语义值
-——'center' / 'middle'、'left' / 'right' / 'top' / 'bottom'、百分比 '50%'、
-偏移写法 'center+20' / 'center-20' / 'left+20' / 'right-10' / 'top+5' /
-'bottom-30'（基准 + 像素偏移，自动夹到窗口内）；语义值在注入时按窗口实际
-尺寸换算，窗口被缩放也不失准。
+坐标语义（输入 op 通用）：x / y 除像素整数外，还支持语义值——'center' /
+'middle'、'left' / 'right' / 'top' / 'bottom'、百分比 '50%'、偏移写法
+'center+20' / 'center-20' / 'left+20' / 'right-10' / 'top+5' / 'bottom-30'
+（基准 + 像素偏移，自动夹到窗口内）；语义值在注入时按窗口实际尺寸换算，
+窗口被缩放也不失准。坐标原点为**窗口截图左上角**（与 op=screenshot 产物
+一致，便于「先截图看清界面，再按像素点操作」）。
 
 read 为**增量读取**：后台任务运行期间的每一行输出都会累积到内部缓冲，
 每次 read 取走当前全部累积内容并清空，适合实时观察长时任务（编译/下载/
@@ -126,77 +69,22 @@ read 属**只读观察**：不接管任务生命周期——任务完成后的�
 撑爆上下文。
 
 需要**接管任务**（不再由对话轮次自动等待 / 回灌结果）的 op 只有：
-stdin / close_stdin / keys / kill / sequence / replay 与窗口输入（click 等）
-——它们要么与任务交互、要么显式终止、要么是批量操作，此后须由模型主动
-wait 取最终输出。
+stdin / close_stdin / keys / kill 与窗口输入（click 等）——它们要么与任务
+交互、要么显式终止、要么向 GUI 注入输入，此后须由模型主动 wait 取最终输出。
 
-截图（screenshot）适用于后台任务运行的是**图形界面程序**（游戏、GUI 应用、
-渲染预览等）的场景：按 task_id 定位该命令产生的进程树，取其可见窗口像素
-写盘（Windows 用 PrintWindow/BitBlt；Linux 用 ImageMagick import/xwd；
-macOS 用 screencapture）。默认输出整窗原始像素；需要「指定大小」时可传
-crop='x,y,width,height' 只截取窗口内的像素区域（以整窗截图左上角为原点，
-区域越界报错并提示窗口实际尺寸）。产物为 PNG，可用 read_image 查看画面。
-结果同时给出 ``window_summary``（命中的窗口一行摘要，``#N`` 编号与选择器
-一致）、``window_x`` / ``window_y``（产物左上角对应的屏幕坐标）与
-``window_rect``（窗口外框屏幕矩形），便于把截图像素换算成屏幕坐标 / 输入
-坐标，或直接喂给 ``op=window`` 的 move / fit。
-纯命令行进程没有窗口，此时返回可读的错误说明。
-
-多窗口选择（window 参数，截图 / 输入 op / 窗口控制通用）：一个 GUI 程序往往
-同时存在多个顶层窗口（主窗口、弹出菜单、下拉浮层、文件对话框），因此
-screenshot / 输入 op 都接受 window 选择器——'main'（缺省主窗口，可见性优先）、
+多窗口选择（window 参数，截图 / 输入 op 通用）：一个 GUI 程序往往同时存在
+多个顶层窗口（主窗口、弹出菜单、下拉浮层、文件对话框），因此 screenshot /
+输入 op 都接受 window 选择器——'main'（缺省主窗口，可见性优先）、
 'active'（前台窗口）、'#N'（**可操作窗口**按 Z 序第 N 个，1 = 最靠前）、
 'handle:0x…'、'title:子串'、'class:子串'、'pid:1234'、'popup'（无标题弹层）、
-'dialog'（对话框）。op=windows 先给出窗口清单（含 selectable / z_index），再把
-同一个选择器用于截图或输入，即可精确操作这些独立顶层窗口（旧版只能操作面积
-最大的主窗口）。不可见（visible=false）或已最小化的窗口不会被 'main' / '#N' /
-'popup' / 'dialog' 选中：它们既截不到有效像素（产物全黑），也收不到鼠标键盘
-输入（Chrome 的 Chrome_WidgetWin_0 这类隐藏辅助窗口尤其容易与真实弹层混淆）；
-确实需要操作这类窗口时用 'handle:0x…' 显式指定——截图会对「已最小化 / 不可见」
-的目标直接报错并提示先 restore，不会产出与界面无关的占位小图。
+'dialog'（对话框）。不可见（visible=false）或已最小化的窗口不会被 'main' /
+'#N' / 'popup' / 'dialog' 选中。
 
-弹层（右键菜单 / 下拉浮层 / ``WS_EX_TOOLWINDOW`` 弹出窗口）**不参与前台
-切换**，``SetForegroundWindow`` 对它们无效；输入 op 因此按「该窗口**所属
-应用**是否在前台」判定可用通道——目标窗口自身、其属主窗口、或同进程树内的
-任一窗口是前台，就用合成输入投递：鼠标事件按屏幕坐标命中光标下的真实窗口
-（弹层浮在最上层，这正是它被操作的方式），键盘事件交给同一应用的前台窗口
-（浏览器的渲染进程会正常处理，如关闭下拉浮层），结果里的 ``foreground_window``
-标注实际接收窗口。``op=windows`` 清单里的 ``tool_window`` / ``client_area``
-两个字段可直接预判：``client_area=false`` 的窗口没有可换算的客户区，不能用
-``method='message'`` 投递鼠标坐标，去掉 method（默认 auto）走合成输入即可。
+截图结果 JSON 附带被截窗口的句柄 / 标题 / 候选窗口总数，便于确认选对了窗口。
 
-截图增强：grid 参数（如 grid=50）在产物上叠加等距参考线，读图后可精确换算
-像素坐标（省略 = 不叠加；网格步长传 0 表示按画面尺寸自动选择）；结果 JSON
-附带被截窗口的句柄 / 标题 / 候选窗口总数，便于确认选对了窗口。命中的窗口若
-已最小化或不可见，截图会直接报错并提示先 restore（最小化窗口没有可渲染的
-客户区，硬截只会得到与界面无关的占位小图）。
-
-窗口输入（move/click/drag/scroll/key/type）同样按 task_id 定位该命令进程树
-的可见窗口，坐标以**窗口截图左上角**为原点（与 op=screenshot 产物一致，
-便于「先截图看清界面，再按像素点操作」）：click 支持左/右/中键与双击，
-drag 支持按住左/右/中键拖拽（带轨迹插值），scroll 支持上下左右滚动，
-key 支持 ctrl+shift+s 之类的组合键与「按下 / 弹起 / 完整」阶段（phase：
-press / down / up，各平台分别独立发送 down 与 up 消息），repeat 参数可
-一次连按 N 次（如 repeat=8 连按 F12），type 逐字符输入任意 Unicode 文本
-（每个字符发送配对的按下与弹起）。
-Windows 用 SendInput（必要时回退 PostMessage 投递）、Linux 用 xdotool、
-macOS 用 Quartz/cliclick + osascript；平台工具缺失时返回带安装提示的错误。
-Windows 的键盘 / 文本注入会**多次重试取得前台**、注入后复核焦点并在被
-抢走时重新激活重发，SendInput 完全未投递时也会短期重试；若最终仍走
-PostMessage 回退通道（对 Chrome / Electron / 游戏等自绘界面常无效），
-结果里会附带 warning 说明。
-
-键盘消息跨平台说明：``op=keys`` 自动按被操作程序的形态选通道——目标进程
-（含其子进程）**有 GUI 窗口**时，按键作为窗口级键盘消息注入该窗口（与
-``op=key`` 同一套合成事件）；**没有 GUI 窗口**时回退写入终端（ANSI/VT100
-序列）。VT100/ANSI 转义序列是终端输入的标准语义，被 Linux/macOS/
-Android(Termux) 的 PTY 与 Windows 的 ConPTY/Windows Terminal 统一接受；
-按键名（如 up/down/ctrl_c/ctrl+c/esc/pageup）映射为对应字节序列，经 PTY
-master 或 stdin 管道写入后台进程，不依赖平台特定 API。键名规则在两种通道
-下共用同一套（别名与组合键语法一致）；两者都不可用（无 GUI 窗口且无终端
-写入句柄）时返回错误说明。需要**精确控制**通道时：``op=key`` 面向
-**GUI 窗口**（强制要求窗口存在，无窗口报错），终端序列亦可直接用
-``op=stdin`` 写入。
+窗口输入同样按 task_id 定位该命令进程树的可见窗口：click 支持左/右/中键与
+双击，drag 支持按住左/右/中键拖拽（带轨迹插值），scroll 支持上下左右滚动，
+key 支持 ctrl+shift+s 之类的组合键，type 逐字符输入任意 Unicode 文本。
 """
 
 from __future__ import annotations
@@ -206,9 +94,7 @@ import json
 import logging
 import math
 import os
-import tempfile
 import time
-from contextlib import asynccontextmanager
 
 from .base import Func
 from .bash import READ_BUFFER_DROPPED_KEY, _remember_echo_lines, kill_process_tree
@@ -224,109 +110,22 @@ from ._screenshot import (
     SelectorError,
     capture_process_window,
     capture_screen,
-    control_process_window,
-    describe_elements,
-    describe_windows,
-    filter_elements,
-    indexed_summary,
     list_monitors,
-    list_process_elements,
-    list_process_windows,
-    parse_control_request,
-    pick_window,
     resolve_monitor,
-    window_geometry,
-    window_hint,
-)
-from ._screenshot.diff import (
-    DEFAULT_TOLERANCE,
-    compare_png_files,
-)
-from ._screenshot.imagematch import (
-    DEFAULT_MATCH_TOLERANCE,
-    DEFAULT_MAX_RESULTS,
-    ImageMatchError,
-    match_template,
-)
-from ._screenshot.ocr import (
-    OcrError,
-    find_text_ex as find_ocr_text_ex,
-    recognize as recognize_text,
-)
-from ._screenshot.png_decode import DecodedImage, decode_png_file
-from ._screenshot.png import read_png_size
-from ._screenshot.color import (
-    DEFAULT_COLOR_TOLERANCE,
-    DEFAULT_MAX_REGIONS,
-    MAX_REGIONS_LIMIT,
-    ColorError,
-    RGB,
-    find_color_regions,
-    parse_color,
-    pixel_at,
-    region_stats,
-    summarize as summarize_color,
-)
-from ._screenshot.annotate import (
-    DEFAULT_ANNOTATE_COLOR,
-    DEFAULT_TEXT_SCALE,
-    DEFAULT_THICKNESS as DEFAULT_ANNOTATE_THICKNESS,
-    MAX_MARKS,
-    AnnotateError,
-    annotate_png_file,
-)
-from ._screenshot.transform import crop_rgb
-from ._screenshot.elements import (
-    DEFAULT_ELEMENT_LIMIT,
-    ElementError,
-    ElementInfo,
-    match_element as match_window_element,
-)
-from ._screenshot.windows import (
-    WINDOW_CONTROL_ACTIONS,
-    WINDOW_MEMORY_ACTIONS,
-    is_selectable,
-    normalize_control_action,
-)
-from ._clipboard import (
-    ClipboardError,
-    read_clipboard_text,
-    write_clipboard_text,
 )
 from ._window_input import (
-    DEFAULT_KEY_REPEAT,
     INPUT_OPS,
-    MAX_KEY_REPEAT,
     ActionError,
     InputError,
     NoWindowError as InputNoWindowError,
-    SequenceError,
-    SequenceStep,
-    begin_input_session,
     build_action,
-    end_input_session,
-    parse_sequence,
     probe_window,
-    resolve_backend as resolve_input_backend,
     send_window_input,
-    wait_seconds,
 )
 from ._terminal_keys import SUPPORTED_TERMINAL_KEYS, parse_terminal_key
-from ._window_input.action import parse_coordinate
-from ._window_input.macro import (
-    DEFAULT_MACRO_DIR,
-    Macro,
-    MacroError,
-    list_macros as list_saved_macros,
-    load_macro,
-    save_macro,
-)
 from ..core.base_agent import _parse_bash_result_fields
 
 logger = logging.getLogger(__name__)
-
-#: 参数「未显式传入」的哨兵（与显式 None / 空值区分，供内部方法复用参数）
-_UNSET: object = object()
 
 def default_stdin_encoding() -> str:
     """``op=stdin`` 的默认文本编码：跟随 bash 工具的 stdio 约定（``utf-8``）。
@@ -448,38 +247,11 @@ def _format_position(arguments: dict, x_key: str = "x", y_key: str = "y") -> str
     return f"@{x},{y}"
 
 
-def _box_in_crop(box, crop) -> bool:
-    """文本框是否与裁剪区域相交（OCR 结果按 crop 过滤时用）。"""
-    return not (box.left + box.width <= crop.x or box.left >= crop.x + crop.width
-                or box.top + box.height <= crop.y or box.top >= crop.y + crop.height)
-
-
-def _attach_screen_coords(payload: dict, frame) -> None:
-    """给 ``op=pixel`` 结果补上屏幕坐标（就地修改）。
-
-    点取色结果的 ``x`` / ``y``、颜色查找各块的 ``x`` / ``y`` / ``center_x`` /
-    ``center_y`` 都是窗口截图坐标；这里按 frame 原点换算并写入 ``screen_*``
-    字段，便于把坐标直接用给其它工具或系统级操作。
-    """
-    if isinstance(payload.get("x"), int) and isinstance(payload.get("y"), int):
-        payload["screen_x"] = payload["x"] + frame.screen_x
-        payload["screen_y"] = payload["y"] + frame.screen_y
-    for region in payload.get("regions", []) or []:
-        if not isinstance(region, dict):
-            continue
-        for x_key, y_key in (("x", "y"), ("center_x", "center_y")):
-            if isinstance(region.get(x_key), int) and isinstance(region.get(y_key), int):
-                region["screen_" + x_key] = region[x_key] + frame.screen_x
-                region["screen_" + y_key] = region[y_key] + frame.screen_y
-
-
 class BashOptFunc(Func):
     """按 task_id 操作后台 bash 任务（bash background=True 启动）。"""
 
     name = "bash_opt"
     _DEFAULT_WAIT_TIMEOUT: int = 300
-    #: 窗口目录 / 窗口控制 op（非输入注入，单独分派）
-    _WINDOW_OPS: tuple[str, ...] = ("windows", "window")
     #: 截图「等待窗口出现」的总时长（秒）：GUI 程序启动后窗口创建有延迟，
     #: 首轮未找到窗口时按 _SCREENSHOT_RETRY_INTERVAL 轮询重试。
     _SCREENSHOT_WAIT_SECONDS: float = 5.0
@@ -493,95 +265,6 @@ class BashOptFunc(Func):
     _INPUT_RETRY_INTERVAL: float = 1.0
     #: 单轮输入注入的硬超时（秒）——注入调用阻塞时兜底
     _INPUT_TIMEOUT: float = 30.0
-    #: 注入后自动截图（shot）时的默认等待（秒）——给界面留出刷新时间
-    _DEFAULT_SHOT_SETTLE: float = 0.2
-    #: 注入后等待（settle）的上限（秒）——避免误传超大值长期挂住
-    _MAX_SETTLE_SECONDS: float = 30.0
-    #: shot=true 时自动截图的输出目录（相对当前工作目录）
-    _SHOT_AUTO_DIR: str = "bash_opt_shots"
-    #: 连按（repeat）时终端序列的写入间隔（秒）——避免被程序合并成一次
-    _TERMINAL_KEY_REPEAT_INTERVAL: float = 0.05
-    #: 序列（sequence）默认的「遇错」策略：stop 停止 / continue 继续
-    _DEFAULT_ON_ERROR: str = "stop"
-    #: on_error 取值
-    _ON_ERROR_MODES: tuple[str, ...] = ("stop", "continue")
-    #: type 的输入方式：typing 逐字符注入 / clipboard 走系统剪贴板粘贴
-    _TYPE_VIAS: tuple[str, ...] = ("typing", "clipboard")
-    #: 剪贴板粘贴组合键（默认 ctrl+v；macOS 为 command+v）
-    _PASTE_KEYS: dict[str, str] = {
-        "windows": "ctrl+v", "macos": "meta+v", "x11": "ctrl+v",
-    }
-    #: 剪贴板粘贴组合键的兜底（平台无法判定时）
-    _DEFAULT_PASTE_KEY: str = "ctrl+v"
-    #: 剪贴板粘贴后、恢复原剪贴板内容前的等待（秒）。
-    #: 浏览器 / Electron / 远程桌面等目标的「粘贴」是异步消息处理（收到
-    #: 粘贴键后才去读剪贴板），恢复太快会让它们读到**旧内容**（表现为
-    #: 「粘出来的还是上一次的剪贴板文本」）；这里留出读取窗口再恢复。
-    _CLIPBOARD_RESTORE_DELAY: float = 0.35
-    #: clipboard_action 取值（缺省按是否提供 text 推断）
-    _CLIPBOARD_ACTIONS: tuple[str, ...] = ("set", "get", "clear", "append")
-    #: clipboard 读取返回的字符数上限（防御超大剪贴板内容撑爆上下文）
-    _CLIPBOARD_MAX_CHARS: int = 100_000
-    #: wait_window 默认超时（秒）——未显式传 timeout 时使用
-    _WAIT_WINDOW_TIMEOUT: float = 15.0
-    #: wait_window 轮询间隔（秒）
-    _WAIT_WINDOW_INTERVAL: float = 0.5
-    #: wait_for（等待界面变化 / 稳定）默认超时（秒）
-    _WAIT_FOR_TIMEOUT: float = 5.0
-    #: wait_for 轮询间隔（秒）
-    _WAIT_FOR_INTERVAL: float = 0.25
-    #: wait_for 轮询间隔的放大系数（每轮乘以此值）
-    _WAIT_FOR_BACKOFF: float = 1.5
-    #: wait_for 轮询间隔上限（秒）——自适应退避，减少长时间等待时的截图次数
-    _WAIT_FOR_MAX_INTERVAL: float = 1.0
-    #: wait_for='stable' 允许忽略的微小变化比例（变化像素占比不超过该值时
-    #: 仍判为「画面已稳定」）：带输入光标的界面会因光标闪烁永远等不到
-    #: 「逐像素一致」，这类噪声（光标 / 时钟秒数）不应让稳定判定失败。
-    _STABLE_CHANGE_RATIO: float = 0.001
-    #: 界面比较的默认颜色容差（每通道）
-    _DIFF_TOLERANCE: int = DEFAULT_TOLERANCE
-    #: 快捷键探针：注入后**能可靠检测效果**的组合键。
-    #: Ctrl+A（全选）会改变选中高亮 → 用截图差异判断；Ctrl+C（复制）会改变
-    #: 剪贴板 → 用剪贴板前后比较判断。未生效时返回 warning 并给出替代方案
-    #: （实测部分 WinForms TextBox 收到 Ctrl+A 的 keydown/keyup 却不全选）。
-    _SHORTCUT_SCREEN_PROBES: frozenset[str] = frozenset({"ctrl+a"})
-    _SHORTCUT_CLIPBOARD_PROBES: frozenset[str] = frozenset({"ctrl+c"})
-    #: 输入动作后等待界面变化的判定模式
-    _WAIT_FOR_MODES: tuple[str, ...] = ("change", "stable")
-    #: elements 默认返回的控件条数上限
-    _DEFAULT_ELEMENT_LIMIT: int = DEFAULT_ELEMENT_LIMIT
-    #: elements 单次枚举的最大条数（防止极端界面输出过长）
-    _MAX_ELEMENT_LIMIT: int = 2000
-    #: op=locate 图像匹配的默认容差（每像素平均通道差）
-    _LOCATE_TOLERANCE: int = DEFAULT_MATCH_TOLERANCE
-    #: op=locate 返回结果条数上限
-    _MAX_LOCATE_RESULTS: int = 50
-    #: op=locate 模板多尺度搜索的步数上限
-    _MAX_LOCATE_SCALE_STEPS: int = 21
-    #: op=locate 未命中时附带的识别文字样本条数上限（便于判断 OCR 识别偏差）
-    _LOCATE_DIAGNOSTIC_TEXTS: int = 40
-    #: op=pixel 的取色模式（point 点取色 / region 区域统计 / find 颜色查找）
-    _PIXEL_MODES: tuple[str, ...] = ("point", "region", "find")
-    #: op=pixel 缺省模式
-    _DEFAULT_PIXEL_MODE: str = "point"
-    #: op=pixel 颜色查找返回的连通块数上限
-    _MAX_PIXEL_REGIONS: int = MAX_REGIONS_LIMIT
-    #: op=pixel 颜色查找默认连通块数
-    _DEFAULT_PIXEL_REGIONS: int = DEFAULT_MAX_REGIONS
-    #: op=annotate 默认标注颜色（RGB）
-    _ANNOTATE_COLOR: tuple[int, int, int] = DEFAULT_ANNOTATE_COLOR
-    #: op=annotate 默认字号放大倍率
-    _ANNOTATE_TEXT_SCALE: int = DEFAULT_TEXT_SCALE
-    #: op=annotate 默认边框线宽
-    _ANNOTATE_THICKNESS: int = DEFAULT_ANNOTATE_THICKNESS
-    #: 单次标注的最大标记数
-    _MAX_ANNOTATE_MARKS: int = MAX_MARKS
-    #: 宏（record / replay）默认存放目录
-    _MACRO_DIR: str = DEFAULT_MACRO_DIR
-    #: op=replay 默认重复次数
-    _DEFAULT_REPLAY_TIMES: int = 1
-    #: op=replay 重复次数上限
-    _MAX_REPLAY_TIMES: int = 20
     #: op=read 单次返回的字符上限（保留尾部最新内容）
     #: 长时任务的累积输出可能极大，原样返回会撑爆模型上下文；这里在返回时
     #: 截断并明确标注（内存侧的缓冲上限见 ``bash._READ_BUFFER_MAX_CHARS``）。
@@ -597,25 +280,22 @@ class BashOptFunc(Func):
     #: ``_process_output.CHILD_STDIO_ENCODING``）。
     _DEFAULT_STDIN_ENCODING: str = CHILD_STDIO_ENCODING
     #: 由 bash_opt **接管生命周期**的 op：这些操作要么输入交互（stdin /
-    #: close_stdin / keys / 窗口输入）、要么显式终止任务（kill）、要么是批量
-    #: 操作（sequence / replay），任务不再由对话轮次自动等待与回灌结果。
-    #: ★ 只读观察型 op（read / windows / window / elements / wait_window /
-    #: clipboard / screenshot / locate / pixel / annotate / record）**不接管**：
-    #: 否则模型「read 看一眼进度」就会让任务完成结果再也回灌不到对话
-    #: （被 _collect_done_background_messages 静默清理）——见模块行为说明。
-    #: ★ release 也从集合中排除：它释放的是**全局**按下的键 / 鼠标按钮
-    #: （清理 phase='down' 的悬空状态），与后台任务生命周期无关；若照旧
-    #: 接管，一次 release 就会让任务完成结果不再自动回灌（静默丢失）。
+    #: close_stdin / keys / 窗口输入）、要么显式终止任务（kill），任务不再由
+    #: 对话轮次自动等待与回灌结果。
+    #: ★ 只读观察型 op（read / screenshot）**不接管**：否则模型「read 看一眼
+    #: 进度」就会让任务完成结果再也回灌不到对话（被
+    #: _collect_done_background_messages 静默清理）——见模块行为说明。
+    #: ★ release 也从集合中排除：它释放的是**全局**按下的键 / 鼠标按钮，
+    #: 与后台任务生命周期无关；若照旧接管，一次 release 就会让任务完成结果
+    #: 不再自动回灌（静默丢失）。
     _MANAGED_OPS: tuple[str, ...] = (
-        "stdin", "close_stdin", "keys", "kill", "sequence", "replay",
+        "stdin", "close_stdin", "keys", "kill",
         *(op for op in INPUT_OPS if op != "release"),
     )
     #: 与具体进程 / 窗口无关、**无需 task_id** 即可执行的 op（其余 op 仍需要
-    #: 后台任务的进程句柄 / 窗口）。annotate / screenshot 的条件形态见
+    #: 后台任务的进程句柄 / 窗口）。screenshot 的整屏形态见
     #: :meth:`_can_run_without_task`。
-    _TASKLESS_OPS: tuple[str, ...] = ("clipboard", "record", "release")
-    #: op=windows 单次返回的窗口清单上限（超出时截断并在结果中提示）
-    _MAX_WINDOW_LIST: int = 200
+    _TASKLESS_OPS: tuple[str, ...] = ("release",)
     #: 已结束后台任务的记忆条数（FIFO）——供再次操作同一 task_id 时给出
     #: 「已被 wait 取走结果 / 已被 kill 终止」这类精确提示，而不是误导性的
     #: 「任务不存在（请先用 bash 启动）」。
@@ -652,99 +332,17 @@ class BashOptFunc(Func):
             window = arguments.get("window")
             if window:
                 extra = f"{extra} window={window}" if extra else f"window={window}"
-            grid = arguments.get("grid")
-            if grid:
-                extra = f"{extra} grid={grid}" if extra else f"grid={grid}"
             screen = arguments.get("screen")
             if screen:
                 extra = f"{extra} screen={screen}" if extra else f"screen={screen}"
-            element = arguments.get("element")
-            if element:
-                extra = f"{extra} element={element}" if extra else f"element={element}"
         elif op in INPUT_OPS:
             extra = cls._input_display(op, arguments)
-            element = arguments.get("element")
-            if element:
-                extra = f"element={element}" if not extra else f"element={element} {extra}"
             window = arguments.get("window")
             if window:
                 extra = f"{extra} window={window}" if extra else f"window={window}"
-            if arguments.get("shot"):
-                extra = f"{extra} shot" if extra else "shot"
-        elif op == "window":
-            action = str(arguments.get("window_action") or "")
-            window = arguments.get("window")
-            extra = f"{action} window={window}" if window else action
-        elif op == "windows":
-            extra = "窗口清单"
-        elif op == "elements":
-            selector = arguments.get("element")
-            extra = f"筛选={selector}" if selector else "控件清单"
-            window = arguments.get("window")
-            if window:
-                extra = f"{extra} window={window}"
-        elif op == "wait_window":
-            window = arguments.get("window")
-            extra = f"等待窗口 {window}" if window else "等待窗口 main"
-        elif op == "locate":
-            if arguments.get("template"):
-                extra = f"图像 {arguments.get('template')}"
-            else:
-                extra = f"文字 {arguments.get('query') or arguments.get('text') or ''}"
-            window = arguments.get("window")
-            if window:
-                extra = f"{extra} window={window}"
-        elif op == "clipboard":
-            action = str(arguments.get("clipboard_action") or "")
-            if not action:
-                action = "set" if arguments.get("text") is not None else "get"
-            extra = action
-        elif op == "sequence":
-            actions = arguments.get("actions")
-            count = len(actions) if isinstance(actions, (list, tuple)) else 0
-            extra = f"{count} 步"
-            window = arguments.get("window")
-            if window:
-                extra = f"{extra} window={window}"
-        elif op == "pixel":
-            parts = [str(arguments.get("mode") or "point")]
-            if arguments.get("x") is not None or arguments.get("y") is not None:
-                parts.append(_format_position(arguments))
-            region = arguments.get("region")
-            if region:
-                parts.append(f"region={region}")
-            color = arguments.get("color")
-            if color:
-                parts.append(f"color={color}")
-            extra = " ".join(parts)
-        elif op == "annotate":
-            boxes = arguments.get("boxes")
-            points = arguments.get("points")
-            box_count = len(boxes) if isinstance(boxes, (list, tuple)) else 0
-            point_count = len(points) if isinstance(points, (list, tuple)) else 0
-            extra = f"{box_count}框 {point_count}点"
-            color = arguments.get("color")
-            if color:
-                extra = f"{extra} color={color}"
-            grid = arguments.get("grid")
-            if grid:
-                extra = f"{extra} grid={grid}"
-            output = arguments.get("output")
-            if output:
-                extra = f"{extra} -> {output}"
-        elif op in ("record", "replay"):
-            macro = arguments.get("macro") or arguments.get("path") or ""
-            extra = str(macro)
-            if op == "record":
-                actions = arguments.get("actions")
-                count = len(actions) if isinstance(actions, (list, tuple)) else 0
-                extra = f"{extra} {count} 步" if extra else f"{count} 步"
-                if arguments.get("append"):
-                    extra = f"{extra} append"
-            else:
-                times = arguments.get("times")
-                if times not in (None, 1, "1"):
-                    extra = f"{extra} x{times}" if extra else f"x{times}"
+            path = arguments.get("path")
+            if path:
+                extra = f"{extra} shot={path}" if extra else f"shot={path}"
         display = f"{op} {task_id}"
         if extra:
             display += f" {cls._sanitize_display(extra)}"
@@ -756,59 +354,20 @@ class BashOptFunc(Func):
         if op == "type":
             return str(arguments.get("text", ""))
         if op == "key":
-            label = str(arguments.get("key", ""))
-            phase = str(arguments.get("phase") or "press").strip().lower()
-            if phase in ("down", "up"):
-                label = f"{label} {phase}"
-            hold = arguments.get("hold")
-            if hold not in (None, 0, "0", 0.0, ""):
-                label += f" hold={hold}s"
-            repeat = arguments.get("repeat")
-            if repeat not in (None, 1, "1"):
-                label += f" x{repeat}"
-            return label
+            return str(arguments.get("key", ""))
         if op == "release":
-            keys = arguments.get("keys")
-            buttons = arguments.get("buttons")
-            parts = []
-            if keys:
-                parts.append("keys=" + ("/".join(keys) if isinstance(
-                    keys, (list, tuple)) else str(keys)))
-            if buttons:
-                parts.append("buttons=" + ("/".join(buttons) if isinstance(
-                    buttons, (list, tuple)) else str(buttons)))
-            return " ".join(parts) or "全部"
+            return "全部"
         if op == "click":
             button = str(arguments.get("button") or "left")
             count = arguments.get("count")
             label = f"{button}"
             if count not in (None, 1, "1"):
                 label += f"x{count}"
-            phase = str(arguments.get("phase") or "press").strip().lower()
-            if phase in ("down", "up"):
-                label += f" {phase}"
-            hold = arguments.get("hold")
-            if hold not in (None, 0, "0", 0.0, ""):
-                label += f" hold={hold}s"
             return f"{label} {_format_position(arguments)}"
         if op == "hover":
-            dwell = arguments.get("dwell")
-            suffix = f" dwell={dwell}s" if dwell not in (None, "") else ""
-            return f"{_format_position(arguments)}{suffix}"
+            return _format_position(arguments)
         if op == "move":
-            if arguments.get("dx") is not None or arguments.get("dy") is not None:
-                label = f"rel dx={arguments.get('dx') or 0} dy={arguments.get('dy') or 0}"
-                if arguments.get("relative_event") in (True, "true", "1", 1):
-                    label += " event"
-            else:
-                label = _format_position(arguments)
-            steps = arguments.get("steps")
-            duration = arguments.get("duration")
-            if steps not in (None, 1, "1"):
-                label += f" smooth={steps}"
-            elif duration not in (None, 0, "0", 0.0, ""):
-                label += f" smooth={duration}s"
-            return label
+            return _format_position(arguments)
         if op == "scroll":
             direction = str(arguments.get("direction") or "down")
             amount = arguments.get("amount") or 3
@@ -826,41 +385,16 @@ class BashOptFunc(Func):
                  crop: str | None = None,
                  x=None, y=None, to_x=None, to_y=None,
                  from_x=None, from_y=None,
-                 dx=None, dy=None, dwell=None, hold=None, interval=None,
-                 button: str | None = None, count=None, modifiers=None,
+                 button: str | None = None, count=None,
                  direction: str | None = None, amount=None,
-                 duration=None, steps=None, method: str | None = None,
-                 phase: str | None = None, repeat=None,
-                 relative_event=None, hold_keys=None,
-                 keys=None, buttons=None,
-                 window: str | None = None, grid=None,
-                 shot=None, settle=None,
-                 window_action: str | None = None,
-                 width=None, height=None,
-                 element: str | None = None,
-                 diff=None, tolerance=None,
-                 wait_for=None, wait_timeout=None,
-                 actions=None, on_error: str | None = None,
-                 clipboard_action: str | None = None,
-                 via: str | None = None, paste_key: str | None = None,
-                 restore_clipboard=None, max_elements=None,
-                 template: str | None = None, query: str | None = None,
-                 ocr_lang: str | None = None,
-                 max_results=None, min_scale=None, max_scale=None,
-                 scale_steps=None,
-                 screen=None, margin=None,
-                 allow_hidden=None,
-                 color=None, region=None, mode=None, output=None,
-                 boxes=None, points=None, labels=None,
-                 macro=None, times=None, append=None,
-                 min_pixels=None, max_regions=None):
+                 window: str | None = None, screen=None):
         super().__init__()
         # task_id 归一化（防御 None/缺失）：模型传 {"task_id": null} 时
         # from_args 把 None 传入（默认值不生效），后续 startswith 崩溃。
         self.task_id = task_id or ""
         self.op = op
-        # timeout 仅对 wait / wait_window 生效：省略/None → 按 op 取默认；
-        # <=0 → 无限等待。使用 float 保留小数（如 0.5 秒短超时）。
+        # timeout 仅对 wait 生效：省略/None → 按 op 取默认；<=0 → 无限等待。
+        # 使用 float 保留小数（如 0.5 秒短超时）。
         self.timeout_given = timeout is not None
         if timeout is None:
             self.timeout = self._DEFAULT_WAIT_TIMEOUT
@@ -896,96 +430,14 @@ class BashOptFunc(Func):
         self.to_y = to_y
         self.from_x = from_x
         self.from_y = from_y
-        # 鼠标相对移动偏移（仅 move）：相对当前光标屏幕位置平移
-        self.dx = dx
-        self.dy = dy
-        # 悬停停留时长（仅 hover）
-        self.dwell = dwell
-        # 长按时长 / 多次点击间隔（仅 click）
-        self.hold = hold
-        self.interval = interval
         self.button = button
         self.count = count
-        self.modifiers = modifiers
         self.direction = direction
         self.amount = amount
-        self.duration = duration
-        self.steps = steps
-        self.method = method
-        # 按键阶段（key / click 生效）：press=按下并弹起（默认）/ down=只按下 / up=只弹起
-        self.phase = phase
-        # 按键连按次数（仅 key / keys 生效，phase=press 时）：一次调用连按 N 次
-        self.repeat = repeat
-        # 鼠标相对位移事件（仅 move 的 dx/dy 生效）：不发绝对定位，只发相对位移，
-        # 适合游戏视角控制（不受光标锁定影响）
-        self.relative_event = relative_event
-        # 动作期间额外按住的任意键（游戏组合键，如 ['w', 'shift']）
-        self.hold_keys = hold_keys
-        # op=release 的目标（留空 = 释放全部已按下的键 / 鼠标按钮）
-        self.keys = keys
-        self.buttons = buttons
-        # ── 目标窗口选择（screenshot / 输入 op / window 通用）──
+        # ── 目标窗口选择（screenshot / 输入 op 通用）──
         self.window = window
-        # ── 截图增强 ──
-        self.grid = grid          # 坐标网格步长（0 = 自动；None/0 = 不画）
-        self.shot = shot          # 输入 op 注入后自动截图（路径或 True）
-        self.settle = settle      # 注入后等待秒数（None = 按 op 取默认）
-        # ── 窗口控制（op=window）──
-        self.window_action = window_action
-        self.width = width
-        self.height = height
-        # ── 控件定位（输入 op 的 element 参数）──
-        self.element = element
-        # ── 结果确认（输入动作后比较截图 / 等待界面变化）──
-        self.diff = diff                # true = 注入前后自动比较截图差异
-        self.tolerance = tolerance      # 比较容差（每通道，缺省 _DIFF_TOLERANCE）
-        self.wait_for = wait_for        # 'change' / 'stable' / 秒数
-        self.wait_timeout = wait_timeout  # wait_for 超时（秒）
-        # ── 动作序列（op=sequence）──
-        self.actions = actions
-        self.on_error = on_error        # stop / continue（缺省 stop）
-        # ── 剪贴板（op=clipboard / type via='clipboard'）──
-        self.clipboard_action = clipboard_action
-        self.via = via
-        self.paste_key = paste_key
-        self.restore_clipboard = (None if restore_clipboard is None
-                                  else bool(restore_clipboard))
-        # ── 控件枚举（op=elements）──
-        self.max_elements = max_elements
-        # ── 图像 / 文字定位（op=locate）──
-        self.template = template      # 模板图片路径（图像匹配）
-        self.query = query            # OCR 查找文本
-        # OCR 语言标签（BCP-47，如 zh-Hans-CN / en-US）：缺省按用户配置；
-        # 指定语言没装 OCR 语言包时后端会返回可读错误。
-        self.ocr_lang = (str(ocr_lang).strip() or None
-                         if ocr_lang is not None else None)
-        self.max_results = max_results
-        self.min_scale = min_scale    # 模板缩放搜索范围
-        self.max_scale = max_scale
-        self.scale_steps = scale_steps
-        # ── 截图增强（op=screenshot / sequence 步骤）──
-        self.screen = screen          # 全屏 / 多显示器截取（true / 'primary' / 序号）
-        self.margin = margin          # 按控件区域截图时的外扩像素
-        # ── 等待窗口（op=wait_window）──
-        # allow_hidden=True 时，命中隐藏 / 最小化的窗口也立即返回（默认等
-        # 到窗口可见且可操作，否则后续截图 / 输入必然失败）。
-        self.allow_hidden = (None if allow_hidden is None
-                             else bool(allow_hidden))
-        # ── 像素取色（op=pixel）──
-        self.color = color            # 期望色 / 查找目标色（文本）
-        self.region = region          # 取色 / 查找区域（'x,y,w,h'）
-        self.mode = mode              # point / region / find
-        self.min_pixels = min_pixels  # find 模式连通块最小像素数
-        self.max_regions = max_regions  # find 模式返回块数上限
-        # ── 截图标注（op=annotate）──
-        self.output = output          # 标注结果输出路径
-        self.boxes = boxes            # 矩形标记列表
-        self.points = points          # 点标记列表
-        self.labels = labels          # 标记标签
-        # ── 操作宏（op=record / op=replay）──
-        self.macro = macro            # 宏名（缺省存到 _MACRO_DIR）
-        self.times = times            # replay 重复次数
-        self.append = (None if append is None else bool(append))  # record 追加
+        # ── 整屏 / 多显示器截取 ──
+        self.screen = screen      # 全屏 / 多显示器截取（true / 'primary' / 序号）
 
     # ── 参数归一化 ───────────────────────────────────────
 
@@ -1038,28 +490,24 @@ class BashOptFunc(Func):
     async def _execute_inner(self) -> str:
         """按 task_id 和 op 操作后台 bash 任务，返回结果字符串。
 
-        ★ 并非所有 op 都依赖后台任务：clipboard / record / release 与具体
-        进程 / 窗口无关；annotate 在显式给 path 时只处理已有 PNG；screenshot
-        在 screen=… 时截整屏 / 多显示器。这些 op 允许省略 task_id（或传一个
-        已结束的 task_id），不再被任务生命周期绑死；其余 op 仍要求有效的
-        ``bg-xxx`` 记录，并给出与「任务不存在 / 已结束」相符的提示。
+        ★ 并非所有 op 都依赖后台任务：release 与具体进程 / 窗口无关；
+        screenshot 在 screen=… 时截整屏 / 多显示器。这些 op 允许省略 task_id
+        （或传一个已结束的 task_id），不再被任务生命周期绑死；其余 op 仍要求
+        有效的 ``bg-xxx`` 记录，并给出与「任务不存在 / 已结束」相符的提示。
         """
         agent = getattr(self, 'agent', None)
         if agent is None:
             return "(后台任务操作需要关联 Agent 上下文，当前未关联)"
         background_tasks = getattr(agent, "_background_tasks", None)
         if background_tasks is None:
-            # 无需任务的 op（clipboard / record / release / …）不依赖该表；
+            # 无需任务的 op（release / screen 截图）不依赖该表；
             # 其余 op 仍要求已关联 Agent 的后台任务上下文。
             if not self._can_run_without_task():
                 return "(后台任务操作需要关联 Agent 上下文，当前未关联)"
             background_tasks = {}
 
         supported_ops = ("read", "wait", "kill", "stdin", "close_stdin",
-                         "keys", "screenshot", "windows", "window",
-                         "elements", "wait_window", "clipboard",
-                         "locate", "pixel", "annotate", "record",
-                         "replay", "sequence", *INPUT_OPS)
+                         "keys", "screenshot", *INPUT_OPS)
         if self.op not in supported_ops:
             return f"(未知操作: {self.op}。支持: {'/'.join(supported_ops)})"
 
@@ -1081,8 +529,7 @@ class BashOptFunc(Func):
             if not self.task_id:
                 return (f"(错误：op={self.op} 需要 task_id（bash background=True "
                         f"返回的 'bg-xxx' 格式 ID）。subagent 后台任务请用 "
-                        f"subagent_opt 操作。无需任务的 op 只有 clipboard / "
-                        f"record / release，以及带 path 的 annotate 与 "
+                        f"subagent_opt 操作。无需任务的 op 只有 release 与 "
                         f"screen=… 的 screenshot)")
             reason = self._finished_reason(agent, self.task_id)
             if reason:
@@ -1096,7 +543,7 @@ class BashOptFunc(Func):
         #   该任务的结果由大模型通过本工具主动获取（wait 拿到输出 / kill 终止
         #   / stdin / keys 交互），后续 _process_background_tasks 不再把结果
         #   作为用户消息自动插入，也不自动等待其完成（避免交互任务阻塞对话
-        #   轮次）。只读观察型 op（read / windows / elements / …）**不标记**，
+        #   轮次）。只读观察型 op（read / screenshot）**不标记**，
         #   否则模型「read 看一眼进度」就会让任务完成结果再也回灌不到对话
         #   （被 _collect_done_background_messages 静默清理而模型毫不知情）。
         if rec is not None and self.op in self._MANAGED_OPS:
@@ -1116,28 +563,6 @@ class BashOptFunc(Func):
             return await self._op_keys(rec)
         if self.op == "screenshot":
             return await self._op_screenshot(rec)
-        if self.op == "windows":
-            return await self._op_windows(rec)
-        if self.op == "window":
-            return await self._op_window(rec)
-        if self.op == "elements":
-            return await self._op_elements(rec)
-        if self.op == "wait_window":
-            return await self._op_wait_window(rec)
-        if self.op == "clipboard":
-            return await self._op_clipboard(rec)
-        if self.op == "locate":
-            return await self._op_locate(rec)
-        if self.op == "pixel":
-            return await self._op_pixel(rec)
-        if self.op == "annotate":
-            return await self._op_annotate(rec)
-        if self.op == "record":
-            return await self._op_record(rec)
-        if self.op == "replay":
-            return await self._op_replay(rec)
-        if self.op == "sequence":
-            return await self._op_sequence(rec)
         if self.op in INPUT_OPS:
             return await self._op_input(rec)
         return f"(未知操作: {self.op}。支持: {'/'.join(supported_ops)})"
@@ -1145,17 +570,12 @@ class BashOptFunc(Func):
     def _can_run_without_task(self) -> bool:
         """当前 op 是否可在没有后台任务记录时执行。
 
-        与具体进程 / 窗口无关的 op 不依赖 task_id；部分 op 只有在特定参数
-        形态下才与任务无关（annotate 给 path、screenshot 走整屏）。其余 op
-        （read / wait / kill / stdin / keys / windows / window / elements /
-        wait_window / locate / pixel / sequence / replay / 窗口输入）都需要
-        任务记录里的进程句柄或窗口。
+        与具体进程 / 窗口无关的 op 不依赖 task_id；screenshot 只有走整屏
+        形态时才与任务无关。其余 op（read / wait / kill / stdin / keys /
+        窗口输入）都需要任务记录里的进程句柄或窗口。
         """
         if self.op in self._TASKLESS_OPS:
             return True
-        if self.op in ("annotate", "locate", "pixel"):
-            # 显式 path：只分析已有 PNG（不依赖窗口 / 进程）
-            return self.path is not None and bool(str(self.path).strip())
         if self.op == "screenshot":
             return self._screen_requested()
         return False
@@ -1604,7 +1024,7 @@ class BashOptFunc(Func):
     # ── op=keys ──────────────────────────────────────────
 
     async def _op_keys(self, rec: dict) -> str:
-        """向后台任务发送光标/键盘消息（按被操作程序形态自动路由）。
+        """向后台任务发送键盘消息（按被操作程序形态自动路由）。
 
         路由规则：
 
@@ -1617,54 +1037,21 @@ class BashOptFunc(Func):
 
         这样同一个 ``op=keys`` 既能操作 GUI 程序（游戏 / GUI 应用），
         也能操作纯命令行程序（编译 / 交互式 shell），无需模型先判断形态。
-
-        注意：按键事件「到达窗口」不等于「目标控件执行了对应动作」——组合键
-        是否产生效果取决于目标程序（实测部分 WinForms TextBox 收到了
-        Ctrl+A 的 keydown/keyup，但没有执行全选）。需要确定生效的文本操作
-        优先用 ``type`` / ``element``，或注入后用 screenshot / diff 复核；
-        终端通道下 ``ctrl+c`` 这类控制字符只有在 PTY 中才会变成信号，管道
-        stdin 只是普通字节（见 :meth:`_terminal_key_note`）。
-
-        增强参数（``shot`` / ``settle`` / ``wait_for`` / ``diff``）：GUI 通路
-        走 :meth:`_keys_via_window`，与 click / key 等输入 op 行为一致；终端
-        通路没有可截图的画面，带这些参数时直接返回说明，不再静默忽略。
         """
         if self.key is None:
             return "(keys 操作需要 key 参数指定按键，如 key='up' / key='ctrl_c')"
         key_text = str(self.key)
-        try:
-            repeat = self._resolve_key_repeat()
-        except ActionError as exc:
-            return f"(按键参数非法: {exc})"
         pid = rec.get("pid")
         window_pid = (pid if isinstance(pid, int) and not isinstance(pid, bool)
                       and pid > 0 else None)
         window_failure: str | None = None
-        enhancements = self._has_keys_enhancements()
         if window_pid is not None and await self._probe_window_async(window_pid):
             try:
-                if enhancements:
-                    # shot / settle / wait_for / diff 只在 GUI 通路上有意义：
-                    # 走增强版，与 click / key 等输入 op 完全一致的实现。
-                    return await self._keys_via_window(
-                        window_pid, key_text, repeat, rec)
-                return await self._send_keys_to_window(window_pid, key_text, repeat)
+                return await self._send_keys_to_window(window_pid, key_text)
             except (InputNoWindowError, InputError) as exc:
-                if enhancements:
-                    # 带了增强参数时不再静默回退终端：否则调用方会拿到「已发送」
-                    # 却没有任何截图 / 变化判定，误以为参数被忽略或截图失败。
-                    return (f"(按键发送失败：目标 GUI 窗口注入失败（{exc}）；"
-                            f"settle / wait_for / diff / shot 只对 GUI 窗口有效，"
-                            f"因此没有回退到终端通道。只发送按键请去掉这些参数"
-                            f"后重试，或改用 op=kill 终止任务)")
                 # 探测到窗口但注入失败（窗口已关闭 / 无法置前等）：尝试终端回退
                 window_failure = str(exc)
-        if enhancements:
-            return ("(keys 参数不受支持: settle / wait_for / diff / shot 需要"
-                    "可截图的 GUI 窗口，而目标进程没有可接收键盘输入的 GUI "
-                    "窗口（按键走 PTY / stdin 终端通道）。需要截图请单独用 "
-                    "op=screenshot；只发送按键请去掉这些参数)")
-        ok, message = await self._send_keys_to_terminal(rec, key_text, repeat)
+        ok, message = await self._send_keys_to_terminal(rec, key_text)
         if ok:
             return message
         if window_failure is not None:
@@ -1678,50 +1065,12 @@ class BashOptFunc(Func):
                 f"若为 GUI 程序请等窗口出现后用 op=key 注入（可用 op=screenshot "
                 f"确认窗口状态）；纯命令行进程请确认已启动（可用 op=wait 查看状态）)")
 
-    def _has_keys_enhancements(self) -> bool:
-        """``op=keys`` 是否带了「只对 GUI 窗口有意义」的增强参数。
-
-        这些参数（``shot`` / ``settle`` / ``wait_for`` / ``diff``）此前被
-        ``_op_keys`` 静默丢弃：既不出图也不等待，调用方只能看到「按键已发送」，
-        与 ``click`` / ``key`` 的行为不一致（实测带 ``shot`` 的 keys 不生成
-        截图且无任何提示）。现在 GUI 通路走 :meth:`_keys_via_window` 完整
-        支持它们，终端通路则明确报错。
-        """
-        return bool(self.shot) or self.settle is not None or bool(self.wait_for) \
-            or bool(self.diff)
-
-    def _resolve_key_repeat(self) -> int:
-        """解析 key / keys 的连按次数（缺省 1）。
-
-        Raises:
-            ActionError: 不是 1..MAX_KEY_REPEAT 之间的整数。
-        """
-        raw = self.repeat
-        if raw is None:
-            return DEFAULT_KEY_REPEAT
-        if isinstance(raw, bool):
-            raise ActionError(f"repeat 必须是整数，当前: {raw!r}")
-        if isinstance(raw, int):
-            value = raw
-        else:
-            text = str(raw).strip()
-            if not text:
-                return DEFAULT_KEY_REPEAT
-            try:
-                value = int(text)
-            except ValueError:
-                raise ActionError(f"repeat 必须是整数，当前: {raw!r}") from None
-        if not 1 <= value <= MAX_KEY_REPEAT:
-            raise ActionError(f"repeat 需在 1..{MAX_KEY_REPEAT} 之间，当前: {value}")
-        return value
-
     async def _probe_window_async(self, pid: int) -> bool:
         """探测目标进程是否有可接收键盘输入的 GUI 窗口（不阻塞事件循环）。
 
         ``probe_window`` 内部要枚举窗口 / 调系统 API（阻塞调用），因此放到
-        线程池执行并加超时——与截图 / 输入注入的调用方式保持一致（此前是
-        直接在事件循环线程里同步调用，窗口枚举卡顿会拖住整个 Agent 事件
-        循环）。超时或探测异常时按「没有 GUI 窗口」处理，交由终端通道兜底。
+        线程池执行并加超时——与截图 / 输入注入的调用方式保持一致。超时或
+        探测异常时按「没有 GUI 窗口」处理，交由终端通道兜底。
         """
         try:
             found = await asyncio.wait_for(
@@ -1736,8 +1085,7 @@ class BashOptFunc(Func):
             return False
         return found is not None
 
-    async def _send_keys_to_window(self, pid: int, key_text: str,
-                                   repeat: int = DEFAULT_KEY_REPEAT) -> str:
+    async def _send_keys_to_window(self, pid: int, key_text: str) -> str:
         """把按键作为窗口级键盘消息注入目标 GUI 窗口。
 
         与 ``op=key`` 走同一条输入注入通道（Windows SendInput/PostMessage、
@@ -1747,120 +1095,32 @@ class BashOptFunc(Func):
         Args:
             pid: 目标进程 PID。
             key_text: 按键文本（与 ``op=key`` 同一套键名规则）。
-            repeat: 连按次数（仅 ``phase=press`` 生效）。
 
         Raises:
             ActionError: 键名非法。
             InputNoWindowError: 注入时窗口已消失。
             InputError: 平台不支持或注入失败。
         """
-        action = build_action("key", {"key": key_text, "repeat": repeat})
-        shortcut_probe = await self._probe_shortcut_before(pid, key_text)
-        try:
-            result = await self._send_input_with_retry(pid, action)
-        except BaseException:
-            if shortcut_probe is not None:
-                self._remove_temp(shortcut_probe.get("path"))
-            raise
+        action = build_action("key", {"key": key_text})
+        result = await self._send_input_with_retry(pid, action)
         payload = {
             "task_id": self.task_id,
             "op": "keys",
             "channel": "gui",
             "hint": ("检测到目标进程有 GUI 窗口，按键已作为窗口级键盘消息注入该窗口；"
                      "可用 op=screenshot 截图后 read_image 核对界面变化"
-                     "（纯 GUI 按键可直接用 op=key）。注意：事件送达不等于目标控件"
-                     "执行了对应动作（如部分 TextBox 收到 Ctrl+A 但不全选），"
-                     "组合键效果需用界面变化复核；确定生效的文本操作优先用 "
-                     "type / element"),
+                     "（纯 GUI 按键可直接用 op=key）"),
         }
         payload.update(result.to_dict())
-        probe = await self._probe_shortcut_after(pid, shortcut_probe)
-        if probe is not None:
-            payload["shortcut_probe"] = probe
         return json.dumps(payload, ensure_ascii=False)
 
-    async def _keys_via_window(self, pid: int, key_text: str, repeat: int,
-                               rec: dict) -> str:
-        """GUI 通路的 ``op=keys`` 增强版：注入后按增强参数回报界面结果。
-
-        与 ``click`` / ``key`` 等输入 op 复用同一套增强实现（``settle`` 等待、
-        ``wait_for`` 等变化 / 稳定、``diff`` 前后截图比较、``shot`` 自动截图），
-        让 ``op=keys`` 不再静默忽略这些参数。
-
-        Args:
-            pid: 目标进程 PID（其窗口接收按键）。
-            key_text: 按键文本（与 ``op=key`` 同一套键名规则）。
-            repeat: 连按次数。
-            rec: 后台任务记录（``shot`` 需要进程句柄）。
-
-        Raises:
-            InputNoWindowError / InputError: 注入失败（由调用方决定是否回退）。
-        """
-        try:
-            wait_mode, wait_timeout, extra_wait = self._resolve_wait_target()
-            settle = self._resolve_settle()
-            if extra_wait:
-                settle = max(settle, extra_wait)
-            diff_enabled = self._resolve_diff_flag()
-            tolerance = self._resolve_tolerance()
-        except ValueError as exc:
-            return f"(按键参数非法: {exc})"
-        action = build_action("key", {"key": key_text, "repeat": repeat})
-        shortcut_probe = await self._probe_shortcut_before(pid, key_text)
-        temporaries: list[str] = []
-        before_path = None
-        if diff_enabled or wait_mode is not None:
-            before_path = await self._temp_screenshot(pid, self.window)
-            if before_path is not None:
-                temporaries.append(before_path)
-        try:
-            result = await self._send_input_with_retry(pid, action)
-        except (InputNoWindowError, InputError):
-            self._cleanup_temps(temporaries)
-            if shortcut_probe is not None:
-                self._remove_temp(shortcut_probe.get("path"))
-            raise
-        payload = {
-            "task_id": self.task_id,
-            "op": "keys",
-            "channel": "gui",
-            "hint": ("检测到目标进程有 GUI 窗口，按键已作为窗口级键盘消息注入该窗口；"
-                     "可用 op=screenshot 截图后 read_image 核对界面变化"
-                     "（纯 GUI 按键可直接用 op=key）。注意：事件送达不等于目标控件"
-                     "执行了对应动作（如部分 TextBox 收到 Ctrl+A 但不全选），"
-                     "组合键效果需用界面变化复核；确定生效的文本操作优先用 "
-                     "type / element"),
-        }
-        payload.update(result.to_dict())
-        try:
-            if settle:
-                await asyncio.sleep(settle)
-            probe = await self._probe_shortcut_after(pid, shortcut_probe)
-            if probe is not None:
-                payload["shortcut_probe"] = probe
-            if wait_mode is not None:
-                payload["wait_for"] = await self._await_screen(
-                    pid, mode=wait_mode, before_path=before_path,
-                    window=self.window, timeout=wait_timeout)
-            if diff_enabled:
-                payload["diff"] = await self._diff_result(
-                    pid, before_path, window=self.window, tolerance=tolerance)
-            shot_error = await self._attach_shot(payload, rec)
-            if shot_error:
-                payload["screenshot_error"] = shot_error
-        finally:
-            self._cleanup_temps(temporaries)
-        return json.dumps(payload, ensure_ascii=False)
-
-    async def _send_keys_to_terminal(self, rec: dict, key_text: str,
-                                     repeat: int = DEFAULT_KEY_REPEAT
-                                     ) -> tuple[bool, str]:
+    async def _send_keys_to_terminal(self, rec: dict,
+                                     key_text: str) -> tuple[bool, str]:
         """回退通道：按键转 ANSI/VT100 序列写入终端（PTY master / stdin）。
 
         Args:
             rec: 后台任务记录。
             key_text: 按键文本（与 ``op=key`` 同一套键名规则）。
-            repeat: 连按次数（序列重复写入，每次之间留固定间隔）。
 
         Returns:
             ``(成功, 消息)``——成功时为提示文本，失败时为错误文本（解析失败
@@ -1876,16 +1136,12 @@ class BashOptFunc(Func):
                 f"return/ins/pgdn 等别名)"
             )
         payload = sequence.encode("utf-8")
-        for index in range(max(int(repeat), 1)):
-            if index:
-                await asyncio.sleep(self._TERMINAL_KEY_REPEAT_INTERVAL)
-            ok, err = await self._write_to_task(rec, payload)
-            if not ok:
-                return False, err
-        suffix = "" if repeat == 1 else f" x{repeat}"
+        ok, err = await self._write_to_task(rec, payload)
+        if not ok:
+            return False, err
         note = self._terminal_key_note(rec, payload)
         return True, (f"(已向后台任务 {self.task_id} 发送终端按键: "
-                      f"{key_text}{suffix}{note})")
+                      f"{key_text}{note})")
 
     @staticmethod
     def _terminal_key_note(rec: dict, payload: bytes) -> str:
@@ -1904,10 +1160,6 @@ class BashOptFunc(Func):
                     "需要结束任务请用 op=kill）")
         if mode == "pty":
             if os.name == "nt":
-                # 2026-10-20 在 Windows 11 26220 的 ConPTY 上复测：写入 \x03
-                # 对部分程序有效（python 的 time.sleep 会被 KeyboardInterrupt
-                # 中断），但不保证所有程序都响应（cmd 内建可能只取消输入行）。
-                # 文案必须与实际一致，并给出 kill 兜底。
                 return ("；提示：Windows ConPTY 下控制字符能否变成 Ctrl+C 事件"
                         "取决于目标程序（实测可中断 Python 等进程，但部分程序不"
                         "响应）——若进程没有反应，请用 op=kill 终止任务")
@@ -1925,110 +1177,9 @@ class BashOptFunc(Func):
             return text[1:-1]
         return text
 
-    # ── 快捷键探针（Ctrl+A / Ctrl+C 是否真的生效） ────────
-
-    @staticmethod
-    def _shortcut_token(key_text) -> str:
-        """归一化按键文本（``ctrl_c`` / ``control-c`` / ``Ctrl+C`` → ``ctrl+c``）。
-
-        只用于探针判断（不参与按键解析），因此宽松归一；非组合键返回原样。
-        """
-        raw = str(key_text or "").strip().lower()
-        if not raw:
-            return ""
-        raw = raw.replace("_", "+").replace("-", "+")
-        parts = [part.strip() for part in raw.split("+") if part.strip()]
-        if not parts:
-            return ""
-        parts = ["ctrl" if part == "control" else part for part in parts]
-        return "+".join(parts)
-
-    async def _probe_shortcut_before(self, pid: int, key_text):
-        """快捷键探针：注入前采样（全选截基准图 / 复制读剪贴板）。
-
-        Returns:
-            ``None``（该快捷键不参与探针）或 ``{kind, key, ...}`` 的探针上下文。
-        """
-        token = self._shortcut_token(key_text)
-        if token in self._SHORTCUT_SCREEN_PROBES:
-            path = await self._temp_screenshot(pid, self.window)
-            return {"kind": "screen", "key": token, "path": path}
-        if token in self._SHORTCUT_CLIPBOARD_PROBES:
-            try:
-                text = await asyncio.to_thread(read_clipboard_text)
-            except Exception:  # pragma: no cover - 剪贴板后端不可用时不做探针
-                logger.debug("快捷键探针读取剪贴板失败", exc_info=True)
-                return None
-            return {"kind": "clipboard", "key": token, "text": text}
-        return None
-
-    async def _probe_shortcut_after(self, pid: int, probe):
-        """快捷键探针：注入后复核效果，未生效时给出替代方案提示。
-
-        只对「效果可可靠观测」的快捷键生效：
-          - ``ctrl+a``：比较注入前后的窗口截图（全选会改变选中高亮）；
-          - ``ctrl+c``：比较注入前后的剪贴板文本（复制会改变剪贴板）。
-        其它快捷键（如 ``ctrl+s``）不做探针，避免误报。
-
-        Returns:
-            ``None``（没有探针）或结果字典
-            ``{key, method, changed, [changed_ratio], [warning]}``。
-        """
-        if probe is None:
-            return None
-        key = probe.get("key", "")
-        if probe.get("kind") == "screen":
-            path = probe.get("path")
-            try:
-                if not path:
-                    return {
-                        "key": key, "method": "screen", "changed": None,
-                        "warning": ("无法截取注入前的截图，未能确认快捷键是否生效；"
-                                    "可用 op=elements 读取控件文本复核"),
-                    }
-                diff = await self._diff_result(
-                    pid, path, window=self.window,
-                    tolerance=self._DIFF_TOLERANCE)
-            finally:
-                self._remove_temp(path)
-            payload = {
-                "key": key,
-                "method": "screen",
-                "changed": diff.get("changed"),
-            }
-            if "changed_ratio" in diff:
-                payload["changed_ratio"] = diff["changed_ratio"]
-            if diff.get("changed") is False:
-                payload["warning"] = (
-                    "未检测到界面变化：该快捷键在目标控件上可能没有生效"
-                    "（实测部分 WinForms TextBox 收到 Ctrl+A 但不全选）。"
-                    "可改用 element + type（按控件名聚焦后输入）或 op=type "
-                    "via='clipboard' 直接粘贴；也可用 op=elements 读取控件文本复核"
-                )
-            elif diff.get("changed") is None:
-                payload["warning"] = (
-                    f"未能比较界面变化（{diff.get('reason', '截图失败')}）；"
-                    f"可用 op=elements 读取控件文本复核")
-            return payload
-        if probe.get("kind") == "clipboard":
-            try:
-                after = await asyncio.to_thread(read_clipboard_text)
-            except Exception:  # pragma: no cover - 剪贴板后端不可用
-                logger.debug("快捷键探针读取剪贴板失败", exc_info=True)
-                return None
-            changed = after != probe.get("text")
-            payload = {"key": key, "method": "clipboard", "changed": changed}
-            if not changed:
-                payload["warning"] = (
-                    "剪贴板内容没有变化：Ctrl+C 可能没有生效（或控件中没有选中内容）。"
-                    "可先用 element + click 聚焦控件，或用 op=elements 读取控件文本复核"
-                )
-            return payload
-        return None
-
     # ── op=screenshot ────────────────────────────────────
 
-    # ── 已结束任务的统一提示（screenshot / window / wait_window） ──
+    # ── 已结束任务的统一提示（screenshot / 输入 op） ──────────
 
     @staticmethod
     def _task_windows_alive(rec: dict) -> bool:
@@ -2080,7 +1231,7 @@ class BashOptFunc(Func):
     def _ended_task_note(cls, rec: dict) -> str | None:
         """任务已结束时返回状态描述，否则返回 ``None``。
 
-        screenshot / window / wait_window 只对**运行中的进程**有意义：任务
+        screenshot / 输入 op 只对**运行中的进程**有意义：任务
         结束后进程（及其窗口）已不存在，继续按 PID 枚举窗口只会得到
         「没有可截图的可见窗口」，把「任务已结束」误报成「窗口不可见」，
         模型据此反复 restore / 重试。这里统一给出可读状态。
@@ -2130,49 +1281,31 @@ class BashOptFunc(Func):
         except CropError as exc:
             return f"(截图裁剪参数非法: {exc})"
         try:
-            grid = self._resolve_grid()
-        except CropError as exc:
-            return f"(截图网格参数非法: {exc})"
-        try:
             target_path = self._prepare_screenshot_path(str(self.path))
         except ValueError as exc:
             return f"(截图路径非法: {exc})"
         try:
             info = await self._screenshot_target(
-                rec, target_path=target_path, crop=crop, grid=grid,
-                window=self.window, screen=self.screen, element=self.element,
-                margin=self.margin)
+                rec, target_path=target_path, crop=crop,
+                window=self.window, screen=self.screen)
         except MonitorError as exc:
             return f"(截图失败: {exc})"
-        except ElementError as exc:
-            return f"(截图失败: 控件区域不可用: {exc})"
         except (SelectorError, ScreenshotError, CropError, ValueError) as exc:
             scope = f"（window 选择器 {self.window!r}）" if self.window else ""
             return f"(截图失败{scope}: {exc})"
         result = info["result"]
         region = info["region"]
-        element_desc = info["element"]
         payload: dict = {"task_id": self.task_id, "op": "screenshot"}
         for key in ("screen", "monitor", "monitor_index", "monitors_total"):
             if info.get(key) is not None:
                 payload[key] = info[key]
         payload.update(result.to_dict())
         notes = ["截图已保存"]
-        if self._screen_requested() and (
-                self.window
-                or (self.element is not None and str(self.element).strip())
-                or self.margin is not None):
-            notes.append("整屏 / 多显示器截取与 window / element / margin 无关，"
-                         "已忽略这些参数")
+        if self._screen_requested() and self.window:
+            notes.append("整屏 / 多显示器截取与 window 无关，已忽略该参数")
         if region is not None:
             payload["crop"] = region.to_dict()
             notes.append("已按 crop 裁剪")
-        if element_desc is not None:
-            payload["element"] = element_desc
-            notes.append("截取范围为该控件区域")
-        if grid is not None:
-            payload["grid"] = grid
-            notes.append("已叠加坐标参考线")
         if self.window:
             payload["window"] = str(self.window)
         notes.append(
@@ -2227,39 +1360,9 @@ class BashOptFunc(Func):
             return None
         return CropRegion.parse(str(raw))
 
-    def _resolve_grid(self, raw=_UNSET) -> int | None:
-        """解析 grid 参数为网格步长（``0`` / true → 自动；None / false → 不画）。
-
-        Args:
-            raw: 显式取值（供 op=sequence 的步骤复用）：``_UNSET`` = 未指定，
-                此时取本工具实例的 ``grid`` 参数；``None`` / 空串 / ``false``
-                = **显式不画网格**——步骤级可用它关闭顶层调用打开的 grid。
-
-        Raises:
-            CropError: 取值不是数值。
-        """
-        value = self.grid if raw is _UNSET else raw
-        if value is None:
-            return None
-        if isinstance(value, bool):
-            return 0 if value else None
-        text = str(value).strip().lower()
-        if not text or text in ("false", "no", "off"):
-            return None
-        # schema 描述允许「0 或 true = 自动选择步长」；布尔语义以字符串
-        # 传入（模型 JSON 参数常被转成文本）时同样按自动处理，而不是报错。
-        if text in ("true", "yes", "on", "auto"):
-            return 0
-        try:
-            number = int(float(text))
-        except (TypeError, ValueError):
-            raise CropError(f"grid 需要数值（0 = 自动选择步长），当前: {value!r}") from None
-        return max(number, 0)
-
     async def _capture_with_retry(self, pid: int, path: str,
                                   crop: CropRegion | None = None,
-                                  *, window: str | None = None,
-                                  grid: int | None = None):
+                                  *, window: str | None = None):
         """截图（GUI 程序窗口创建有延迟时轮询重试）。
 
         仅在「目标暂无可见窗口」时重试（NoWindowError）；其它错误（含
@@ -2271,7 +1374,6 @@ class BashOptFunc(Func):
             path: 输出 PNG 路径。
             crop: 可选裁剪区域。
             window: 可选窗口选择器（缺省 = 主窗口）。
-            grid: 可选网格步长（``None`` = 不画）。
 
         Returns:
             CaptureResult（成功后）。
@@ -2285,8 +1387,6 @@ class BashOptFunc(Func):
             kwargs["crop"] = crop
         if window:
             kwargs["window"] = window
-        if grid is not None:
-            kwargs["grid"] = grid
         deadline = time.monotonic() + self._SCREENSHOT_WAIT_SECONDS
         while True:
             try:
@@ -2352,14 +1452,11 @@ class BashOptFunc(Func):
                 break
         return monitor, index, len(monitors)
 
-    async def _capture_screen_with_retry(self, monitor, path: str, crop,
-                                         grid: int | None):
+    async def _capture_screen_with_retry(self, monitor, path: str, crop):
         """整屏 / 多显示器截图（在线程中执行并受超时保护）。"""
         kwargs: dict = {}
         if crop is not None:
             kwargs["crop"] = crop
-        if grid is not None:
-            kwargs["grid"] = grid
         try:
             return await asyncio.wait_for(
                 asyncio.to_thread(
@@ -2371,80 +1468,22 @@ class BashOptFunc(Func):
                 f"全屏截图超时（超过 {self._SCREENSHOT_TIMEOUT:g} 秒）"
             ) from None
 
-    async def _element_capture_region(self, pid: int, element: str, window,
-                                      margin_raw, crop):
-        """按控件名算出截图区域（可选 margin 外扩、crop 相对该控件再裁剪）。
-
-        Returns:
-            ``(CropRegion, 控件摘要)``。
-
-        Raises:
-            ElementError: 控件不可用或无法确定坐标系。
-            CropError: 最终区域越界。
-        """
-        try:
-            elements = await asyncio.wait_for(
-                asyncio.to_thread(list_process_elements, pid, window),
-                timeout=self._INPUT_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            raise ElementError(
-                f"枚举控件超时（超过 {self._INPUT_TIMEOUT:g} 秒）：系统无响应，"
-                f"无法确定控件区域"
-            ) from None
-        if not elements:
-            raise ElementError("窗口内没有可枚举的控件（无法按控件区域截图）")
-        matched = match_window_element(elements, element)
-        frame = await self._window_frame_for(pid, window)
-        if frame is None:
-            raise ElementError("无法确定窗口坐标系（窗口可能已关闭）")
-        margin = self._resolve_margin(margin_raw)
-        x = matched.left - frame.screen_x - margin
-        y = matched.top - frame.screen_y - margin
-        width = matched.width + margin * 2
-        height = matched.height + margin * 2
-        x = max(0, x)
-        y = max(0, y)
-        width = min(width, frame.width - x)
-        height = min(height, frame.height - y)
-        if width <= 0 or height <= 0:
-            raise ElementError("控件区域落在窗口外或尺寸非法，无法截图")
-        if crop is not None:
-            x += crop.x
-            y += crop.y
-            width, height = crop.width, crop.height
-        region = CropRegion(x, y, width, height)
-        region.validate_against(frame.width, frame.height)
-        return region, self._element_summary(matched)
-
-    def _resolve_margin(self, raw=_UNSET) -> int:
-        """解析控件区域截图的外扩像素（可为负表示收缩，缺省 0）。"""
-        value = self.margin if raw is _UNSET else raw
-        if value is None:
-            return 0
-        if isinstance(value, bool):
-            raise ValueError("margin 需要整数（像素）")
-        try:
-            return int(float(str(value).strip()))
-        except (TypeError, ValueError):
-            raise ValueError(f"margin 需要整数（像素），当前: {value!r}") from None
-
     async def _screenshot_target(self, rec: dict, *, target_path: str, crop,
-                                 grid, window, screen, element, margin):
-        """执行一次截图（窗口 / 控件区域 / 整屏），返回结果与元信息。
+                                 window, screen):
+        """执行一次截图（窗口 / 整屏），返回结果与元信息。
 
         Returns:
-            ``{result, region, element, screen?, monitor?, ...}``。
+            ``{result, region, screen?, monitor?, ...}``。
 
         Raises:
-            ScreenshotError / SelectorError / ElementError / CropError: 截图失败。
+            ScreenshotError / SelectorError / CropError: 截图失败。
         """
         if self._screen_spec_requested(screen):
             monitor, index, total = await self._resolve_monitor(screen)
             result = await self._capture_screen_with_retry(
-                monitor, target_path, crop, grid)
+                monitor, target_path, crop)
             return {
-                "result": result, "region": crop, "element": None,
+                "result": result, "region": crop,
                 "screen": screen, "monitor": monitor.to_dict(),
                 "monitor_index": index, "monitors_total": total,
             }
@@ -2454,14 +1493,9 @@ class BashOptFunc(Func):
                 f"后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
                 f"无法截图；需要整屏截图可传 screen=true"
             )
-        region = crop
-        element_desc = None
-        if element is not None and str(element).strip():
-            region, element_desc = await self._element_capture_region(
-                pid, element, window, margin, crop)
         result = await self._capture_with_retry(
-            pid, target_path, region, window=window, grid=grid)
-        return {"result": result, "region": region, "element": element_desc}
+            pid, target_path, crop, window=window)
+        return {"result": result, "region": crop}
 
     @staticmethod
     def _prepare_screenshot_path(path: str) -> str:
@@ -2495,23 +1529,12 @@ class BashOptFunc(Func):
 
         坐标以窗口截图左上角为原点（与 op=screenshot 产物一致），便于
         「先截图看清界面，再按像素点操作」。``window`` 可把输入投向指定窗口
-        （右键菜单、下拉浮层、对话框等独立顶层窗口）；``settle`` 在注入后等待
-        指定秒数再返回；``shot`` 在注入后自动截图并把结果放进返回 JSON。
-
-        增强能力（让「操作应用」更省事）：
-
-          - ``element``：按控件名定位（先 op=elements 看清单）。click / move /
-            scroll / drag 直接换成控件中心坐标；type / key 先点击该控件聚焦
-            再输入，不必读图算像素；
-          - ``via='clipboard'``（仅 type）：文本经系统剪贴板粘贴输入，
-            长文本 / 中文 / emoji 不会掉字，也避免被当成快捷键误触发；
-          - ``wait_for='change'|'stable'``：注入后轮询界面，等「画面变化」或
-            「画面稳定」再返回（点击后界面还没刷新时不必猜等待时间）；
-          - ``diff=true``：注入前后自动比较截图差异，回传是否变化、变化比例
-            与变化区域，用于确认操作是否真的生效。
+        （右键菜单、下拉浮层、对话框等独立顶层窗口）。传 ``path`` 时在输入
+        注入完成后立即截取同一目标窗口（文件名由 path 指定），结果并入
+        ``screenshot`` 字段；不传 path 不产生截图。
 
         结果返回 JSON（task_id/op 与动作细节如按钮、坐标、屏幕坐标、按键序列、
-        投递方式；启用上述增强时附 ``element`` / ``wait_for`` / ``diff`` 字段）。
+        投递方式；带 path 时含 screenshot / screenshot_error）。
         """
         pid = rec.get("pid") if rec else None
         if pid is None and self.op != "release":
@@ -2521,1048 +1544,88 @@ class BashOptFunc(Func):
                         f"鼠标按钮）)")
             return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
                     f"无法注入输入。可用 op=wait 查看任务状态)")
-        if pid is None:
-            # release 的免任务形态：它释放的是全局输入状态，不依赖窗口；
-            # 但变化判定 / 自动截图仍需要可截图的窗口，直接给出可读提示，
-            # 而不是让 _temp_screenshot(None) 变成内部错误。
-            if self.diff or self.wait_for or self.shot:
-                return ("(输入参数非法: 没有 task_id 的 release 只做全局释放，"
-                        "不支持 diff / wait_for / shot；这些选项需要可截图的"
-                        "后台任务窗口)")
         try:
-            wait_mode, wait_timeout, extra_wait = self._resolve_wait_target()
-            settle = self._resolve_settle()
-            if extra_wait:
-                settle = max(settle, extra_wait)
-            diff_enabled = self._resolve_diff_flag()
-            tolerance = self._resolve_tolerance()
-            via = self._resolve_type_via()
-            # 提前校验剪贴板恢复开关（非法取值在此给出可读提示，而不是把
-            # 异常留到注入阶段变成内部错误）
-            restore_clipboard = self._resolve_restore_clipboard()
-        except ValueError as exc:
+            action = self._build_input_action()
+        except (ActionError, ValueError) as exc:
             return f"(输入参数非法: {exc})"
-        # ── 控件定位（element）：换算中心坐标 / 作为聚焦点击 ──
-        element_desc = None
-        element_point = None
-        if self.element is not None and str(self.element).strip():
-            if self.op == "release":
-                return ("(输入参数非法: element 不适用于 release——release 释放的是"
-                        "按键 / 鼠标按钮，不针对控件；要释放指定按键用 keys 参数，"
-                        "或用 key/click 的 phase='up')")
-            if self._has_explicit_point():
-                return ("(输入参数非法: element 与坐标参数不能同时提供——"
-                        "element 会自动使用控件中心坐标；"
-                        "要精确点某处请去掉 element 直接给 x/y)")
-            try:
-                element_point, element_info = await self._element_target(
-                    pid, self.element, self.window)
-            except (ElementError, SelectorError) as exc:
-                return f"(控件定位失败: {exc})"
-            element_desc = self._element_summary(element_info)
         try:
-            action = self._build_input_action(
-                overrides=self._element_overrides(element_point))
-        except ActionError as exc:
-            return f"(输入参数非法: {exc})"
-        focus_click = self._element_focus_click(action, element_point)
-        # type / key 配合 element 时会先点击控件中心聚焦；该点击是**真实点击**，
-        # 对按钮 / 复选框这类控件会触发它，因此在结果里如实回报，避免调用方
-        # 只看到「一次输入」却不知界面上还发生了一次点击。
-        focus_info = None
-        if focus_click is not None and element_point is not None:
-            focus_info = {
-                "x": element_point[0],
-                "y": element_point[1],
-                "button": "left",
-                "note": ("为使键盘输入落到该控件，已在控件中心先点击一次（左键）；"
-                         "若该控件本身是按钮 / 复选框，这次点击会触发它"),
-            }
-        # ── 快捷键探针：Ctrl+A / Ctrl+C 注入前采样，注入后复核是否真的生效 ──
-        shortcut_probe = None
-        if self.op == "key":
-            shortcut_probe = await self._probe_shortcut_before(pid, self.key)
-        # ── 变化判定 / 差异比较需要基准图：注入前先截一张 ──
-        temporaries: list[str] = []
-        before_path = None
-        if diff_enabled or wait_mode is not None:
-            before_path = await self._temp_screenshot(pid, self.window)
-            if before_path is not None:
-                temporaries.append(before_path)
-        try:
-            if focus_click is not None:
-                await self._send_input_with_retry(pid, focus_click)
-            detail = await self._inject_input_action(
-                pid, action, via, restore_clipboard=restore_clipboard)
+            result = await self._send_input_with_retry(pid, action)
         except (InputNoWindowError, InputError) as exc:
-            self._cleanup_temps(temporaries)
-            if shortcut_probe is not None:
-                self._remove_temp(shortcut_probe.get("path"))
             message = str(exc)
-            if "窗口选择器" in message:
-                return (f"(输入失败: {message}。弹出菜单 / 下拉浮层这类窗口在失焦"
-                        f"或截图 / 窗口提权后可能已关闭，可先用 op=windows 复核"
-                        f"当前窗口，再用同一选择器重试)")
             if "客户区" in message:
-                return (f"(输入失败: {message}。该窗口没有可换算的客户区，无法用 "
-                        f"method='message' 投递鼠标坐标——默认的 method='auto' "
-                        f"会改用合成输入（真实光标命中光标下的窗口）；若显式传了 "
-                        f"method='message'，去掉它后重试)")
+                return (f"(输入失败: {message}。该窗口没有可换算的客户区，无法投递"
+                        f"窗口消息鼠标坐标；可先让目标窗口取得前台（点击其窗口区域）"
+                        f"后用合成输入重试)")
             return f"(输入失败: {message})"
+        # ★ GUI 输入 op 的 path 语义：输入注入成功**之后**再截目标窗口
+        #   （同一 window 选择器），文件名由 path 指定；不传 path 则只注入。
+        #   截图失败只写 screenshot_error 字段，不回滚 / 不掩盖已完成的输入。
+        shot_requested = bool(self.path and str(self.path).strip())
+        hint = ("输入已注入；已尝试按 path 自动截图，结果见 screenshot / "
+                "screenshot_error，可用 read_image 读取该文件核对"
+                if shot_requested else
+                "输入已注入；需要核对界面变化可传 path 自动截图，或改用 "
+                "op=screenshot 截图后用 read_image 查看")
         payload = {
             "task_id": self.task_id,
             "op": self.op,
-            "hint": ("输入已注入；可用 op=screenshot 截图后用 read_image 核对界面变化"
-                     "（坐标原点为窗口截图左上角，与 op=screenshot 产物一致；"
-                     "window 选择器可用 'main' / "
-                     "'#N'（当前可操作窗口的 Z 序，见 op=windows 的 z_index）/ "
-                     "'popup' / 'title:子串' / 'handle:0x…'；"
-                     "结果里的 window_frame 给出命中窗口的截图坐标系 "
-                     "screen_x/screen_y/width/height，可据此把输入坐标与截图坐标对齐）"),
+            "hint": (hint + "（坐标原点为窗口截图左上角，与 op=screenshot "
+                     "产物一致；window 选择器可用 'main' / '#N' / 'popup' / "
+                     "'title:子串' / 'handle:0x…'）"),
         }
         if self.window:
             payload["window"] = str(self.window)
-        if element_desc is not None:
-            payload["element"] = element_desc
-        if focus_info is not None:
-            payload["focus_click"] = focus_info
-        payload.update(detail)
-        try:
-            if settle:
-                await asyncio.sleep(settle)
-            probe = await self._probe_shortcut_after(pid, shortcut_probe)
-            if probe is not None:
-                payload["shortcut_probe"] = probe
-            if wait_mode is not None:
-                payload["wait_for"] = await self._await_screen(
-                    pid, mode=wait_mode, before_path=before_path,
-                    window=self.window, timeout=wait_timeout)
-            if diff_enabled:
-                payload["diff"] = await self._diff_result(
-                    pid, before_path, window=self.window, tolerance=tolerance)
-            shot_error = await self._attach_shot(payload, rec)
-            if shot_error:
-                payload["screenshot_error"] = shot_error
-        finally:
-            self._cleanup_temps(temporaries)
+        payload.update(result.to_dict())
+        if shot_requested:
+            payload.update(await self._capture_after_input(rec))
         return json.dumps(payload, ensure_ascii=False)
 
-    # ── 输入 op 的增强辅助（控件 / 剪贴板 / 变化判定） ────
+    async def _capture_after_input(self, rec: dict) -> dict:
+        """GUI 输入完成后按 ``path`` 截图，返回并入输入结果 JSON 的字段。
 
-    def _has_explicit_point(self) -> bool:
-        """输入动作是否显式给了坐标（与 element 互斥）。"""
-        if self.op in ("click", "move", "hover", "scroll"):
-            return (self.x is not None or self.y is not None
-                    or self.dx is not None or self.dy is not None)
-        if self.op == "drag":
-            return self.from_x is not None or self.from_y is not None
-        return False
+        成功时给出 ``{"screenshot": {...}}``（字段与 op=screenshot 的结果
+        一致：path/width/height/window_* 等，crop 生效时附 crop）；失败时
+        给出 ``{"screenshot_error": "..."}``——输入已经生效，截图失败不得
+        让整个操作看起来没做，模型可据提示改用 op=screenshot 单独重截。
 
-    def _element_overrides(self, point: tuple[int, int] | None) -> dict:
-        """把控件中心坐标转成动作坐标覆盖（click/move/scroll/drag 用）。"""
-        if point is None:
-            return {}
-        if self.op == "drag":
-            return {"from_x": point[0], "from_y": point[1]}
-        if self.op in ("click", "move", "hover", "scroll"):
-            return {"x": point[0], "y": point[1]}
-        return {}
-
-    def _element_focus_click(self, action, point: tuple[int, int] | None):
-        """type / key 配合 element 时，先生成的「点击控件聚焦」动作。"""
-        if point is None or action.name not in ("key", "type"):
-            return None
-        return build_action("click", {
-            "x": point[0], "y": point[1], "window": self.window or "",
-        })
-
-    async def _element_target(self, pid: int, element: str,
-                              window: str | None) -> tuple[tuple[int, int], ElementInfo]:
-        """按控件名定位控件，返回 ``((窗口内 x, y), 控件描述)``。
-
-        Raises:
-            ElementError: 没有可枚举控件 / 没有匹配控件 / 无法确定坐标系。
-            SelectorError: 窗口选择器非法或没有匹配窗口。
+        固定截**目标窗口**（与输入时的 ``window`` 选择器一致）；整屏 /
+        多显示器形态仍只由 op=screenshot 的 ``screen`` 参数触发，输入 op
+        不接受它，避免「点一下却截了整块桌面」的意外产物。
         """
+        if not rec or rec.get("pid") is None:
+            return {"screenshot_error": (
+                "该操作没有可截图的窗口（release 可在无 task_id 时执行），"
+                "未自动截图；需要截图请用 op=screenshot 指定 task_id 或 "
+                "screen=true")}
         try:
-            elements = await asyncio.wait_for(
-                asyncio.to_thread(list_process_elements, pid, window),
-                timeout=self._INPUT_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            raise ElementError(
-                f"枚举控件超时（超过 {self._INPUT_TIMEOUT:g} 秒）：系统无响应，"
-                f"无法按控件名定位"
-            ) from None
-        if not elements:
-            raise ElementError(
-                "窗口内没有可枚举的控件（Windows 优先用 UI Automation 枚举，"
-                "Chrome / Electron / Qt / WPF / UWP 等自绘界面通常也能枚举到；"
-                "游戏 / 纯 OpenGL / 自绘 canvas 等仍可能不暴露内部元素）——"
-                "请改用 op=screenshot 截图 + read_image 读图后用像素坐标操作，"
-                "或用 op=locate 做图像 / 文字定位"
-            )
-        matched = match_window_element(elements, element)
-        frame = await self._window_frame_for(pid, window)
-        if frame is None:
-            raise ElementError(
-                "无法确定窗口坐标系（窗口可能已关闭），不能把控件坐标换算成输入坐标"
-            )
-        return ((matched.center_x - frame.screen_x,
-                 matched.center_y - frame.screen_y), matched)
-
-    @staticmethod
-    def _element_summary(item: ElementInfo) -> dict:
-        """控件定位结果的一行摘要（结果回显用）。"""
-        return {
-            "handle_hex": item.handle_hex,
-            "class": item.class_name,
-            "text": item.text,
-            "label": item.label,
-            "automation_id": item.automation_id,
-            "type": item.control_type,
-            "enabled": item.enabled,
-            "visible": item.visible,
-        }
-
-    async def _window_frame_for(self, pid: int, window: str | None):
-        """返回被选窗口的截图坐标系（与 op=screenshot 产物一致）。
-
-        取不到时返回 ``None``（不抛错）：调用方据此给出可读提示，而不是让
-        整个操作失败。
-        """
-        backend = resolve_input_backend()
-        locate = getattr(backend, "locate", None)
-        if locate is None:
-            return None
-        try:
-            target = await asyncio.wait_for(
-                asyncio.to_thread(locate, pid, window),
-                timeout=self._INPUT_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            # 显式列出（Python 3.9 的 asyncio.TimeoutError 不是 OSError 子类，
-            # 仅靠 OSError 捕获会漏掉 → 变成「内部错误」而不是可读提示）
-            logger.debug("窗口坐标系读取超时（pid=%s）", pid)
-            return None
-        except (SelectorError, ScreenshotError, OSError, ValueError):
-            return None
-        return getattr(target, "frame", None)
-
-    async def _inject_input_action(self, pid: int, action, via: str, *,
-                                   paste_key=_UNSET,
-                                   restore_clipboard=_UNSET) -> dict:
-        """执行一次输入注入（type 且 via='clipboard' 时改走剪贴板粘贴）。
-
-        Args:
-            pid: 目标进程 PID。
-            action: 输入动作。
-            via: ``typing`` 逐字符注入 / ``clipboard`` 剪贴板粘贴。
-            paste_key: 仅剪贴板粘贴用（``_UNSET`` = 取实例参数）；供
-                ``op=sequence`` 的步骤级参数透传。
-            restore_clipboard: 仅剪贴板粘贴用（``_UNSET`` = 取实例参数）。
-        """
-        if via == "clipboard" and action.name == "type":
-            return await self._paste_text(pid, action, paste_key=paste_key,
-                                          restore_clipboard=restore_clipboard)
-        result = await self._send_input_with_retry(pid, action)
-        return result.to_dict()
-
-    async def _paste_text(self, pid: int, action, *, paste_key=_UNSET,
-                          restore_clipboard=_UNSET) -> dict:
-        """把文本放入系统剪贴板后发送粘贴键（type via='clipboard'）。
-
-        逐字符合成按键对长文本 / 中文 / emoji 既慢又容易被目标程序丢字或
-        误判为快捷键；剪贴板粘贴是 GUI 应用最可靠的文本输入方式。
-
-        恢复原剪贴板之前会等待 :data:`_CLIPBOARD_RESTORE_DELAY` 秒：浏览器 /
-        Electron / 远程桌面等目标的「粘贴」是异步消息处理（收到粘贴键后才去
-        读剪贴板），恢复太快会让它们读到**旧内容**（表现为「粘出来的还是
-        上一次的剪贴板文本」）。确实不需要恢复时传 ``restore_clipboard=False``
-        （既避免时序问题，也少一次剪贴板读写）。
-
-        Args:
-            pid: 目标进程 PID。
-            action: ``type`` 动作（``action.text`` 为待粘贴文本）。
-            paste_key: 粘贴组合键（``_UNSET`` = 取本工具实例的 ``paste_key``，
-                再缺省按平台取 ctrl+v / command+v）。
-            restore_clipboard: 粘贴后是否恢复原剪贴板（``_UNSET`` = 取实例参数，
-                缺省 True）。
-
-        Raises:
-            InputError: 剪贴板不可用或粘贴键注入失败。
-        """
-        key_text = self._resolve_paste_key(paste_key)
-        restore = self._resolve_restore_clipboard(restore_clipboard)
-        original = None
-        if restore:
-            try:
-                original = await asyncio.to_thread(read_clipboard_text)
-            except ClipboardError:
-                logger.debug("读取原剪贴板失败，跳过恢复", exc_info=True)
-        try:
-            await asyncio.to_thread(write_clipboard_text, action.text)
-        except ClipboardError as exc:
-            raise InputError(f"剪贴板写入失败（无法粘贴输入）: {exc}") from exc
-        try:
-            key_action = build_action("key", {
-                "key": key_text, "window": getattr(action, "window", "") or "",
-            })
-            result = await self._send_input_with_retry(pid, key_action)
-            if restore and original is not None:
-                # 目标程序此刻才去读剪贴板：留出读取窗口再恢复原内容
-                await asyncio.sleep(self._CLIPBOARD_RESTORE_DELAY)
-        finally:
-            if restore and original is not None:
-                try:
-                    await asyncio.to_thread(write_clipboard_text, original)
-                except ClipboardError:
-                    logger.debug("恢复剪贴板内容失败", exc_info=True)
-        detail = dict(result.to_dict())
-        restored = bool(restore and original is not None)
-        detail.update({
-            "via": "clipboard",
-            "paste_key": key_text,
-            "pasted_characters": len(action.text),
-            "clipboard_restored": restored,
-        })
-        if restored:
-            detail["clipboard_restore_delay"] = self._CLIPBOARD_RESTORE_DELAY
-        return detail
-
-    def _resolve_paste_key(self, raw=_UNSET) -> str:
-        """粘贴组合键：显式参数优先，其次 paste_key 参数，缺省按平台取。
-
-        Args:
-            raw: 显式取值（``op=sequence`` 的步骤复用）；``_UNSET`` 时取本工具
-                实例的 ``paste_key`` 参数。
-        """
-        value = self.paste_key if raw is _UNSET else raw
-        if value is not None and str(value).strip():
-            return str(value).strip()
-        backend = resolve_input_backend()
-        name = str(getattr(backend, "name", "") or "")
-        return self._PASTE_KEYS.get(name, self._DEFAULT_PASTE_KEY)
-
-    def _resolve_restore_clipboard(self, raw=_UNSET) -> bool:
-        """是否在粘贴后恢复原剪贴板内容（缺省 True；``_UNSET`` = 取实例参数）。
-
-        Raises:
-            ValueError: 取值无法识别为布尔。
-        """
-        value = self.restore_clipboard if raw is _UNSET else raw
-        return self._parse_bool(value, default=True, label="restore_clipboard")
-
-    async def _temp_screenshot(self, pid: int, window: str | None) -> str | None:
-        """截一张临时图（变化判定 / 差异比较用），失败返回 None。"""
-        path = os.path.join(
-            tempfile.gettempdir(),
-            f"bash_opt-{self.task_id or 'task'}-{time.monotonic_ns()}.png",
-        )
-        try:
-            await self._capture_with_retry(pid, path, None, window=window)
-        except (ScreenshotError, SelectorError, OSError):
-            self._remove_temp(path)
-            return None
-        return path
-
-    @staticmethod
-    def _remove_temp(path: str | None) -> None:
-        """删除临时文件（不存在 / 删除失败都忽略）。"""
-        if not path:
-            return
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-
-    def _cleanup_temps(self, paths) -> None:
-        for path in list(paths):
-            self._remove_temp(path)
-
-    async def _await_screen(self, pid: int, *, mode: str,
-                            before_path: str | None, window: str | None,
-                            timeout: float) -> dict:
-        """等待界面变化（``change``）或稳定（``stable``）。
-
-        ``change``：把每一轮采样与注入前的基准图比较，出现差异即满足；
-        ``stable``：连续两次采样一致即满足（动画 / 加载结束）；变化像素占比
-        不超过 :data:`_STABLE_CHANGE_RATIO` 的**微小噪声**（输入光标闪烁、
-        时钟秒数）同样视为稳定，并在结果的 ``ignored_change`` 里说明忽略了
-        多少像素——否则带光标的界面永远等不到「逐像素一致」。
-
-        Returns:
-            ``{mode, satisfied, waited, samples}``；无法判定时 ``satisfied``
-            为 ``None`` 并附 ``reason``（如截图失败、缺少基准图）。
-        """
-        started = time.monotonic()
-        deadline = started + max(float(timeout), 0.0)
-        samples = 0
-        previous = before_path
-        interval = self._WAIT_FOR_INTERVAL
-
-        def _replace_previous(new_path: str) -> None:
-            """把本轮采样保留为下一轮基准，并删除上一轮不再需要的基准图。
-
-            ★ 资源回收：作为基准保留的临时图（``previous``）不受 ``finally``
-            的「未保留则删除」约束，必须在这里替换时删除旧基准——否则每次
-            stable 判定都会在临时目录留下一个 PNG（等待越久泄漏越多）。
-            """
-            nonlocal previous
-            if previous is not before_path:
-                self._remove_temp(previous)
-            previous = new_path
-
-        try:
-            while True:
-                samples += 1
-                current = await self._temp_screenshot(pid, window)
-                if current is None:
-                    if time.monotonic() >= deadline:
-                        return self._wait_result(
-                            mode, None, started, samples,
-                            "无法截图（窗口可能已关闭或无响应）")
-                    await asyncio.sleep(interval)
-                    interval = min(interval * self._WAIT_FOR_BACKOFF,
-                                   self._WAIT_FOR_MAX_INTERVAL)
-                    continue
-                keep = False
-                try:
-                    reference = before_path if mode == "change" else previous
-                    if reference is None:
-                        if mode == "change":
-                            if before_path is None:
-                                return self._wait_result(
-                                    mode, None, started, samples,
-                                    "没有注入前的基准截图，无法判定界面是否变化")
-                            return self._wait_result(
-                                mode, None, started, samples, "缺少比较基准")
-                        _replace_previous(current)
-                        keep = True
-                    else:
-                        diff = await asyncio.to_thread(
-                            compare_png_files, reference, current)
-                        if mode == "change":
-                            if diff.changed:
-                                return self._wait_result(
-                                    mode, True, started, samples, None,
-                                    diff.to_dict())
-                        elif self._is_stable(diff):
-                            # 连续两次采样一致（或只剩光标闪烁级别的噪声）→ 稳定
-                            return self._wait_result(
-                                mode, True, started, samples,
-                                ignored=self._stability_note(diff))
-                        else:
-                            _replace_previous(current)
-                            keep = True
-                except (ScreenshotError, OSError, ValueError) as exc:
-                    logger.debug("等待界面变化时比较失败: %s", exc)
-                finally:
-                    if not keep:
-                        self._remove_temp(current)
-                if time.monotonic() >= deadline:
-                    verb = "变化" if mode == "change" else "稳定"
-                    return self._wait_result(
-                        mode, False, started, samples,
-                        f"超时：界面在 {timeout:g} 秒内没有{verb}")
-                await asyncio.sleep(interval)
-                interval = min(interval * self._WAIT_FOR_BACKOFF,
-                               self._WAIT_FOR_MAX_INTERVAL)
-        finally:
-            # 循环内作为基准保留的最后一张临时图（非注入前基准）同样要清理
-            if previous is not before_path:
-                self._remove_temp(previous)
-
-    def _is_stable(self, diff) -> bool:
-        """画面是否可判为「已稳定」（允许光标闪烁 / 时钟之类的微小噪声）。
-
-        Args:
-            diff: 本轮与上一轮的差异（:class:`~._screenshot.diff.DiffResult`）。
-        """
-        if not diff.changed:
-            return True
-        if diff.size_changed:
-            return False
-        return diff.changed_ratio <= self._STABLE_CHANGE_RATIO
-
-    @classmethod
-    def _stability_note(cls, diff) -> str | None:
-        """稳定判定的补充说明（忽略微小变化时给出，便于解释 satisfied=True）。"""
-        if not diff.changed:
-            return None
-        return (f"忽略了 {diff.changed_pixels} 像素（{diff.changed_ratio * 100:.3f}%）"
-                f"的微小变化（光标闪烁 / 时钟等噪声），区域 {diff.region}")
-
-    @staticmethod
-    def _wait_result(mode: str, satisfied, started: float, samples: int,
-                     reason: str | None = None, change: dict | None = None,
-                     ignored: str | None = None) -> dict:
-        """组装 ``wait_for`` 的结果字典。"""
-        payload = {
-            "mode": mode,
-            "satisfied": satisfied,
-            "waited": round(time.monotonic() - started, 3),
-            "samples": samples,
-        }
-        if change is not None:
-            payload["change"] = change
-        if ignored:
-            payload["ignored_change"] = ignored
-        if reason:
-            payload["reason"] = reason
-        return payload
-
-    async def _diff_result(self, pid: int, before_path: str | None, *,
-                           window: str | None, tolerance: int) -> dict:
-        """注入前后截图比较（``diff=true``）：回传是否变化与变化区域。"""
-        if before_path is None:
-            return {
-                "changed": None,
-                "reason": "无法截取注入前的基准图（窗口可能尚未就绪）",
-            }
-        after_path = await self._temp_screenshot(pid, window)
-        if after_path is None:
-            return {
-                "changed": None,
-                "reason": "无法截取注入后的截图（窗口可能已关闭）",
-            }
-        try:
-            diff = await asyncio.to_thread(
-                compare_png_files, before_path, after_path, tolerance=tolerance)
-        except (ScreenshotError, OSError, ValueError) as exc:
-            return {"changed": None, "reason": f"截图比较失败: {exc}"}
-        finally:
-            self._remove_temp(after_path)
-        payload = diff.to_dict()
-        payload["summary"] = diff.summary()
-        return payload
-
-    def _resolve_wait_target(self, raw=_UNSET, timeout_raw=_UNSET
-                             ) -> tuple[str | None, float, float]:
-        """解析 ``wait_for`` / ``wait_timeout``。
-
-        Args:
-            raw: 显式 ``wait_for`` 取值（op=sequence 的步骤复用）；``_UNSET``
-                时取本工具实例的 ``wait_for``。
-            timeout_raw: 显式 ``wait_timeout`` 取值；``_UNSET`` 时取实例值。
-
-        Returns:
-            ``(模式或 None, 超时秒数, 额外等待秒数)``：数值形式（如 ``0.5``）
-            视为「额外等待秒数」（等价增强版 settle），此时模式为 ``None``。
-
-        Raises:
-            ValueError: 取值非法。
-        """
-        wait_raw = self.wait_for if raw is _UNSET else raw
-        timeout = self._parse_wait_timeout(
-            self.wait_timeout if timeout_raw is _UNSET else timeout_raw)
-        if wait_raw is None:
-            return None, timeout, 0.0
-        if isinstance(wait_raw, bool):
-            if not wait_raw:
-                return None, timeout, 0.0
-            return "change", timeout, 0.0
-        text = str(wait_raw).strip().lower()
-        if not text:
-            return None, timeout, 0.0
-        if text in ("change", "changed", "diff", "update", "updated"):
-            return "change", timeout, 0.0
-        if text in ("stable", "settle", "static", "idle"):
-            return "stable", timeout, 0.0
-        try:
-            seconds = float(text)
-        except ValueError:
-            raise ValueError(
-                f"wait_for 取值非法: {wait_raw!r}。支持 'change'（等待界面变化）、"
-                f"'stable'（等待界面稳定）或秒数（额外等待，如 0.5）"
-            ) from None
-        if seconds < 0:
-            raise ValueError(f"wait_for 秒数不能为负，当前: {seconds}")
-        return None, timeout, min(seconds, self._MAX_SETTLE_SECONDS)
-
-    def _resolve_wait_timeout(self) -> float:
-        """解析 ``wait_timeout``（等待界面变化 / 稳定的超时秒数）。"""
-        return self._parse_wait_timeout(self.wait_timeout)
-
-    @staticmethod
-    def _parse_wait_timeout(raw) -> float:
-        """解析等待界面变化的超时（秒，上限为 settle 上限的 4 倍）。
-
-        Raises:
-            ValueError: 取值非法或为负。
-        """
-        if raw is None:
-            return BashOptFunc._WAIT_FOR_TIMEOUT
-        if isinstance(raw, bool):
-            raise ValueError("wait_timeout 需要数值（秒）")
-        try:
-            value = float(raw)
-        except (TypeError, ValueError):
-            raise ValueError(f"wait_timeout 需要数值（秒），当前: {raw!r}") from None
-        if math.isnan(value) or value < 0:
-            raise ValueError(f"wait_timeout 不能为负，当前: {raw!r}")
-        return min(value, BashOptFunc._MAX_SETTLE_SECONDS * 4)
-
-    def _resolve_diff_flag(self) -> bool:
-        """解析 ``diff``（是否比较注入前后截图差异）。"""
-        return self._parse_diff(self.diff)
-
-    @staticmethod
-    def _parse_diff(raw) -> bool:
-        """解析布尔型开关（``diff``），接受 true/false 与 1/0 等写法。
-
-        Raises:
-            ValueError: 取值无法识别。
-        """
-        if raw is None or raw is False:
-            return False
-        if raw is True:
-            return True
-        text = str(raw).strip().lower()
-        if text in ("", "false", "0", "no", "off"):
-            return False
-        if text in ("true", "1", "yes", "on", "auto"):
-            return True
-        raise ValueError(f"diff 需要布尔值（true/false），当前: {raw!r}")
-
-    @staticmethod
-    def _parse_bool(raw, *, default: bool, label: str) -> bool:
-        """解析通用布尔参数（缺省 / 空值 → ``default``）。
-
-        与 ``_parse_diff`` 同源但错误文案按参数名生成，供 ``restore_clipboard``
-        / ``newline`` 这类需要「显式区分未传与 false」的开关使用。
-
-        Raises:
-            ValueError: 取值无法识别为布尔。
-        """
-        if raw is None:
-            return default
-        if isinstance(raw, bool):
-            return raw
-        text = str(raw).strip().lower()
-        if text in ("", "default", "auto"):
-            return default
-        if text in ("true", "1", "yes", "on"):
-            return True
-        if text in ("false", "0", "no", "off"):
-            return False
-        raise ValueError(f"{label} 需要布尔值（true/false），当前: {raw!r}")
-
-    def _resolve_tolerance(self) -> int:
-        """解析 ``tolerance``（截图比较的颜色容差，每通道 0..255）。"""
-        return self._parse_tolerance(self.tolerance)
-
-    @staticmethod
-    def _parse_tolerance(raw) -> int:
-        """解析截图比较容差（0..255，缺省 ``_DIFF_TOLERANCE``）。
-
-        Raises:
-            ValueError: 取值非法或越界。
-        """
-        if raw is None:
-            return BashOptFunc._DIFF_TOLERANCE
-        if isinstance(raw, bool):
-            raise ValueError("tolerance 需要整数（0..255）")
-        try:
-            value = int(float(str(raw).strip()))
-        except (TypeError, ValueError):
-            raise ValueError(f"tolerance 需要整数（0..255），当前: {raw!r}") from None
-        if not 0 <= value <= 255:
-            raise ValueError(f"tolerance 需在 0..255 之间，当前: {value}")
-        return value
-
-    def _resolve_type_via(self, raw=_UNSET) -> str:
-        """解析 type 的 ``via``（``typing`` 逐字符 / ``clipboard`` 粘贴）。
-
-        Args:
-            raw: 显式取值（op=sequence 的步骤复用）；``_UNSET`` 时取实例值。
-        """
-        value = self.via if raw is _UNSET else raw
-        if value is None:
-            return "typing"
-        text = str(value).strip().lower()
-        if not text:
-            return "typing"
-        aliases = {
-            "typing": "typing", "type": "typing", "keys": "typing",
-            "clipboard": "clipboard", "paste": "clipboard", "clip": "clipboard",
-        }
-        resolved = aliases.get(text)
-        if resolved is None:
-            raise ValueError(
-                f"via 取值非法: {value!r}。支持 typing（逐字符注入）或 "
-                f"clipboard（经系统剪贴板粘贴）"
-            )
-        return resolved
-
-
-    def _resolve_settle(self) -> float:
-        """解析注入后等待时长（秒）：未指定时「带 shot」默认等一小会儿。
-
-        Raises:
-            ValueError: 取值非法（非数值或为负）。
-        """
-        raw = self.settle
-        if raw is None:
-            return self._DEFAULT_SHOT_SETTLE if self.shot else 0.0
-        if isinstance(raw, bool):
-            raise ValueError("settle 需要数值（秒）")
-        try:
-            value = float(raw)
-        except (TypeError, ValueError):
-            raise ValueError(f"settle 需要数值（秒），当前: {raw!r}") from None
-        if math.isnan(value) or value < 0:
-            raise ValueError(f"settle 不能为负数，当前: {raw!r}")
-        return min(value, self._MAX_SETTLE_SECONDS)
-
-    def _shot_path(self, shot=None) -> str:
-        """解析 shot 参数为截图路径（``true`` 等占位值 → 自动命名）。
-
-        Args:
-            shot: 显式取值（供 op=sequence 的步骤复用）；``None`` 时取本工具
-                实例的 ``shot`` 参数。
-        """
-        raw = self.shot if shot is None else shot
-        auto = raw is True
-        if not auto and isinstance(raw, str) and raw.strip().lower() in (
-                "true", "auto", "yes", "on"):
-            auto = True
-        if auto:
-            stamp = time.strftime("%H%M%S")
-            return os.path.join(self._SHOT_AUTO_DIR, f"{self.task_id}-{stamp}.png")
-        return str(raw or "").strip()
-
-    async def _attach_shot(self, payload: dict, rec: dict, *,
-                           shot=_UNSET, window=_UNSET,
-                           grid=_UNSET) -> str | None:
-        """输入 op 的 shot 参数：注入后自动截图，结果写入 ``payload["screenshot"]``。
-
-        ``shot`` / ``window`` / ``grid`` 可显式传入（供 op=sequence 的步骤复用），
-        省略时取本工具实例的对应参数。
-
-        Returns:
-            失败原因（成功或未启用时返回 None）；截图失败不影响注入结果。
-        """
-        shot_value = self.shot if shot is _UNSET else shot
-        if not shot_value:
-            return None
-        window_value = self.window if window is _UNSET else window
-        grid_value = self.grid if grid is _UNSET else grid
-        path = self._shot_path(shot_value)
-        if not path:
-            return "shot 需要截图路径（或 true 自动命名到 bash_opt_shots/）"
-        try:
-            target_path = self._prepare_screenshot_path(path)
-        except ValueError as exc:
-            return f"截图路径非法: {exc}"
-        pid = rec.get("pid")
-        if pid is None:
-            return "任务尚无进程句柄，无法截图"
-        try:
-            grid_step = self._resolve_grid(grid_value)
+            crop = self._resolve_crop()
         except CropError as exc:
-            return f"截图网格参数非法: {exc}"
+            return {"screenshot_error": f"截图裁剪参数非法: {exc}"}
         try:
-            result = await self._capture_with_retry(
-                pid, target_path, None, window=window_value, grid=grid_step)
-        except (SelectorError, ScreenshotError) as exc:
-            scope = f"（window 选择器 {window_value!r}）" if window_value else ""
-            return f"截图失败{scope}: {exc}"
-        payload["screenshot"] = result.to_dict()
-        payload["hint"] = (f"{payload.get('hint', '')}；已自动截图，"
-                           f"可用 read_image 读取 screenshot.path")
-        return None
-
-    # ── op=windows / op=window ───────────────────────────
-
-    async def _op_windows(self, rec: dict) -> str:
-        """列出后台任务进程树的全部窗口（挑选目标窗口 / 排查窗口问题用）。
-
-        返回 JSON（total + windows 列表）：每个窗口含句柄、标题、类名、位置
-        尺寸、Z 序（``order``，0 = 最靠前）、是否前台 / 最小化 / 主窗口。模型
-        据此把 ``window`` 选择器用于 screenshot / 输入 op / 窗口控制，即可精确
-        操作弹出菜单、下拉浮层、对话框等独立顶层窗口。
-        """
-        pid = rec.get("pid")
-        if pid is None:
-            return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
-                    f"无法枚举窗口。可用 op=wait 查看任务状态)")
+            target_path = self._prepare_screenshot_path(str(self.path))
+        except ValueError as exc:
+            return {"screenshot_error": f"截图路径非法: {exc}"}
         try:
-            infos = await asyncio.wait_for(
-                asyncio.to_thread(list_process_windows, pid),
-                timeout=self._INPUT_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            return (f"(枚举窗口超时（超过 {self._INPUT_TIMEOUT:g} 秒）："
-                    f"系统窗口枚举无响应")
-        # ★ 全量枚举再按 _MAX_WINDOW_LIST 截断：selectable_total 必须基于**全部**
-        #   窗口统计（旧实现用 describe_windows 的默认截断（40 条）结果统计，
-        #   窗口多于 40 个时计数偏小且清单无提示地缺尾）。
-        described_all = (describe_windows(infos, limit=max(len(infos), 1))
-                         if infos else [])
-        described = described_all[:self._MAX_WINDOW_LIST]
-        selectable_total = sum(1 for item in described_all
-                               if item.get("selectable"))
-        payload = {
-            "task_id": self.task_id,
-            "op": "windows",
-            "pid": pid,
-            "total": len(infos),
-            "windows_total": len(infos),
-            "selectable_total": selectable_total,
-            "windows": described,
-        }
-        if len(described_all) > len(described):
-            payload["returned"] = len(described)
-            payload["truncated"] = True
-        if infos:
-            payload["hint"] = ("用 window 参数把 screenshot / 输入 op 投向指定窗口："
-                               "'main'（缺省主窗口）、'#N'（可操作窗口的 Z 序第 N 个，"
-                               "取 windows[].z_index；如弹出的右键菜单 / 下拉浮层）、"
-                               "'active'（前台窗口）、'title:子串'、'class:子串'、"
-                               "'title~:正则'、'class~:正则'、're:正则'、"
-                               "'process:进程名'、'fuzzy:关键词'、"
-                               "'handle:0x…'、'popup'、'dialog'。"
-                               "selectable=false 的窗口（visible=false 或已最小化）"
-                               "不会被 'main' / '#N' / 'popup' / 'dialog' 选中，"
-                               "需要时用 handle:0x… 显式指定；"
-                               "计数看 selectable_total（可操作窗口数）与 "
-                               "windows_total（含隐藏 / 最小化的全部窗口数）。"
-                               "'#N' 的编号与截图结果里的 window_summary 编号同源"
-                               "（都按可操作窗口的 Z 序），可直接互相参照。"
-                               "tool_window=true 的弹层（右键菜单 / 下拉浮层 / 弹出"
-                               "窗口）不参与前台切换，直接点击即可：输入 op 会按"
-                               "「该窗口所属应用是否在前台」判定，鼠标事件按屏幕"
-                               "坐标命中光标下的真实窗口、键盘事件交给同一应用的"
-                               "前台窗口（结果里的 foreground_window 标注了实际"
-                               "接收窗口）。client_area=false 表示该窗口没有可换算"
-                               "的客户区，此时不能用 method='message' 投递鼠标坐标"
-                               "（去掉 method 用默认的合成输入即可）")
-            if selectable_total == 0:
-                # ★ 启动竞态（真实用例：WinUI 画图启动瞬间只有一个隐藏的
-                #   GDI+ Hook 窗口，主窗口几秒后才可见）：此时 selectable_total
-                #   为 0，模型若直接截图 / 输入会连续失败；这里明确告诉它
-                #   「窗口存在但还不可操作」，并给出 wait_window / restore 下一步。
-                hidden = [
-                    (item.get("title") or item.get("class")
-                     or item.get("handle_hex"))
-                    for item in described_all[:5]
-                    if not item.get("selectable")
-                ]
-                payload["hint"] = payload["hint"] + (
-                    f"；注意：当前枚举到的 {len(infos)} 个窗口全部不可见 / 已最小化"
-                    f"（selectable_total=0），GUI 程序可能仍在初始化或窗口尚未显示——"
-                    f"可先 op=wait_window 等窗口可用，或对已存在的窗口执行 "
-                    f"window_action='restore' 后再截图 / 输入"
-                )
-                if hidden:
-                    payload["hidden_windows"] = hidden
-            payload["summary"] = window_hint(infos)
-        else:
-            payload["hint"] = ("未找到可见窗口（纯命令行进程没有 GUI 窗口；"
-                               "窗口已最小化或被隐藏时也找不到；GUI 程序若经 "
-                               "App Execution Alias 或其它进程（explorer 等）启动，"
-                               "窗口可能不属于本任务进程树，可改用整屏截图 "
-                               "screen=true 查看画面）")
-        if payload.get("truncated"):
-            payload["hint"] = (payload.get("hint", "") +
-                               f"；窗口过多，清单仅返回前 {len(described)} 条"
-                               f"（共 {len(infos)} 条）")
-        return json.dumps(payload, ensure_ascii=False)
+            info = await self._screenshot_target(
+                rec, target_path=target_path, crop=crop,
+                window=self.window, screen=None)
+        except (MonitorError, SelectorError, ScreenshotError,
+                CropError, ValueError) as exc:
+            scope = f"（window 选择器 {self.window!r}）" if self.window else ""
+            return {"screenshot_error": f"截图失败{scope}: {exc}"}
+        result = info["result"]
+        shot: dict = result.to_dict()
+        if info["region"] is not None:
+            shot["crop"] = info["region"].to_dict()
+        shot["hint"] = (
+            "输入已生效并完成截图，可用 read_image 读取该文件查看变化；"
+            f"截图像素左上角对应屏幕坐标 ({result.window_x},{result.window_y})，"
+            "输入 op 的坐标即以本产物左上角为原点"
+        )
+        return {"screenshot": shot}
 
-    async def _op_window(self, rec: dict) -> str:
-        """控制被选窗口的状态与几何。
-
-        除 ``activate`` / ``maximize`` / ``minimize`` / ``restore`` / ``close`` /
-        ``move`` / ``resize`` / ``fit`` 外，还支持：
-
-          - ``always_on_top`` / ``not_on_top``：置顶 / 取消置顶（操作 GUI 应用
-            时避免被别的窗口遮挡，尤其防止「截图 → 定位 → 点击」之间被抢前台）；
-          - ``get_geometry`` / ``save_geometry`` / ``restore_geometry``：读取 /
-            记住 / 恢复窗口几何（把布局固定下来后再按像素操作，减少坐标漂移）。
-
-        配合 ``window`` 选择器指定目标窗口；``move`` / ``fit`` 用 ``x`` / ``y``
-        （屏幕坐标），``resize`` / ``fit`` 用 ``width`` / ``height``。返回动作
-        前后的窗口状态，便于确认结果。
-        """
-        ended = self._ended_task_reply(rec, "控制窗口")
-        if ended:
-            return ended
-        pid = rec.get("pid")
-        if pid is None:
-            return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
-                    f"无法控制窗口。可用 op=wait 查看任务状态)")
-        try:
-            self._validate_window_request(
-                self.window_action, window=self.window, x=self.x, y=self.y,
-                width=self.width, height=self.height,
-            )
-        except SelectorError as exc:
-            return f"(窗口控制参数非法: {exc})"
-        try:
-            detail = await self._apply_window_action(
-                rec, self.window_action, window=self.window,
-                x=self.x, y=self.y, width=self.width, height=self.height,
-            )
-        except SelectorError as exc:
-            return f"(窗口控制失败: {exc})"
-        except ScreenshotError as exc:
-            return f"(窗口控制失败: {exc})"
-        payload = {
-            "task_id": self.task_id,
-            "op": "window",
-            "hint": ("窗口状态已变更；可用 op=screenshot（可带 window 选择器）"
-                     "截图核对，或继续用输入 op 操作"),
-        }
-        payload.update(detail)
-        return json.dumps(payload, ensure_ascii=False)
-
-    @staticmethod
-    def _validate_window_request(window_action, *, window=None, x=None, y=None,
-                                 width=None, height=None) -> str:
-        """只校验窗口动作与几何参数（不执行）。
-
-        Returns:
-            规范化后的动作名。
-
-        Raises:
-            SelectorError: 动作未知或几何参数非法。
-        """
-        action = normalize_control_action(window_action)
-        if action is None:
-            supported = "、".join((*WINDOW_CONTROL_ACTIONS, *WINDOW_MEMORY_ACTIONS))
-            raise SelectorError(
-                f"窗口控制动作非法: {window_action!r}。支持: {supported}"
-            )
-        if action in WINDOW_MEMORY_ACTIONS:
-            return action
-        parse_control_request(action, window=window, x=x, y=y,
-                              width=width, height=height)
-        return action
-
-    async def _apply_window_action(self, rec: dict, window_action, *,
-                                   window=None, x=None, y=None,
-                                   width=None, height=None) -> dict:
-        """执行一次窗口控制（含工具层扩展的几何记忆动作）。
-
-        Raises:
-            SelectorError: 动作或几何参数非法。
-            ScreenshotError: 无进程句柄、平台不支持、无匹配窗口或调用失败。
-        """
-        pid = rec.get("pid")
-        if pid is None:
-            raise ScreenshotError(
-                f"后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
-                f"无法控制窗口"
-            )
-        action = normalize_control_action(window_action)
-        if action is None:
-            supported = "、".join((*WINDOW_CONTROL_ACTIONS, *WINDOW_MEMORY_ACTIONS))
-            raise SelectorError(
-                f"窗口控制动作非法: {window_action!r}。支持: {supported}"
-            )
-        if action in WINDOW_MEMORY_ACTIONS:
-            return await self._apply_geometry_action(rec, action, window=window)
-        request = parse_control_request(
-            action, window=window, x=x, y=y, width=width, height=height)
-        try:
-            return await asyncio.wait_for(
-                asyncio.to_thread(control_process_window, pid, request),
-                timeout=self._INPUT_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            raise ScreenshotError(
-                f"窗口控制超时（超过 {self._INPUT_TIMEOUT:g} 秒）：窗口无响应"
-            ) from None
-
-    async def _apply_geometry_action(self, rec: dict, action: str, *,
-                                     window=None) -> dict:
-        """窗口几何记忆动作：读取 / 记住 / 恢复（``get/save/restore_geometry``）。
-
-        几何保存在任务记录里（``rec["saved_geometry"]``），因此跨多次工具调用
-        依然有效：先 ``save_geometry`` 固定布局，做完整套操作后再
-        ``restore_geometry`` 还原。
-        """
-        if action == "get_geometry":
-            rect = await self._current_window_rect(rec, window)
-            return {"window_action": action, "geometry": self._geometry_payload(rect)}
-        if action == "save_geometry":
-            rect = await self._current_window_rect(rec, window)
-            saved = {"window": window or "main", **self._geometry_payload(rect)}
-            rec["saved_geometry"] = saved
-            return {"window_action": action, "saved": saved,
-                    "geometry": self._geometry_payload(rect)}
-        saved = rec.get("saved_geometry")
-        if not saved:
-            raise ScreenshotError(
-                "尚未保存窗口几何：请先执行 op=window, "
-                "window_action='save_geometry' 记住当前布局"
-            )
-        rect = saved.get("rect") or {}
-        try:
-            request = parse_control_request(
-                "fit", window=window or saved.get("window") or "main",
-                x=rect.get("x"), y=rect.get("y"),
-                width=rect.get("width"), height=rect.get("height"),
-            )
-        except SelectorError as exc:
-            raise ScreenshotError(f"保存的窗口几何非法，无法恢复: {exc}") from exc
-        pid = rec.get("pid")
-        try:
-            detail = await asyncio.wait_for(
-                asyncio.to_thread(control_process_window, pid, request),
-                timeout=self._INPUT_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            raise ScreenshotError(
-                f"恢复窗口几何超时（超过 {self._INPUT_TIMEOUT:g} 秒）"
-            ) from None
-        detail["window_action"] = action
-        detail["restored"] = saved
-        return detail
-
-    async def _current_window_rect(self, rec: dict, window) -> dict:
-        """读取被选窗口的屏幕矩形（含句柄 / 标题，供几何记忆使用）。"""
-        pid = rec.get("pid")
-        try:
-            infos = await asyncio.wait_for(
-                asyncio.to_thread(list_process_windows, pid),
-                timeout=self._INPUT_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            raise ScreenshotError(
-                f"枚举窗口超时（超过 {self._INPUT_TIMEOUT:g} 秒）：系统无响应"
-            ) from None
-        if not infos:
-            raise ScreenshotError(
-                f"进程 {pid} 及其子进程没有可操作窗口（纯命令行进程没有 GUI 窗口）"
-            )
-        target = pick_window(infos, window)
-        geometry = window_geometry(infos, target)
-        rect = dict(geometry["rect"])
-        rect["handle"] = target.handle
-        rect["handle_hex"] = target.handle_hex
-        rect["title"] = target.title
-        rect["window_summary"] = indexed_summary(infos, target)
-        return rect
-
-    @staticmethod
-    def _geometry_payload(rect: dict) -> dict:
-        """把窗口几何整理为统一结构（截图坐标系矩形 + 句柄 / 标题）。"""
-        return {
-            "rect": {key: rect.get(key) for key in ("x", "y", "width", "height")},
-            "handle_hex": rect.get("handle_hex"),
-            "title": rect.get("title", ""),
-            "window_summary": rect.get("window_summary", ""),
-        }
-
-    def _build_input_action(self, overrides: dict | None = None):
-        """把工具参数打包为输入动作（type 的 newline 语义在此落地）。
-
-        Args:
-            overrides: 覆盖参数字典（如按控件中心坐标覆盖 x/y 或
-                from_x/from_y——见 :meth:`_element_overrides`）。
-        """
+    def _build_input_action(self):
+        """把工具参数打包为输入动作（type 的 newline 语义在此落地）。"""
         text = self.text
         if self.op == "type" and self.newline:
             text = (text or "") + "\n"
@@ -3570,1393 +1633,12 @@ class BashOptFunc(Func):
             "x": self.x, "y": self.y,
             "to_x": self.to_x, "to_y": self.to_y,
             "from_x": self.from_x, "from_y": self.from_y,
-            "dx": self.dx, "dy": self.dy,
-            "dwell": self.dwell, "hold": self.hold, "interval": self.interval,
             "button": self.button, "count": self.count,
-            "modifiers": self.modifiers, "key": self.key, "text": text,
+            "key": self.key, "text": text,
             "direction": self.direction, "amount": self.amount,
-            "duration": self.duration, "steps": self.steps,
-            "method": self.method, "phase": self.phase,
-            "repeat": self.repeat,
-            "relative_event": self.relative_event,
-            "hold_keys": self.hold_keys,
-            "keys": self.keys, "buttons": self.buttons,
             "window": self.window,
         }
-        if overrides:
-            params.update(overrides)
         return build_action(self.op, params)
-
-    # ── op=elements（控件清单） ──────────────────────────
-
-    async def _op_elements(self, rec: dict) -> str:
-        """列出被选窗口内的控件（名称 / 类型 / 类名 / 矩形 / 可用状态）。
-
-        返回 JSON：``total``（枚举到的控件总数）、``matched``（按 ``element``
-        过滤后的条数）与 ``elements`` 清单。清单里每个控件都带**屏幕坐标**
-        （``x`` / ``y`` / ``center_x`` / ``center_y``）与**窗口内坐标**
-        （``window_center_x`` / ``window_center_y``，与 ``op=screenshot`` 产物同源）；
-        后者可直接交给 ``click`` 的 ``x`` / ``y``，也可直接给输入 op 传
-        ``element='控件名'`` 由工具内部换算。``element`` 过滤与输入 op 的定位
-        共用同一套写法：``'#N'``（清单第 N 个）、``'text:子串'``、
-        ``'class:子串'``、``'type:edit'`` 与中文标签（``'编辑框'`` / ``'按钮'``）。
-
-        Windows 优先走 **UI Automation**：Chrome / Electron / Qt / WPF / UWP
-        等自绘界面通常也能枚举到无障碍节点；UIA 不可用时回退经典 Win32 子窗口
-        枚举。仍枚举不到时（游戏 / 纯 OpenGL / 自绘 canvas）可改用 ``op=locate``
-        做图像 / 文字定位。
-        """
-        pid = rec.get("pid")
-        if pid is None:
-            return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
-                    f"无法枚举控件。可用 op=wait 查看任务状态)")
-        try:
-            limit = self._resolve_element_limit()
-        except ValueError as exc:
-            return f"(elements 参数非法: {exc})"
-        try:
-            elements = await asyncio.wait_for(
-                asyncio.to_thread(list_process_elements, pid, self.window),
-                timeout=self._INPUT_TIMEOUT,
-            )
-        except SelectorError as exc:
-            return (f"(枚举控件失败: {exc}。可先用 op=windows 查看窗口清单，"
-                    f"再用 window 选择器指定目标窗口)")
-        except ElementError as exc:
-            return f"(枚举控件失败: {exc})"
-        except asyncio.TimeoutError:
-            return (f"(枚举控件超时（超过 {self._INPUT_TIMEOUT:g} 秒）：系统无响应")
-        if not elements:
-            payload = {
-                "task_id": self.task_id,
-                "op": "elements",
-                "total": 0,
-                "matched": 0,
-                "elements": [],
-                "hint": ("未枚举到控件：该窗口可能不暴露无障碍 / 子控件节点"
-                         "（游戏 / 纯 OpenGL / 自绘界面 canvas），或窗口尚未就绪。"
-                         "此时可用 op=locate 做图像 / 文字定位，或回到"
-                         "「op=screenshot 截图 + read_image 读图 + 像素坐标操作」"
-                         "的方式；也可用 op=windows 确认窗口是否存在"),
-            }
-            return json.dumps(payload, ensure_ascii=False)
-        filtered = (filter_elements(elements, self.element)
-                    if self.element is not None and str(self.element).strip()
-                    else list(elements))
-        descriptors = describe_elements(filtered, limit)
-        frame = await self._window_frame_for(pid, self.window)
-        if frame is not None:
-            for item in descriptors:
-                item.update(self._to_window_coords(item, frame))
-        payload = {
-            "task_id": self.task_id,
-            "op": "elements",
-            "total": len(elements),
-            "matched": len(filtered),
-            "returned": len(descriptors),
-            "elements": descriptors,
-            "hint": ("操作方式二选一：①把 window_center_x / window_center_y 交给 "
-                     "click 的 x / y（坐标与 op=screenshot 产物同源）；②直接给输入 "
-                     "op 传 element='控件名'（或 'text:子串' / 'class:子串' / "
-                     "'type:edit' / '#N' / 中文类型 '编辑框'、'按钮'），"
-                     "click / move / scroll / drag 会用控件中心，type / key 会先点击"
-                     "该控件聚焦再输入。enabled=false 的控件（灰置）通常点不动；"
-                     "visible=false 表示当前被隐藏"),
-        }
-        if self.element:
-            payload["element"] = str(self.element)
-            if not filtered:
-                payload["filter_empty"] = True
-                payload["hint"] = (
-                    f"element={self.element!r} 没有匹配的控件（本次共枚举到 "
-                    f"{len(elements)} 个）。过滤支持 '#N'（清单第 N 个，从 1 开始）、"
-                    f"'text:子串'、'id:子串'（自动化 ID）、'class:子串'、"
-                    f"'type:edit' 与中文标签"
-                    f"（'编辑框' / '按钮' / '列表'）；也可不传 element 先看完整清单"
-                )
-        if len(descriptors) < len(filtered):
-            payload["truncated"] = True
-            payload["hint"] = (
-                str(payload.get("hint", ""))
-                + f"；清单已截断：仅返回前 {len(descriptors)} 条"
-                  f"（共 {len(filtered)} 个匹配控件），可用 max_elements 调大上限"
-            )
-        return json.dumps(payload, ensure_ascii=False)
-
-    @staticmethod
-    def _to_window_coords(item: dict, frame) -> dict:
-        """把控件描述的屏幕坐标换算为窗口内坐标（截图坐标系）。"""
-        return {
-            "window_x": item["x"] - frame.screen_x,
-            "window_y": item["y"] - frame.screen_y,
-            "window_center_x": item["center_x"] - frame.screen_x,
-            "window_center_y": item["center_y"] - frame.screen_y,
-        }
-
-    def _resolve_element_limit(self) -> int:
-        """解析 ``max_elements``（控件清单返回条数上限，1.._MAX_ELEMENT_LIMIT）。"""
-        raw = self.max_elements
-        if raw is None:
-            return self._DEFAULT_ELEMENT_LIMIT
-        if isinstance(raw, bool):
-            raise ValueError("max_elements 需要正整数")
-        try:
-            value = int(float(str(raw).strip()))
-        except (TypeError, ValueError):
-            raise ValueError(f"max_elements 需要正整数，当前: {raw!r}") from None
-        if value < 1:
-            raise ValueError(f"max_elements 必须为正整数，当前: {value}")
-        return min(value, self._MAX_ELEMENT_LIMIT)
-
-    # ── op=locate（图像 / 文字定位） ─────────────────────
-
-    async def _op_locate(self, rec: dict) -> str:
-        """在窗口截图里定位「局部图标」（模板匹配）或「文字」（OCR）。
-
-        适合没有可枚举控件的界面（游戏、canvas、图片按钮）：截一张当前窗口
-        画面，在其上查找：
-          - ``template``：模板图片路径 → 模板匹配，返回图标位置与置信度；
-          - ``query``（或 ``text``）：文字 → OCR 识别后查找，返回文字位置；
-        返回的 ``x`` / ``y`` / ``center_x`` / ``center_y`` 与输入 op 的坐标
-        同源（窗口截图坐标系），可直接交给 ``click`` / ``move``。
-
-        ``crop`` 可把搜索范围限制在窗口内某区域（减少误匹配 / 提速）；
-        ``tolerance``（模板匹配容差）、``max_results``、``min_scale`` /
-        ``max_scale`` / ``scale_steps``（模板多尺度搜索）可微调；
-        ``ocr_lang`` 指定 OCR 语言标签（如 ``zh-Hans-CN`` / ``en-US``），
-        缺省按用户配置语言识别。
-        """
-        rec = rec or {}
-        pid = rec.get("pid")
-        template_raw = str(self.template).strip() if self.template is not None else ""
-        query = self.query if self.query is not None else self.text
-        query_provided = query is not None
-        query_raw = str(query).strip() if query_provided else ""
-        if not template_raw and not query_provided:
-            return ("(locate 需要 template（模板图片路径）或 query（要查找的文字）："
-                    "template='icon.png' 做图像匹配；query='保存' 做 OCR 文字定位。"
-                    "可先用 op=screenshot 截图确认画面)")
-        try:
-            tolerance = self._resolve_locate_tolerance()
-            max_results = self._resolve_max_results()
-            min_scale, max_scale, scale_steps = self._resolve_scale()
-            crop = self._resolve_crop()
-        except (ValueError, ImageMatchError, CropError) as exc:
-            return f"(locate 参数非法: {exc})"
-        try:
-            source_path = self._analysis_image_path()
-        except ValueError as exc:
-            return f"(locate 参数非法: {exc})"
-        temporary = source_path is None
-        if temporary:
-            if pid is None:
-                return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
-                        f"无法做图像 / 文字定位；也可用 path 指定已有 PNG。"
-                        f"可用 op=wait 查看任务状态)")
-            path = await self._temp_screenshot(pid, self.window)
-            if path is None:
-                return ("(locate 失败: 无法截取窗口画面（窗口可能尚未就绪或已关闭）——"
-                        "可用 op=windows 确认窗口状态，或先 op=wait_window 等窗口出现)")
-        else:
-            path = source_path
-        try:
-            if crop is not None:
-                invalid = self._validate_locate_crop(path, crop)
-                if invalid is not None:
-                    return f"(locate 参数非法: {invalid})"
-            if template_raw:
-                payload = await self._locate_template(
-                    template_raw, path, crop, tolerance, max_results,
-                    min_scale, max_scale, scale_steps)
-            else:
-                payload = await self._locate_text(
-                    query_raw, path, crop, max_results, self.ocr_lang)
-        except (ImageMatchError, OcrError, ScreenshotError, OSError,
-                ValueError) as exc:
-            return f"(locate 失败: {exc})"
-        finally:
-            if temporary:
-                self._remove_temp(path)
-        frame = None
-        if temporary:
-            frame = await self._window_frame_for(pid, self.window)
-        if frame is not None:
-            for item in payload["matches"]:
-                item["screen_x"] = item["x"] + frame.screen_x
-                item["screen_y"] = item["y"] + frame.screen_y
-                item["screen_center_x"] = item["center_x"] + frame.screen_x
-                item["screen_center_y"] = item["center_y"] + frame.screen_y
-            payload["frame"] = frame.to_dict()
-        ocr_hint = payload.pop("ocr_hint", None)
-        if temporary:
-            hint = ("matches 里的 x/y/center_x/center_y 与输入 op 坐标同源"
-                    "（窗口截图左上角为原点），可直接交给 click / move 的 x / y；"
-                    "screen_* 是换算后的屏幕坐标。找到多个时可用 score 或 text "
-                    "挑选；不确认时可 first 用 op=screenshot 复核")
-            if self.window:
-                payload["window"] = str(self.window)
-        else:
-            hint = ("matches 里的 x/y/center_x/center_y 以 path 图片左上角为原点"
-                    "（与传入图片同源），可直接交给 click / move 的 x / y；"
-                    "图片不绑定窗口，因此没有 screen_* 屏幕坐标换算。"
-                    "找到多个时可用 score 或 text 挑选")
-        if ocr_hint:
-            hint = f"{hint}；{ocr_hint}"
-        payload.update({
-            "task_id": self.task_id,
-            "op": "locate",
-            "source": "window" if temporary else "path",
-            "image": self._image_size_payload(path),
-            "hint": hint,
-        })
-        if crop is not None:
-            payload["crop"] = crop.to_dict()
-        return json.dumps(payload, ensure_ascii=False)
-
-    async def _locate_template(self, template_path: str, shot_path: str, crop,
-                               tolerance: int, max_results: int,
-                               min_scale: float, max_scale: float,
-                               scale_steps: int) -> dict:
-        """模板匹配：解码截图与模板，返回窗口坐标下的匹配列表。"""
-        # 与 annotate 的输入图片走同一条路径：展开 ~、补 .png、安全校验、
-        # 要求文件存在（模板路径同样来自模型，不能绕过统一的安全校验）。
-        absolute = self._prepare_image_path(template_path)
-        image = await asyncio.to_thread(decode_png_file, shot_path)
-        template = await asyncio.to_thread(decode_png_file, absolute)
-        offset_x = offset_y = 0
-        if crop is not None:
-            image = self._crop_decoded(image, crop)
-            offset_x, offset_y = crop.x, crop.y
-        matches = await asyncio.to_thread(
-            lambda: match_template(
-                image, template, tolerance=tolerance, max_results=max_results,
-                min_scale=min_scale, max_scale=max_scale, scale_steps=scale_steps))
-        items = [self._locate_item(match.to_dict(), offset_x, offset_y)
-                 for match in matches]
-        return {
-            "mode": "template",
-            "template": template_path,
-            "template_size": {"width": template.width, "height": template.height},
-            "total": len(items),
-            "returned": len(items),
-            "matches": items,
-        }
-
-    async def _locate_text(self, query: str, shot_path: str, crop,
-                           max_results: int,
-                           ocr_lang: str | None = None) -> dict:
-        """OCR 文字定位：识别截图文字并按查询过滤（支持跨词短语）。
-
-        ``crop`` 只用于**限定命中范围**（识别始终在整幅窗口截图上进行），
-        因此识别框的坐标本来就是窗口截图坐标，返回时**不再叠加** crop 偏移
-        —— 模板匹配那条路径会真正裁剪图像（见 :meth:`_locate_template`），
-        两者的坐标系处理据此区分。
-
-        ``ocr_lang`` 传给 OCR 后端（Windows 系统 OCR 的语言标签，如
-        ``zh-Hans-CN`` / ``en-US``）；缺省按用户配置语言。
-
-        未命中时会附上识别到的文字样本（``recognized_texts``），便于判断是
-        「OCR 识别偏差」（如把 OK 认成 0K）还是「画面里确实没有该文字」；
-        未指定语言时还会提示可用 ``ocr_lang`` 切换 OCR 语言。
-        """
-        boxes = await asyncio.to_thread(
-            recognize_text, shot_path, lang=ocr_lang)
-        recognized_total = len(boxes)
-        scoped = boxes
-        if crop is not None:
-            scoped = [box for box in boxes if _box_in_crop(box, crop)]
-        if query:
-            matched, match_mode = await asyncio.to_thread(
-                find_ocr_text_ex, scoped, query)
-        else:
-            matched, match_mode = list(scoped), "exact"
-        items = [box.to_dict() for box in matched[:max_results]]
-        payload: dict = {
-            "mode": "text",
-            "query": query,
-            "match_mode": match_mode,
-            "recognized": recognized_total,
-            "total": len(matched),
-            "returned": len(items),
-            "matches": items,
-        }
-        if ocr_lang:
-            payload["ocr_lang"] = ocr_lang
-        if crop is not None:
-            payload["in_crop"] = len(scoped)
-        if not items and recognized_total:
-            sample_source = scoped
-            if crop is not None and not scoped:
-                sample_source = boxes
-                payload["note"] = ("crop 区域内没有识别到任何文字；"
-                                   "recognized_texts 是整幅截图的识别结果")
-            payload["recognized_texts"] = [
-                box.text for box in sample_source[:self._LOCATE_DIAGNOSTIC_TEXTS]
-            ]
-            if not ocr_lang:
-                payload["ocr_hint"] = (
-                    "OCR 未命中查询文字。本机 OCR 语言可能与画面语言不一致："
-                    "可用 ocr_lang 指定语言（如 'zh-Hans-CN' / 'en-US'，"
-                    "Windows 需安装对应 OCR 语言包），或用 op=screenshot 复核画面后"
-                    "改用模板匹配 / pixel 定位")
-        if items and match_mode == "fuzzy":
-            payload["note"] = (
-                "命中来自近似匹配：OCR 常见易混字符（l / I / 1、O / 0、S / 5 等）"
-                "折叠后比较（如把 Select AII 认成 Select All），坐标请先用 "
-                "op=screenshot / op=annotate 复核再点击")
-        elif items and match_mode == "similar":
-            payload["note"] = (
-                "命中来自相似度近似匹配：OCR 对中文可能有错字（如把「钮」认成"
-                "「田」），本次按同一行文本的相似度命中（>= 80%），坐标与包围盒"
-                "请先用 op=screenshot / op=annotate 复核再点击；需要精确结果时"
-                "可改用 element + click 或模板匹配")
-        return payload
-
-    @staticmethod
-    def _validate_locate_crop(path: str, crop) -> str | None:
-        """crop 必须完全落在窗口截图内（与 screenshot 的裁剪语义一致）。
-
-        OCR 路径不做真正的裁剪（只按区域过滤识别结果），若不校验，越界参数
-        会静默表现为「区域内没有文字」；这里统一提前报错，让参数错误立刻可见。
-
-        Returns:
-            错误说明；合法（或读不出图像尺寸）时返回 None。
-        """
-        try:
-            width, height = read_png_size(path)
-        except (OSError, ValueError):
-            return None
-        if crop.is_full(width, height):
-            return None
-        try:
-            crop.validate_against(width, height)
-        except CropError as exc:
-            return str(exc)
-        return None
-
-    @staticmethod
-    def _locate_item(raw: dict, offset_x: int, offset_y: int) -> dict:
-        """把匹配结果平移到窗口坐标（叠加 crop 偏移）。"""
-        item = dict(raw)
-        for key in ("x", "center_x"):
-            item[key] = item[key] + offset_x
-        for key in ("y", "center_y"):
-            item[key] = item[key] + offset_y
-        return item
-
-    @staticmethod
-    def _crop_decoded(image: DecodedImage, crop) -> DecodedImage:
-        """按 crop 区域裁剪解码图像（越界抛 CropError）。"""
-        cropped = crop_rgb(image.rgb, image.width, image.height, crop)
-        return DecodedImage(crop.width, crop.height, cropped)
-
-    def _resolve_locate_tolerance(self) -> int:
-        """解析 locate 的模板匹配容差（缺省用图像匹配默认容差）。"""
-        if self.tolerance is None:
-            return self._LOCATE_TOLERANCE
-        return self._parse_tolerance(self.tolerance)
-
-    def _resolve_max_results(self) -> int:
-        """解析 locate 的返回条数上限。
-
-        Raises:
-            ValueError: 取值非法。
-        """
-        raw = self.max_results
-        if raw is None:
-            return DEFAULT_MAX_RESULTS
-        if isinstance(raw, bool):
-            raise ValueError("max_results 需要正整数")
-        try:
-            value = int(float(str(raw).strip()))
-        except (TypeError, ValueError):
-            raise ValueError(f"max_results 需要正整数，当前: {raw!r}") from None
-        if value < 1:
-            raise ValueError(f"max_results 必须为正整数，当前: {value}")
-        return min(value, self._MAX_LOCATE_RESULTS)
-
-    def _resolve_scale(self) -> tuple[float, float, int]:
-        """解析模板多尺度搜索参数（min_scale / max_scale / scale_steps）。"""
-        minimum = self._number_or(self.min_scale, 1.0, "min_scale")
-        maximum = self._number_or(self.max_scale, 1.0, "max_scale")
-        steps = self._int_or(self.scale_steps, 1, "scale_steps")
-        if minimum <= 0 or maximum <= 0:
-            raise ImageMatchError("min_scale / max_scale 必须为正数")
-        if minimum > maximum:
-            raise ImageMatchError(
-                f"min_scale（{minimum}）不能大于 max_scale（{maximum}）"
-            )
-        if steps < 1:
-            raise ImageMatchError("scale_steps 必须 >= 1")
-        return minimum, maximum, min(steps, self._MAX_LOCATE_SCALE_STEPS)
-
-    @staticmethod
-    def _number_or(raw, default: float, label: str) -> float:
-        if raw is None:
-            return default
-        if isinstance(raw, bool):
-            raise ImageMatchError(f"{label} 需要数值")
-        try:
-            return float(raw)
-        except (TypeError, ValueError):
-            raise ImageMatchError(f"{label} 需要数值，当前: {raw!r}") from None
-
-    @classmethod
-    def _int_or(cls, raw, default: int, label: str) -> int:
-        if raw is None:
-            return default
-        if isinstance(raw, bool):
-            raise ImageMatchError(f"{label} 需要整数")
-        try:
-            return int(float(str(raw).strip()))
-        except (TypeError, ValueError):
-            raise ImageMatchError(f"{label} 需要整数，当前: {raw!r}") from None
-
-    # ── op=pixel（像素取色 / 颜色检测） ──────────────────
-
-    async def _op_pixel(self, rec: dict) -> str:
-        """读取窗口截图的像素颜色（``op=pixel``）。
-
-        三种模式（``mode``）：
-
-          - ``point``（默认，需 ``x`` / ``y``）：读取该点颜色；给了 ``color``
-            时附带「是否与目标色在容差内匹配」的结论；
-          - ``region``（可选 ``region`` = ``'x,y,w,h'``，缺省整窗）：统计该区域
-            的均值 / 极值 / 主色；给了 ``color`` 时比较均值色；
-          - ``find``（需 ``color``）：在 ``region``（缺省整窗）内查找目标颜色，
-            按 4 连通块聚合成若干候选位置（包围盒 / 中心点），可直接交给
-            ``click`` 点击——适合定位状态灯、地图标记等多个同色元素。
-
-        坐标以窗口截图左上角为原点（与 ``op=screenshot`` / 输入 op 同源），
-        ``x`` / ``y`` 支持 ``'center'`` / ``'50%'`` / ``'center+20'`` 等语义值。
-        """
-        rec = rec or {}
-        pid = rec.get("pid")
-        try:
-            mode = self._resolve_pixel_mode()
-        except ValueError as exc:
-            return f"(pixel 参数非法: {exc})"
-        try:
-            target = (parse_color(self.color)
-                      if self.color is not None and str(self.color).strip()
-                      else None)
-        except ColorError as exc:
-            return f"(pixel 参数非法: {exc})"
-        if mode == "find" and target is None:
-            return "(pixel 的 find 模式需要 color 参数（要查找的目标颜色）)"
-        if mode == "point" and (self.x is None or self.y is None):
-            return "(pixel 的 point 模式需要 x 与 y（窗口内坐标，支持语义值）)"
-        try:
-            tolerance = (DEFAULT_COLOR_TOLERANCE if self.tolerance is None
-                         else self._parse_tolerance(self.tolerance))
-            region = self._parse_pixel_region()
-            max_regions = self._resolve_pixel_regions()
-            min_pixels = self._resolve_min_pixels()
-        except (ValueError, CropError) as exc:
-            return f"(pixel 参数非法: {exc})"
-        try:
-            source_path = self._analysis_image_path()
-        except ValueError as exc:
-            return f"(pixel 参数非法: {exc})"
-        temporary = source_path is None
-        if temporary:
-            if pid is None:
-                return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
-                        f"无法取色；也可用 path 指定已有 PNG。"
-                        f"可用 op=wait 查看任务状态)")
-            path = await self._temp_screenshot(pid, self.window)
-            if path is None:
-                return ("(pixel 失败: 无法截取窗口画面（窗口可能尚未就绪或已关闭）——"
-                        "可用 op=windows 确认窗口状态，或先 op=wait_window 等窗口出现)")
-        else:
-            path = source_path
-        try:
-            image = await asyncio.to_thread(decode_png_file, path)
-            payload = self._pixel_payload(image, mode, target, tolerance,
-                                          region, max_regions, min_pixels)
-        except (ColorError, CropError, ValueError, ActionError, OSError) as exc:
-            return f"(pixel 失败: {exc})"
-        finally:
-            if temporary:
-                self._remove_temp(path)
-        if "image" not in payload:
-            payload["image"] = {"width": image.width, "height": image.height}
-        if temporary:
-            hint = ("颜色坐标为窗口截图坐标（与 op=screenshot 产物同源）；"
-                    "find 模式返回的 center_x / center_y 可直接交给 click 的 x / y；"
-                    "screen_* 是换算后的屏幕坐标")
-        else:
-            hint = ("颜色坐标以 path 图片左上角为原点（与传入图片同源）；"
-                    "find 模式返回的 center_x / center_y 可直接交给 click 的 x / y；"
-                    "图片不绑定窗口，没有 screen_* 屏幕坐标换算")
-        payload.update({
-            "task_id": self.task_id,
-            "op": "pixel",
-            "mode": mode,
-            "source": "window" if temporary else "path",
-            "hint": hint,
-        })
-        if temporary and self.window:
-            payload["window"] = str(self.window)
-        if temporary:
-            frame = await self._window_frame_for(pid, self.window)
-            if frame is not None:
-                payload["frame"] = frame.to_dict()
-                _attach_screen_coords(payload, frame)
-        return json.dumps(payload, ensure_ascii=False)
-
-    def _resolve_pixel_mode(self) -> str:
-        """解析 ``op=pixel`` 的 ``mode``（point / region / find，接受常见别名）。"""
-        raw = self.mode
-        if raw is None or not str(raw).strip():
-            return self._DEFAULT_PIXEL_MODE
-        text = str(raw).strip().lower()
-        aliases = {
-            "point": "point", "pixel": "point", "color": "point", "at": "point",
-            "region": "region", "area": "region", "stats": "region",
-            "average": "region", "avg": "region",
-            "find": "find", "search": "find", "match": "find", "locate": "find",
-        }
-        resolved = aliases.get(text)
-        if resolved is None:
-            raise ValueError(
-                f"mode 取值非法: {raw!r}。支持 point（点取色）/ region（区域统计）"
-                f"/ find（颜色查找）"
-            )
-        return resolved
-
-    def _parse_pixel_region(self) -> "CropRegion | None":
-        """解析 ``op=pixel`` 的 ``region``（``'x,y,w,h'``；空 = None）。"""
-        raw = self.region
-        if raw is None or not str(raw).strip():
-            return None
-        return CropRegion.parse(str(raw))
-
-    def _resolve_pixel_regions(self) -> int:
-        """解析 ``op=pixel`` 的 ``max_regions``（1.._MAX_PIXEL_REGIONS）。"""
-        raw = self.max_regions
-        if raw is None:
-            return self._DEFAULT_PIXEL_REGIONS
-        if isinstance(raw, bool):
-            raise ValueError("max_regions 需要正整数")
-        try:
-            value = int(float(str(raw).strip()))
-        except (TypeError, ValueError):
-            raise ValueError(f"max_regions 需要正整数，当前: {raw!r}") from None
-        if value < 1:
-            raise ValueError(f"max_regions 必须为正整数，当前: {value}")
-        return min(value, self._MAX_PIXEL_REGIONS)
-
-    def _resolve_min_pixels(self) -> int:
-        """解析 ``op=pixel`` 的 ``min_pixels``（连通块最小像素数）。"""
-        raw = self.min_pixels
-        if raw is None:
-            return 1
-        if isinstance(raw, bool):
-            raise ValueError("min_pixels 需要正整数")
-        try:
-            value = int(float(str(raw).strip()))
-        except (TypeError, ValueError):
-            raise ValueError(f"min_pixels 需要正整数，当前: {raw!r}") from None
-        if value < 1:
-            raise ValueError(f"min_pixels 必须为正整数，当前: {value}")
-        return value
-
-    def _pixel_payload(self, image, mode: str, target, tolerance: int,
-                       region, max_regions: int, min_pixels: int) -> dict:
-        """按模式组装取色结果（不含 task_id / frame 等公共字段）。"""
-        if mode == "point":
-            x = parse_coordinate(self.x, image.width, label="取色 x")
-            y = parse_coordinate(self.y, image.height, label="取色 y")
-            value = pixel_at(image, x, y)
-            return {
-                "x": x,
-                "y": y,
-                "color": summarize_color(value, target, tolerance=tolerance),
-                "image": {"width": image.width, "height": image.height},
-            }
-        if mode == "region":
-            stats = region_stats(image, region)
-            payload = {
-                "region": region.to_dict() if region is not None
-                else {"x": 0, "y": 0, "width": image.width, "height": image.height},
-                "stats": stats,
-                "image": {"width": image.width, "height": image.height},
-            }
-            if target is not None:
-                average = stats["average"]
-                payload["color"] = summarize_color(
-                    RGB(average["r"], average["g"], average["b"]), target,
-                    tolerance=tolerance)
-            return payload
-        regions = find_color_regions(
-            image, target, tolerance=tolerance, region=region,
-            max_regions=max_regions, min_pixels=min_pixels)
-        return {
-            "color": target.to_dict(),
-            "tolerance": tolerance,
-            "region": region.to_dict() if region is not None
-            else {"x": 0, "y": 0, "width": image.width, "height": image.height},
-            "found": len(regions),
-            "regions": [item.to_dict() for item in regions],
-        }
-
-    # ── op=annotate（截图标注） ──────────────────────────
-
-    async def _op_annotate(self, rec: dict) -> str:
-        """在截图上绘制矩形 / 十字 / 编号标签（``op=annotate``）。
-
-        输入图二选一：``path`` 指定已有 PNG，或用 ``window`` 从目标窗口现截；
-        ``boxes`` / ``points`` / ``labels`` 描述要画的标记（顺序一一对应，
-        省略 ``labels`` 时自动编号）。``output`` 指定输出路径（省略时覆盖
-        ``path``；从窗口现截时输出到 ``bash_opt_shots/``）。
-        """
-        boxes = self._as_list(self.boxes)
-        points = self._as_list(self.points)
-        try:
-            grid = self._resolve_grid()
-        except CropError as exc:
-            return f"(annotate 参数非法: {exc})"
-        if not boxes and not points and grid is None:
-            return "(annotate 至少需要 boxes / points 之一，或给 grid 叠加网格)"
-        if len(boxes) > self._MAX_ANNOTATE_MARKS or len(points) > self._MAX_ANNOTATE_MARKS:
-            return (f"(annotate 元素过多：boxes / points 各上限 "
-                    f"{self._MAX_ANNOTATE_MARKS} 个)")
-        source: str | None = None
-        temporary = False
-        try:
-            if self.path and str(self.path).strip():
-                source = self._prepare_image_path(str(self.path))
-            else:
-                pid = rec.get("pid")
-                if pid is None:
-                    return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或"
-                            f"已退出），无法截图标注；也可用 path 指定已有 PNG)")
-                source = await self._temp_screenshot(pid, self.window)
-                if source is None:
-                    return ("(annotate 失败: 无法截取窗口画面（窗口可能尚未就绪"
-                            "或已关闭）——可先用 op=screenshot 确认窗口)")
-                temporary = True
-            try:
-                target = self._annotate_output_path(source)
-            except ValueError as exc:
-                return f"(annotate 输出路径非法: {exc})"
-            result = await asyncio.to_thread(
-                annotate_png_file, source,
-                boxes=boxes, points=points, labels=self.labels,
-                color=self.color, output=target,
-                thickness=self._ANNOTATE_THICKNESS,
-                text_scale=self._ANNOTATE_TEXT_SCALE, grid=grid)
-        except (AnnotateError, ColorError, ScreenshotError, ValueError,
-                OSError) as exc:
-            return f"(annotate 失败: {exc})"
-        finally:
-            if temporary and source is not None:
-                self._remove_temp(source)
-        payload = {
-            "task_id": self.task_id,
-            "op": "annotate",
-            "hint": ("标注图已写出，可用 read_image 读取核对；坐标以图像左上角"
-                     "为原点（与 op=screenshot 产物同源）"),
-        }
-        payload.update(result.to_dict())
-        if self.window:
-            payload["window"] = str(self.window)
-        return json.dumps(payload, ensure_ascii=False)
-
-    @staticmethod
-    def _as_list(value) -> list:
-        """把可选参数归一化为列表（``None`` → 空；单值 → 单元素列表）。"""
-        if value is None:
-            return []
-        if isinstance(value, (list, tuple)):
-            return list(value)
-        return [value]
-
-    @staticmethod
-    def _prepare_image_path(path: str) -> str:
-        """规范化输入图片路径（展开 ~、换算 Windows 盘符、补 .png、安全校验、
-        要求存在）。
-
-        Raises:
-            ValueError: 路径为空、文件不存在或未通过安全校验。
-        """
-        expanded = normalize_user_path(str(path))
-        if not expanded:
-            raise ValueError("路径为空")
-        absolute = os.path.abspath(expanded)
-        if not os.path.splitext(absolute)[1]:
-            absolute += ".png"
-        validate_path_security(absolute)
-        if not os.path.isfile(absolute):
-            raise ValueError(f"输入图片不存在: {absolute}")
-        return absolute
-
-    def _analysis_image_path(self) -> str | None:
-        """``op=locate`` / ``op=pixel`` 的输入图片：显式 ``path`` 优先。
-
-        未提供 ``path`` 时返回 ``None``（调用方改为现截目标窗口）；提供时
-        走与 ``annotate`` 相同的路径规范化（展开 ``~``、补 ``.png``、安全
-        校验、要求文件存在），因此可直接分析 ``op=screenshot screen=true``
-        的整屏产物或任意已有 PNG——不再受「只能截任务窗口」的限制。
-
-        Raises:
-            ValueError: 路径为空 / 文件不存在 / 未通过安全校验。
-        """
-        raw = self.path
-        if raw is None or not str(raw).strip():
-            return None
-        return self._prepare_image_path(str(raw))
-
-    @staticmethod
-    def _image_size_payload(path: str) -> dict:
-        """读取图片尺寸（``{width, height}``；读不出时返回空 dict）。"""
-        try:
-            width, height = read_png_size(path)
-        except (OSError, ValueError):
-            return {}
-        return {"width": width, "height": height}
-
-    def _annotate_output_path(self, source: str) -> str:
-        """解析标注输出路径：显式 output 优先，否则覆盖 path / 自动命名。"""
-        if self.output is not None and str(self.output).strip():
-            return self._prepare_screenshot_path(str(self.output))
-        if self.path is not None and str(self.path).strip():
-            return source
-        stamp = time.strftime("%H%M%S")
-        return self._prepare_screenshot_path(
-            os.path.join(self._SHOT_AUTO_DIR,
-                         f"{self.task_id}-annotated-{stamp}.png"))
-
-    # ── op=record / op=replay（操作宏） ──────────────────
-
-    async def _op_record(self, rec: dict) -> str:
-        """把一段操作序列保存为命名宏（``op=record``）。
-
-        步骤格式与 ``op=sequence`` 的 ``actions`` 完全一致；用 ``macro`` 指定
-        宏名（存到 ``bash_opt_macros/<宏名>.json``）或用 ``path`` 指定文件路径。
-        ``append=true`` 时把新步骤追加到同名宏末尾。
-        """
-        raw = self.actions
-        if raw is None:
-            return "(record 需要 actions 参数（要保存的步骤数组，与 sequence 相同）)"
-        # ★ 保存前用与 op=sequence 同一套解析做结构校验：非 dict 步骤 / 未知
-        #   步骤类型 / 缺少必要参数都在这里给出可读错误，而不是留到写文件时
-        #   变成「bash_opt 内部错误」（旧实现 dict(step) 遇非 dict 直接抛
-        #   ValueError，错误信息对模型毫无指导意义）。
-        try:
-            steps = [dict(step.raw) for step in parse_sequence(raw)]
-        except SequenceError as exc:
-            return f"(record 失败: 宏步骤非法: {exc})"
-        name = str(self.macro).strip() if self.macro is not None else ""
-        path = str(self.path).strip() if self.path is not None else ""
-        if not name and not path:
-            return "(record 需要 macro（宏名）或 path（文件路径）)"
-        window = str(self.window).strip() if self.window else ""
-        if name:
-            macro = Macro(name=name, steps=tuple(steps), window=window)
-        else:
-            base = os.path.splitext(os.path.basename(path))[0] or "macro"
-            macro = Macro(name=base, steps=tuple(steps), window=window)
-        try:
-            saved = await asyncio.to_thread(
-                save_macro, macro, path=(path or None),
-                directory=self._MACRO_DIR, append=bool(self.append))
-        except MacroError as exc:
-            return f"(record 失败: {exc})"
-        payload = {
-            "task_id": self.task_id,
-            "op": "record",
-            "macro": macro.name,
-            "path": saved,
-            "steps": len(macro.steps),
-            "appended": bool(self.append),
-            "hint": (f"宏已保存；可用 op=replay, macro='{macro.name}' 回放"
-                     f"（或 path='{saved}'）"),
-        }
-        return json.dumps(payload, ensure_ascii=False)
-
-    async def _op_replay(self, rec: dict) -> str:
-        """回放命名宏（``op=replay``）：按 ``macro``（宏名）或 ``path`` 加载并执行。
-
-        步骤在保存时已校验；回放复用 ``op=sequence`` 的步骤执行器，因此
-        element / via / wait_for / diff / shot 等增强参数同样生效。``times``
-        可整段重复执行多次（默认 1，上限 20）；``on_error`` 决定遇错停止 / 继续。
-        """
-        name = str(self.macro).strip() if self.macro is not None else ""
-        path = str(self.path).strip() if self.path is not None else ""
-        if not name and not path:
-            return "(replay 需要 macro（宏名）或 path（文件路径）)"
-        try:
-            macro = await asyncio.to_thread(
-                load_macro, name=(name or None), path=(path or None),
-                directory=self._MACRO_DIR)
-        except MacroError as exc:
-            available = await asyncio.to_thread(list_saved_macros, self._MACRO_DIR)
-            names = ", ".join(item["name"] for item in available) or "（暂无已保存宏）"
-            return f"(replay 失败: {exc}。当前可用宏: {names})"
-        try:
-            times = self._resolve_times()
-            on_error = self._resolve_on_error()
-        except ValueError as exc:
-            return f"(replay 参数非法: {exc})"
-        try:
-            steps = parse_sequence(list(macro.steps))
-        except SequenceError as exc:
-            return f"(replay 失败: 宏步骤非法: {exc})"
-        runs: list[dict] = []
-        completed = failed = 0
-        stopped_early = False
-        async with self._input_session(rec):
-            for iteration in range(times):
-                results, run_completed, run_failed, stopped = (
-                    await self._run_step_sequence(rec, steps, on_error))
-                completed += run_completed
-                failed += run_failed
-                runs.append({
-                    "iteration": iteration + 1,
-                    "completed": run_completed,
-                    "failed": run_failed,
-                    "steps": results,
-                })
-                if stopped:
-                    stopped_early = True
-                    break
-        payload = {
-            "task_id": self.task_id,
-            "op": "replay",
-            "macro": macro.name,
-            "path": path or os.path.abspath(
-                os.path.join(self._MACRO_DIR, macro.name + ".json")),
-            "times": times,
-            "executed": len(runs),
-            "steps_per_run": len(steps),
-            "completed": completed,
-            "failed": failed,
-            "stopped_early": stopped_early or len(runs) < times,
-            "on_error": on_error,
-            "runs": runs,
-            "hint": ("宏已回放；每步 result 是该动作的完整结果。需要确认界面变化时"
-                     "可在宏里放 screenshot 步骤，或对关键步骤设 shot / settle / "
-                     "wait_for='change'"),
-        }
-        return json.dumps(payload, ensure_ascii=False)
-
-    def _resolve_times(self) -> int:
-        """解析 ``op=replay`` 的 ``times``（1.._MAX_REPLAY_TIMES）。"""
-        raw = self.times
-        if raw is None:
-            return self._DEFAULT_REPLAY_TIMES
-        if isinstance(raw, bool):
-            raise ValueError("times 需要正整数")
-        try:
-            value = int(float(str(raw).strip()))
-        except (TypeError, ValueError):
-            raise ValueError(f"times 需要正整数，当前: {raw!r}") from None
-        if value < 1:
-            raise ValueError(f"times 必须为正整数，当前: {value}")
-        return min(value, self._MAX_REPLAY_TIMES)
-
-    # ── op=wait_window（等待窗口出现） ───────────────────
-
-    async def _op_wait_window(self, rec: dict) -> str:
-        """等待目标窗口**可用**（按 ``window`` 选择器）。
-
-        GUI 程序启动后窗口创建有延迟（尤其是 Electron / 游戏 / 需要登录的
-        IDE），先等窗口就绪再操作可以避免一连串「没有匹配窗口」的失败。
-        ``timeout`` 秒内每 ``_WAIT_WINDOW_INTERVAL`` 轮询一次窗口清单，用
-        ``window`` 选择器匹配。
-
-        默认等到窗口**可见且未最小化**（可截图 / 可注入输入）才返回：启动
-        初期窗口往往先以 ``visible=false`` 出现（游戏 / Electron 初始化），
-        此时返回「已就绪」会让后续 screenshot / click 立刻失败。确实要操作
-        隐藏 / 最小化窗口时传 ``allow_hidden=true``（或改用 ``handle:0x…``）。
-
-        超时返回可读提示（附当前窗口清单），便于改用正确的选择器；若窗口
-        已存在但一直不可见，会明确指出应先 restore。
-        """
-        ended = self._ended_task_reply(rec, "等待窗口")
-        if ended:
-            return ended
-        pid = rec.get("pid")
-        if pid is None:
-            return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
-                    f"无法等待窗口。可用 op=wait 查看任务状态)")
-        timeout = self.timeout if self.timeout_given else self._WAIT_WINDOW_TIMEOUT
-        started = time.monotonic()
-        deadline = None if not timeout else started + timeout
-        selector = self.window or "main"
-        allow_hidden = bool(self.allow_hidden)
-        attempts = 0
-        last_error = ""
-        hidden_hit = None
-        while True:
-            attempts += 1
-            infos = await self._list_windows_quietly(pid)
-            if infos:
-                try:
-                    target = pick_window(infos, self.window)
-                except SelectorError as exc:
-                    last_error = str(exc)
-                else:
-                    if allow_hidden or is_selectable(target):
-                        # ★ 全量描述再按返回上限截断：describe_windows 默认
-                        #   limit=40，若目标窗口排在第 40 个之后，旧实现会
-                        #   `match=None`——明明等到了窗口却返回 window=null。
-                        #   这里与 op=windows 保持一致（先全量，再截断清单）。
-                        described_all = describe_windows(
-                            infos, limit=max(len(infos), 1))
-                        match = next((item for item in described_all
-                                      if item["handle"] == target.handle), None)
-                        described = described_all[:self._MAX_WINDOW_LIST]
-                        payload = {
-                            "task_id": self.task_id,
-                            "op": "wait_window",
-                            "found": True,
-                            "selector": selector,
-                            "waited": round(time.monotonic() - started, 3),
-                            "attempts": attempts,
-                            "visible": bool(target.visible),
-                            "selectable": is_selectable(target),
-                            "window": match,
-                            "windows": described,
-                            "hint": ("窗口已就绪：用同一个 window 选择器继续 "
-                                     "screenshot / 输入 op；需要固定布局时可先用 "
-                                     "op=window 的 always_on_top 或 save_geometry"),
-                        }
-                        if len(described_all) > len(described):
-                            payload["returned"] = len(described)
-                            payload["truncated"] = True
-                            payload["hint"] += (
-                                f"；窗口过多，清单仅返回前 {len(described)} 条"
-                                f"（共 {len(described_all)} 条），window 字段仍是"
-                                f"命中的那个窗口")
-                        if not is_selectable(target):
-                            payload["hint"] += (
-                                "；该窗口当前不可见 / 已最小化（allow_hidden=true "
-                                "强制返回），截图与合成输入可能失败：可先执行 "
-                                "window_action='restore' 恢复窗口")
-                        return json.dumps(payload, ensure_ascii=False)
-                    # 命中的窗口还在后台初始化（visible=false / 最小化）：
-                    # 继续等到它真正可截取、可注入为止，避免返回一个
-                    # 「看起来找到了但实际不能操作」的窗口。
-                    hidden_hit = target
-            if deadline is not None and time.monotonic() >= deadline:
-                break
-            await asyncio.sleep(self._WAIT_WINDOW_INTERVAL)
-        infos = await self._list_windows_quietly(pid)
-        candidates = window_hint(infos) if infos else "（无可见窗口）"
-        timeout_desc = f"{timeout:g} 秒" if timeout else "无限"
-        detail = f"；匹配提示: {last_error}" if last_error else ""
-        hidden_note = ""
-        if hidden_hit is not None:
-            hidden_note = (
-                f"；注意：窗口「{hidden_hit.title}」（句柄 "
-                f"{hidden_hit.handle_hex}）已经存在，但当前不可见 / 已最小化，"
-                f"不能截图或注入输入——可用 window_action='restore' 先恢复窗口，"
-                f"或传 allow_hidden=true 直接操作它")
-        return (f"(等待窗口超时（{timeout_desc}）：window 选择器 {selector!r} 没有等到"
-                f"可操作的匹配窗口{detail}{hidden_note}。当前窗口: {candidates}。"
-                f"可用 op=windows 查看完整清单、op=wait 确认进程状态；"
-                f"若进程是纯命令行程序，它不会有 GUI 窗口；GUI 程序若经 App "
-                f"Execution Alias 或其它进程（explorer 等）启动，窗口可能不属于"
-                f"本任务进程树（可用整屏截图 screen=true 查看画面）)")
-
-    async def _list_windows_quietly(self, pid: int) -> list:
-        """枚举窗口（失败 / 超时返回空列表，供轮询使用）。"""
-        try:
-            return await asyncio.wait_for(
-                asyncio.to_thread(list_process_windows, pid),
-                timeout=self._INPUT_TIMEOUT,
-            )
-        except (asyncio.TimeoutError, OSError, ValueError, RuntimeError):
-            return []
-
-    # ── op=clipboard（系统剪贴板） ───────────────────────
-
-    async def _op_clipboard(self, rec: dict) -> str:
-        """读写系统剪贴板（``clipboard_action=set / get / clear / append``）。
-
-        典型用法：先把长文本 / 中文 / emoji 放进剪贴板，再用 ``op=key`` 发
-        ``ctrl+v`` 粘贴（或用 ``op=type`` 的 ``via='clipboard'`` 一步完成）。
-        文本走剪贴板比逐字符合成按键更可靠，也不会被目标程序当成快捷键。
-        """
-        try:
-            action, text = self._resolve_clipboard_action()
-        except ValueError as exc:
-            return f"(clipboard 参数非法: {exc})"
-        try:
-            if action == "get":
-                content = await asyncio.to_thread(read_clipboard_text)
-                truncated = len(content) > self._CLIPBOARD_MAX_CHARS
-                payload = {
-                    "task_id": self.task_id,
-                    "op": "clipboard",
-                    "clipboard_action": "get",
-                    "text": content[:self._CLIPBOARD_MAX_CHARS],
-                    "length": len(content),
-                }
-                if truncated:
-                    payload["truncated"] = True
-                    payload["hint"] = (
-                        f"剪贴板文本超过 {self._CLIPBOARD_MAX_CHARS} 字符，已截断返回"
-                        f"（完整长度 {len(content)}）"
-                    )
-                return json.dumps(payload, ensure_ascii=False)
-            if action == "clear":
-                await asyncio.to_thread(write_clipboard_text, "")
-                return json.dumps({
-                    "task_id": self.task_id,
-                    "op": "clipboard",
-                    "clipboard_action": "clear",
-                    "length": 0,
-                    "hint": "剪贴板文本已清空",
-                }, ensure_ascii=False)
-            if action == "append":
-                existing = await asyncio.to_thread(read_clipboard_text)
-                merged = existing + text
-                await asyncio.to_thread(write_clipboard_text, merged)
-                return json.dumps({
-                    "task_id": self.task_id,
-                    "op": "clipboard",
-                    "clipboard_action": "append",
-                    "length": len(merged),
-                    "appended": len(text),
-                    "hint": ("已在剪贴板原有内容后追加文本；可用 op=key "
-                             "key='ctrl+v' 粘贴到当前焦点窗口"),
-                }, ensure_ascii=False)
-            await asyncio.to_thread(write_clipboard_text, text)
-            return json.dumps({
-                "task_id": self.task_id,
-                "op": "clipboard",
-                "clipboard_action": "set",
-                "length": len(text),
-                "hint": ("文本已写入剪贴板；可用 op=key key='ctrl+v' 粘贴，"
-                         "或直接用 op=type 的 via='clipboard' 一步完成输入"),
-            }, ensure_ascii=False)
-        except ClipboardError as exc:
-            return f"(剪贴板操作失败: {exc})"
-
-    def _resolve_clipboard_action(self) -> tuple[str, str]:
-        """解析 ``clipboard_action`` 与文本（缺省按是否提供 text 推断）。
-
-        Raises:
-            ValueError: 动作非法，或 set / append 缺少 text。
-        """
-        raw = self.clipboard_action
-        text = self.text
-        if raw is None or not str(raw).strip():
-            action = "set" if text is not None else "get"
-        else:
-            action = str(raw).strip().lower()
-        aliases = {
-            "set": "set", "write": "set", "copy": "set", "put": "set",
-            "get": "get", "read": "get", "show": "get",
-            "clear": "clear", "empty": "clear", "reset": "clear",
-            "append": "append", "add": "append", "push": "append",
-        }
-        resolved = aliases.get(action)
-        if resolved is None:
-            raise ValueError(
-                f"clipboard_action 取值非法: {raw!r}。支持: "
-                f"{', '.join(self._CLIPBOARD_ACTIONS)}（缺省按是否提供 text 推断）"
-            )
-        if resolved in ("set", "append"):
-            if text is None:
-                raise ValueError(
-                    f"clipboard {resolved} 需要 text 参数（要写入剪贴板的文本）"
-                )
-            return resolved, str(text)
-        return resolved, ""
-
-    # ── op=sequence（一次调用执行一串动作） ──────────────
-
-    async def _op_sequence(self, rec: dict) -> str:
-        """按顺序执行 ``actions`` 里的多个动作（见 ``_window_input.sequence``）。
-
-        一个应用往往需要「点击输入框 → 输入文本 → 回车 → 截图」这样的连续操作；
-        逐条调用工具不仅往返多，两次调用之间还可能被别的窗口抢走焦点。本 op 在
-        同一次调用里按序执行全部步骤，``on_error`` 决定遇错停止（默认）还是继续。
-
-        步骤类型：输入动作（click / move / drag / scroll / key / type）与
-        ``wait``（等待秒数）、``screenshot``（截图存盘）、``window``（窗口控制，
-        含 always_on_top / save_geometry 等）。每个步骤都可带 ``window`` /
-        ``settle`` / ``shot`` / ``element`` 参数，语义与单独调用时一致；
-        未指定 ``window`` 时继承本次调用的 ``window``。
-        """
-        try:
-            steps = parse_sequence(self.actions)
-        except SequenceError as exc:
-            return f"(sequence 参数非法: {exc})"
-        try:
-            on_error = self._resolve_on_error()
-        except ValueError as exc:
-            return f"(sequence 参数非法: {exc})"
-        async with self._input_session(rec):
-            results, completed, failed, stopped = await self._run_step_sequence(
-                rec, steps, on_error)
-        payload = {
-            "task_id": self.task_id,
-            "op": "sequence",
-            "total": len(steps),
-            "completed": completed,
-            "failed": failed,
-            "stopped_early": stopped,
-            "on_error": on_error,
-            "steps": results,
-            "hint": ("序列已执行；每步的 result 字段是该动作的完整结果（含坐标 / "
-                     "投递方式）。需要确认界面变化时可在整段后跟一步 screenshot，"
-                     "或对关键步骤设 shot=true / settle / wait_for='change'；"
-                     "遇错停止时可用 on_error='continue' 让后续步骤继续执行"),
-        }
-        return json.dumps(payload, ensure_ascii=False)
-
-    @asynccontextmanager
-    async def _input_session(self, rec: dict):
-        """在批量动作（sequence / replay）前后包裹「输入会话」以降低每步开销。
-
-        会话期间，输入后端会缓存窗口定位结果并复用前台确认，游戏这类需要
-        连续快速输入的场景更跟手；开启失败（后端不支持）时静默降级为逐条
-        调用，行为完全一致。
-        """
-        pid = rec.get("pid")
-        started = False
-        if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
-            try:
-                started = await asyncio.to_thread(begin_input_session, pid)
-            except Exception:  # noqa: BLE001 - 会话优化失败不应影响执行
-                logger.debug("开启输入会话失败", exc_info=True)
-                started = False
-        try:
-            yield
-        finally:
-            if started:
-                try:
-                    await asyncio.to_thread(end_input_session)
-                except Exception:  # noqa: BLE001
-                    logger.debug("结束输入会话失败", exc_info=True)
-
-    async def _run_step_sequence(self, rec: dict, steps: list,
-                                 on_error: str) -> tuple[list[dict], int, int, bool]:
-        """按序执行步骤列表，返回 ``(步骤结果, 成功数, 失败数, 是否提前停止)``。
-
-        供 ``op=sequence`` 与 ``op=replay`` 共用：逐步执行并记录每步的
-        ``ok`` / ``elapsed`` / 结果（或错误）；``on_error='stop'`` 时首个失败的
-        步骤会中止后续步骤。
-        """
-        results: list[dict] = []
-        completed = 0
-        failed = 0
-        stopped = False
-        for step in steps:
-            started = time.monotonic()
-            try:
-                detail = await self._run_sequence_step(rec, step)
-            except (ActionError, InputError, ScreenshotError, SelectorError,
-                    ElementError, ClipboardError, ColorError, AnnotateError,
-                    ValueError) as exc:
-                failed += 1
-                entry = {
-                    "index": step.index,
-                    "op": step.kind,
-                    "ok": False,
-                    "error": str(exc),
-                    "elapsed": round(time.monotonic() - started, 3),
-                }
-                if on_error == "stop":
-                    entry["stopped"] = True
-                results.append(entry)
-                if on_error == "stop":
-                    stopped = True
-                    break
-                continue
-            completed += 1
-            entry = {
-                "index": step.index,
-                "op": step.kind,
-                "ok": True,
-                "elapsed": round(time.monotonic() - started, 3),
-            }
-            entry.update(detail)
-            results.append(entry)
-        return results, completed, failed, stopped
-
-    async def _run_sequence_step(self, rec: dict, step: SequenceStep) -> dict:
-        """执行序列中的一步（wait / screenshot / window / 输入动作）。
-
-        Raises:
-            ActionError / InputError / ScreenshotError / SelectorError /
-            ElementError: 该步失败（由调用方按 on_error 处理）。
-        """
-        if step.kind == "wait":
-            seconds = wait_seconds(step)
-            await asyncio.sleep(seconds)
-            return {"waited": seconds}
-        if step.kind == "screenshot":
-            return await self._sequence_screenshot(rec, step)
-        if step.kind == "window":
-            detail = await self._apply_window_action(
-                rec, step.params.get("window_action"),
-                window=step.window or self.window,
-                x=step.params.get("x"), y=step.params.get("y"),
-                width=step.params.get("width"), height=step.params.get("height"),
-            )
-            return {"window": detail}
-        return await self._sequence_action(rec, step)
-
-    async def _sequence_action(self, rec: dict, step: SequenceStep) -> dict:
-        """执行序列中的输入动作步骤。
-
-        支持与本工具实例同名的全部增强参数（写在步骤对象里即可）：
-        ``element``（按控件名定位）、``via``（type 走剪贴板）、
-        ``paste_key`` / ``restore_clipboard`` / ``newline``（剪贴板粘贴与
-        末尾换行，与单独调用 ``type`` 同义）、``settle``、``shot``、
-        ``wait_for`` / ``wait_timeout``、``diff`` / ``tolerance``。
-        """
-        pid = rec.get("pid")
-        if pid is None:
-            raise ScreenshotError(
-                f"后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
-                f"无法注入输入"
-            )
-        params = dict(step.params)
-        if not str(params.get("window") or "").strip() and self.window:
-            params["window"] = self.window
-        try:
-            wait_mode, wait_timeout, extra_wait = self._resolve_wait_target(
-                params.pop("wait_for", _UNSET),
-                params.pop("wait_timeout", _UNSET))
-            diff_enabled = self._parse_diff(params.pop("diff", None))
-            tolerance = self._parse_tolerance(params.pop("tolerance", None))
-            via = (self._resolve_type_via(params.pop("via", _UNSET))
-                   if step.kind == "type" else "typing")
-            # 步骤级「剪贴板输入」参数：与单独调用 type 时同名同义
-            paste_key = (params.pop("paste_key", _UNSET)
-                         if step.kind == "type" else _UNSET)
-            restore_clipboard = (params.pop("restore_clipboard", _UNSET)
-                                 if step.kind == "type" else _UNSET)
-            newline = self._parse_bool(
-                params.pop("newline", None) if step.kind == "type" else None,
-                default=False, label="newline")
-        except ValueError as exc:
-            raise ActionError(str(exc)) from exc
-        if step.kind == "type" and newline:
-            # 与单独调用 type 的 newline 语义一致：文本末尾追加换行（Enter）
-            params["text"] = str(params.get("text") or "") + "\n"
-        element = params.pop("element", None)
-        point = None
-        element_desc = None
-        if element is not None and str(element).strip():
-            if step.kind == "release":
-                raise ActionError(
-                    "element 不适用于 release 步骤（release 释放的是按键 / "
-                    "鼠标按钮，不针对控件）"
-                )
-            point, info = await self._element_target(
-                pid, element, params.get("window"))
-            element_desc = self._element_summary(info)
-            if step.kind == "drag":
-                params["from_x"], params["from_y"] = point
-            elif step.kind in ("click", "move", "scroll"):
-                params["x"], params["y"] = point
-        action = build_action(step.kind, params)
-        focus_click = self._element_focus_click(action, point)
-        temporaries: list[str] = []
-        payload: dict = {}
-        try:
-            before_path = None
-            if diff_enabled or wait_mode is not None:
-                before_path = await self._temp_screenshot(
-                    pid, params.get("window"))
-                if before_path is not None:
-                    temporaries.append(before_path)
-            if focus_click is not None:
-                await self._send_input_with_retry(pid, focus_click)
-            payload["result"] = await self._inject_input_action(
-                pid, action, via, paste_key=paste_key,
-                restore_clipboard=restore_clipboard)
-            if element_desc is not None:
-                payload["element"] = element_desc
-            settle = step.settle or extra_wait
-            if settle:
-                await asyncio.sleep(settle)
-            if wait_mode is not None:
-                payload["wait_for"] = await self._await_screen(
-                    pid, mode=wait_mode, before_path=before_path,
-                    window=params.get("window"), timeout=wait_timeout)
-            if diff_enabled:
-                payload["diff"] = await self._diff_result(
-                    pid, before_path, window=params.get("window"),
-                    tolerance=tolerance)
-            if step.shot:
-                holder: dict = {}
-                error = await self._attach_shot(
-                    holder, rec, shot=step.shot,
-                    window=step.window or self.window,
-                    grid=step.params.get("grid", _UNSET))
-                if error:
-                    payload["screenshot_error"] = error
-                elif "screenshot" in holder:
-                    payload["screenshot"] = holder["screenshot"]
-        finally:
-            self._cleanup_temps(temporaries)
-        return payload
-
-    async def _sequence_screenshot(self, rec: dict, step: SequenceStep) -> dict:
-        """执行序列中的 screenshot 步骤（截图存盘）。
-
-        支持与 ``op=screenshot`` 同名的增强参数：``screen``（整屏 / 多显示器）、
-        ``element`` / ``margin``（按控件区域截图）、``crop`` / ``grid``。
-        """
-        path = str(step.params.get("path") or "").strip()
-        try:
-            target_path = self._prepare_screenshot_path(path)
-        except ValueError as exc:
-            raise ScreenshotError(f"截图路径非法: {exc}") from exc
-        crop = None
-        crop_raw = step.params.get("crop")
-        if crop_raw is not None and str(crop_raw).strip():
-            try:
-                crop = CropRegion.parse(str(crop_raw))
-            except CropError as exc:
-                raise ScreenshotError(f"截图裁剪参数非法: {exc}") from exc
-        try:
-            grid = self._resolve_grid(step.params.get("grid", _UNSET))
-        except CropError as exc:
-            raise ScreenshotError(f"截图网格参数非法: {exc}") from exc
-        info = await self._screenshot_target(
-            rec, target_path=target_path, crop=crop, grid=grid,
-            window=step.window or self.window,
-            screen=step.params.get("screen"),
-            element=step.params.get("element"),
-            margin=step.params.get("margin"))
-        payload = {"screenshot": info["result"].to_dict()}
-        if info.get("element") is not None:
-            payload["element"] = info["element"]
-        if info.get("monitor") is not None:
-            payload["monitor"] = info["monitor"]
-        return payload
-
-    def _resolve_on_error(self) -> str:
-        """解析 ``on_error``（``stop`` 遇错停止 / ``continue`` 继续后续步骤）。"""
-        raw = self.on_error
-        if raw is None:
-            return self._DEFAULT_ON_ERROR
-        text = str(raw).strip().lower()
-        if not text:
-            return self._DEFAULT_ON_ERROR
-        aliases = {
-            "stop": "stop", "abort": "stop", "halt": "stop", "break": "stop",
-            "continue": "continue", "skip": "continue", "keep": "continue",
-            "next": "continue",
-        }
-        resolved = aliases.get(text)
-        if resolved is None:
-            raise ValueError(
-                f"on_error 取值非法: {raw!r}。支持 stop（遇错停止，默认）或 "
-                f"continue（跳过失败步骤继续执行）"
-            )
-        return resolved
 
     async def _send_input_with_retry(self, pid: int, action):
         """注入输入（GUI 程序窗口创建有延迟时轮询重试）。

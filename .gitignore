@@ -31,11 +31,8 @@ google_shot*.png
 step2.png
 shots/
 
-# bash_opt shot=true 自动命名的截图目录（输入 op 注入后自动截图）
+# bash_opt 历史自动截图产物目录（shot 功能已移除，保留忽略以兼容旧产物）
 bash_opt_shots/
-
-# bash_opt op=record 保存的操作宏目录（本地操作产物，不入库）
-bash_opt_macros/
 
 # Chrome 测试临时 profile 与探针脚本（本地验证产物，不入库）
 .chrome-gui-test/

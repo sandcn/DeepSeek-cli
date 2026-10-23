@@ -41,9 +41,8 @@ class CaptureResult:
             （``screen_x = window_x + px``）或换算为窗口内坐标，解决「截图
             尺寸（如 1782x1281）与窗口外框尺寸（如 1800x1290）不一致」时
             的换算困惑（差值来自 DWM 不可见黑边、窗口装饰与 crop）。
-        window_rect: 窗口外框的屏幕矩形 ``{x, y, width, height}``（与
-            ``op=windows`` 清单同源），可直接喂给 ``window_action`` 的
-            ``move`` / ``fit``；``None`` = 后端未提供。
+        window_rect: 窗口外框的屏幕矩形 ``{x, y, width, height}``；``None`` =
+            后端未提供。
     """
 
     path: str
@@ -62,7 +61,7 @@ class CaptureResult:
 
     @property
     def window_handle_hex(self) -> str:
-        """被截窗口句柄的十六进制文本（与 ``op=windows`` 的清单一致）。"""
+        """被截窗口句柄的十六进制文本。"""
         return f"0x{self.window_handle:X}" if self.window_handle else "0x0"
 
     def to_dict(self) -> dict:

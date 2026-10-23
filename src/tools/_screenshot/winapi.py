@@ -904,8 +904,8 @@ def window_client_area(hwnd) -> "bool | None":
 
     PostMessage 投递鼠标消息必须把屏幕坐标换算成**客户区坐标**；Chrome /
     Electron 的弹出层与部分自绘窗口没有标准客户区，换算无从进行。调用方
-    据此提前判断（见 ``op=windows`` 输出里的 ``client_area`` 字段），改走
-    SendInput 合成真实输入——真实光标按屏幕坐标命中窗口，不需要客户区坐标。
+    据此提前判断，改走 SendInput 合成真实输入——真实光标按屏幕坐标命中
+    窗口，不需要客户区坐标。
 
     Returns:
         ``True`` 有客户区、``False`` 明确没有（换算失败或尺寸为 0）、
@@ -974,8 +974,7 @@ def enum_child_windows(parent) -> list:
     """枚举 ``parent`` 窗口的全部后代窗口句柄（深度优先，含各级子控件）。
 
     ``EnumChildWindows`` 会递归枚举整棵控件树，因此一次调用即可拿到按钮、
-    编辑框、列表项等全部子控件——``op=elements`` 据此把界面元素列出来，
-    让模型按控件名而不是盲点像素去操作。
+    编辑框、列表项等全部子控件（供窗口分析与可截图性判定使用）。
     """
     handles: list = []
     callback_type = CALLBACK(BOOL, HWND, c_void_p)

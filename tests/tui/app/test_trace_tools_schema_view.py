@@ -4,7 +4,9 @@
 - ``_tools_schema_list()`` 与各工具 ``to_tool_schema()`` 的描述一致；
 - 每个工具的描述都能经 ``_tools_inspector_content_rows`` 按右栏宽度换行渲染，
   不抛异常、不丢字符、不触发「内容过长」截断；
-- 描述变长后仍能正确换行（最长描述至少拆成多行）。
+- 描述变长后仍能正确换行（最长描述至少拆成多行）；
+- 描述内的 ``\\n`` 由渲染层拆成独立行（``bash_opt`` 逐 op 用法例 / 反例），
+  除结构化换行外不得丢字符。
 """
 
 from __future__ import annotations
@@ -44,7 +46,10 @@ def test_every_description_renders_and_keeps_all_text() -> None:
             else:
                 break
         rendered = "".join(desc_rows)
-        assert rendered == desc, f"{name}: 描述渲染丢字符"
+        # 描述内的 \n 是渲染层的强制换行（拆成多行 str），比较时排除该
+        # 结构化字符；其余字符一个都不能少。
+        assert rendered == desc.replace("\n", ""), f"{name}: 描述渲染丢字符"
+        assert len(desc_rows) >= desc.count("\n") + 1, f"{name}: 换行未拆行"
         assert all("内容过长" not in row for row in desc_rows)
 
 

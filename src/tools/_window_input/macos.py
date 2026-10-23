@@ -126,48 +126,16 @@ class MacOSInputBackend:
         self._held_keys: dict[str, int] = {}
         self._held_buttons: set[str] = set()
         self._state_lock = threading.RLock()
-        #: 输入会话（sequence / replay）期间缓存窗口定位结果。
-        self._session_lock = threading.RLock()
-        self._session_depth = 0
-        self._locate_cache: dict[tuple, _MacTarget] = {}
 
     def supports(self) -> bool:
         return sys.platform == "darwin"
-
-    def begin_session(self, pid: int | None = None) -> bool:
-        """开启输入会话（缓存窗口定位结果，减少每个动作的开销）。"""
-        if not self.supports():
-            return False
-        with self._session_lock:
-            self._session_depth += 1
-        return True
-
-    def end_session(self) -> None:
-        """结束输入会话并清空缓存。"""
-        with self._session_lock:
-            if self._session_depth > 0:
-                self._session_depth -= 1
-            if self._session_depth == 0:
-                self._locate_cache.clear()
 
     def locate(self, pid: int, window: str | None = None) -> _MacTarget | None:
         """定位 ``pid``（含子进程）的目标窗口（无副作用；供路由决策与注入复用）。
 
         ``window`` 为窗口选择器（见 ``_screenshot.windows``）；缺省取主窗口。
-        输入会话期间结果被缓存（序列里的连续动作不必每次重新搜索窗口）。
         """
-        key = (pid, window or "")
-        with self._session_lock:
-            if self._session_depth > 0:
-                cached = self._locate_cache.get(key)
-                if cached is not None:
-                    return cached
-        target = self._locate(pid, window) if window else self._locate(pid)
-        if target is not None:
-            with self._session_lock:
-                if self._session_depth > 0:
-                    self._locate_cache[key] = target
-        return target
+        return self._locate(pid, window) if window else self._locate(pid)
 
     def send(self, pid: int, action: InputAction) -> InputResult:
         """向 ``pid`` 的目标窗口注入 ``action``，返回注入结果。

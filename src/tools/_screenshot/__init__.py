@@ -1,12 +1,11 @@
-"""进程窗口截图能力（``bash_opt`` 的 ``op=screenshot`` / ``op=windows`` / ``op=window`` 实现层）。
+"""进程窗口截图能力（``bash_opt`` 的 ``op=screenshot`` 实现层）。
 
 职责划分：
   - 本模块：平台后端注册表 + 公共入口 :func:`capture_process_window`
-    （截图）、:func:`list_process_windows`（窗口清单）、
-    :func:`control_process_window`（窗口控制）；
+    （窗口截图）与 :func:`capture_screen`（整屏 / 多显示器截图）；
   - ``win`` / ``x11`` / ``macos``：各平台后端（相同契约：``supports()`` +
     ``capture(pid, path, crop=None, window=None, grid=None)`` +
-    ``list_windows(pid)`` + ``control(pid, request)``）；
+    ``list_windows(pid)`` + ``list_monitors()`` + ``capture_screen(...)``）；
   - ``windows``：跨平台窗口描述（:class:`WindowInfo`）与**统一选择语义**
     （main / active / #N / handle / title / class / popup / dialog），
     截图与输入注入共用同一套规则；
@@ -15,10 +14,8 @@
   - ``transform``：像素变换（区域裁剪：:class:`CropRegion`）与 PNG 原子写入；
   - ``grid``：截图坐标网格（参考线叠加，便于读图定位像素）。
 
-扩展方式：新增平台只需实现上述契约并 :func:`register_backend`（内置后端
-按 Windows → macOS → X11 顺序探测），无需改动工具层与既有后端；新增变换
-在 ``transform`` / ``grid`` 模块扩展，后端按需接入；新增窗口选择形式在
-``windows`` 模块扩展，全部平台与工具层自动获得该能力。
+窗口枚举 / 控制、控件清单、图像 / 文字定位、像素取色与截图标注已从
+bash_opt 移除，对应实现模块不再随本包提供。
 """
 
 from __future__ import annotations
@@ -30,38 +27,17 @@ import threading
 from typing import Callable
 
 from .grid import draw_grid_bgra, paint_grid_on_png_file, resolve_step
-from .diff import (
-    DEFAULT_TOLERANCE,
-    DiffResult,
-    compare_images,
-    compare_png_files,
-    images_equal,
-)
-from .elements import (
-    DEFAULT_ELEMENT_LIMIT,
-    ElementError,
-    ElementInfo,
-    classify_control,
-    describe_elements,
-    filter_elements,
-    list_process_elements,
-    match_element,
-)
 from .monitors import Monitor, MonitorError, resolve as resolve_monitor
 from .result import CaptureResult, NoWindowError, ScreenshotError
 from .transform import CropError, CropRegion, apply_crop_to_png_file
 from .windows import (
     SelectorError,
-    WindowControlRequest,
     WindowInfo,
     WindowSelector,
-    describe_windows,
     indexed_summary,
-    parse_control_request,
     parse_selector,
     pick_window,
     window_geometry,
-    window_hint,
 )
 
 logger = logging.getLogger(__name__)
@@ -214,54 +190,6 @@ def capture_screen(monitor: Monitor, path: str,
     return result
 
 
-def list_process_windows(pid: int) -> list[WindowInfo]:
-    """返回 ``pid`` 及其子进程当前全部可操作窗口（按 Z 序）。
-
-    纯查询、无副作用；后端不支持枚举窗口时返回空列表（调用方据此给出提示）。
-    """
-    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
-        return []
-    backend = resolve_backend()
-    enumerate_fn = getattr(backend, "list_windows", None)
-    if enumerate_fn is None:
-        return []
-    try:
-        return list(enumerate_fn(pid))
-    except (OSError, ValueError, RuntimeError, ScreenshotError, SelectorError) as exc:
-        # 仅吞掉「系统调用 / 参数 / 后端能力」类可预期失败（调用方在轮询中
-        # 以空列表表示「暂时没有窗口」）；编程错误（如 TypeError）继续抛出，
-        # 避免把「代码缺陷」伪装成「没有窗口」而难以发现。
-        logger.debug("窗口枚举失败（后端 %s，进程 %s）: %s",
-                     getattr(backend, "name", "?"), pid, exc)
-        return []
-
-
-def control_process_window(pid: int, request: WindowControlRequest) -> dict:
-    """对 ``pid`` 进程树中被选窗口执行状态 / 几何控制，返回动作细节。
-
-    Raises:
-        ScreenshotError: 平台后端不支持窗口控制，或控制调用失败。
-        SelectorError: 窗口选择器非法或没有匹配窗口。
-        NoWindowError: 进程树内没有可操作窗口。
-    """
-    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
-        raise ScreenshotError(f"进程号非法，无法控制窗口: {pid!r}")
-    backend = resolve_backend()
-    control_fn = getattr(backend, "control", None)
-    if control_fn is None:
-        raise ScreenshotError(
-            f"当前平台后端（{getattr(backend, 'name', '?')}）暂不支持窗口控制"
-        )
-    try:
-        return dict(control_fn(pid, request))
-    except (ScreenshotError, SelectorError):
-        raise
-    except (OSError, ValueError, RuntimeError) as exc:
-        raise ScreenshotError(
-            f"窗口控制失败（后端 {getattr(backend, 'name', '?')}，进程 {pid}）: {exc}"
-        ) from exc
-
-
 def _ensure_builtins() -> None:
     """幂等注册内置后端（延迟导入，避免包初始化期的循环引用）。"""
     global _BUILTINS_LOADED
@@ -281,45 +209,26 @@ __all__ = [
     "CaptureResult",
     "CropError",
     "CropRegion",
-    "DEFAULT_ELEMENT_LIMIT",
-    "DEFAULT_TOLERANCE",
-    "DiffResult",
-    "ElementError",
-    "ElementInfo",
     "Monitor",
     "MonitorError",
     "NoWindowError",
     "ScreenshotError",
     "SelectorError",
-    "WindowControlRequest",
     "WindowInfo",
     "WindowSelector",
     "apply_crop_to_png_file",
     "available_backends",
     "capture_process_window",
     "capture_screen",
-    "list_monitors",
-    "resolve_monitor",
-    "classify_control",
-    "compare_images",
-    "compare_png_files",
-    "control_process_window",
-    "describe_elements",
-    "describe_windows",
     "draw_grid_bgra",
-    "filter_elements",
-    "images_equal",
     "indexed_summary",
-    "list_process_elements",
-    "list_process_windows",
-    "match_element",
+    "list_monitors",
     "paint_grid_on_png_file",
-    "parse_control_request",
     "parse_selector",
     "pick_window",
     "register_backend",
     "resolve_backend",
+    "resolve_monitor",
     "resolve_step",
     "window_geometry",
-    "window_hint",
 ]

@@ -22,17 +22,16 @@ xdotool/wmctrl、macOS 走 Quartz），本模块负责**跨平台一致的选择
   - ``dialog``：对话框类窗口（类名含 dialog / Win32 ``#32770``）
   - ``all`` / ``*``：全部窗口（仅列举用）
 
-截图与输入注入共用本模块的选择规则，因此模型用 ``op=windows`` 看到窗口
-清单后，可用同一选择器把截图或输入精确投向任意窗口——右键菜单、下拉浮层、
-文件对话框这些**独立顶层窗口**不再是盲区。
+截图与输入注入共用本模块的选择规则，因此同一个 ``window`` 选择器既可用于
+截图也可用于输入，把操作精确投向任意窗口——右键菜单、下拉浮层、文件对话框
+这些**独立顶层窗口**不再是盲区。
 
 平台后端只需产出一致的 :class:`WindowInfo` 列表，选择与排序逻辑全部在此，
 新增平台无需改动既有选择规则。
 
 展示与编号：``#N`` 选择器按**可操作窗口**（可见且未最小化）的 Z 序编号；
-:func:`describe_windows` / :func:`window_hint` / :func:`indexed_summary` /
-:func:`window_geometry` 都使用同一编号，保证窗口清单、错误提示与截图结果
-三者互相对得上（模型可放心照抄清单里的 ``#N``）；几何换算（截图坐标系原点
+:func:`window_hint` / :func:`indexed_summary` / :func:`window_geometry` 都
+使用同一编号，保证错误提示与截图结果互相对得上；几何换算（截图坐标系原点
 与窗口外框）也由 :func:`window_geometry` 统一产出，避免各后端各自拼装。
 """
 
@@ -88,10 +87,6 @@ _KEYWORD_KINDS: dict[str, str] = {
 
 #: 对话框类窗口的类名特征（Windows ``#32770`` 为系统对话框类）
 _DIALOG_CLASS_HINTS: tuple[str, ...] = ("#32770", "dialog", "modal")
-
-#: 列举窗口时默认最多返回的条数（防止极端情况下输出过长）
-DEFAULT_LIST_LIMIT = 40
-
 
 class SelectorError(ScreenshotError):
     """窗口选择器非法，或没有匹配的窗口。
@@ -165,7 +160,7 @@ class WindowInfo:
         return f"0x{self.owner:X}" if self.owner else ""
 
     def summary(self, z_index: int | None = None) -> str:
-        """一行摘要（用于错误提示与 ``op=windows`` 输出）。
+        """一行摘要（用于错误提示与窗口选择）。
 
         Args:
             z_index: 该窗口在**可操作窗口**（可见且未最小化）中的 Z 序序号
@@ -381,15 +376,15 @@ def require_capturable(info: WindowInfo, selector: Any = None) -> None:
         raise NoWindowError(
             f"窗口「{info.title or '<无标题>'}」（{info.handle_hex}）当前已最小化，"
             f"截图得不到有效画面（最小化窗口没有可渲染的客户区）。"
-            f"请先 op=window, window_action='restore' 还原窗口后再截图，"
-            f"或改用 op=windows 里其它可操作窗口（本次选择器 "
+            f"请先在目标程序里还原窗口后再截图，"
+            f"或改用 window 选择器指向其它可操作窗口（本次选择器 "
             f"{selector or DEFAULT_SELECTOR!r}）"
         )
     if not info.visible:
         raise NoWindowError(
             f"窗口「{info.title or '<无标题>'}」（{info.handle_hex}）当前不可见，"
-            f"截图得不到有效画面。可用 op=windows 查看可操作窗口清单，"
-            f"或先用 op=window, window_action='restore' / 'activate' 让它显示出来"
+            f"截图得不到有效画面。请先在目标程序里让窗口显示出来，"
+            f"或改用 window 选择器指向其它可见窗口"
         )
 
 
@@ -457,9 +452,8 @@ def main_rank(info: WindowInfo) -> tuple:
 
     辅助窗口（见 :func:`is_auxiliary_window`）排在**第一位**：主窗口最小化时
     全部窗口都不可选，若只按面积排序，Tk 的 ``TtkMonitorWindow``（1920x983）
-    会压过真实主窗口（564x299），``window_action='restore'`` 于是把它显示出来
-    ——既没还原目标窗口，又在屏幕上凭空多出一个遮挡窗口（实机复现）；即使
-    辅助窗口已可见，也不能让它抢走 main。
+    会压过真实主窗口（564x299），从而把截图 / 输入投向错误的窗口（实机
+    复现）；即使辅助窗口已可见，也不能让它抢走 main。
 
     其次是可见性：隐藏 / 最小化的「幽灵窗口」即使面积更大、标题更全，
     也不应被当作主窗口（截图为全黑、输入打不进去）。
@@ -505,7 +499,7 @@ def filter_windows(windows: Sequence[WindowInfo],
       - ``main`` / ``active`` / ``handle`` / ``pid``：按各自语义匹配（``main``
         已把可见性纳入排序，优先选中可见窗口）；
       - ``index``（``#N``）：在**可操作窗口**（可见且未最小化）中按 Z 序取第 N 个
-        —— 与 ``op=windows`` 清单中标注的 ``#N`` 一致；
+        —— 编号规则与错误提示里的 ``#N`` 一致；
       - ``title`` / ``class``：优先在可操作窗口中匹配，无命中再回退全部窗口
         （按标题查隐藏窗口是合理需求，如排查辅助窗口）；
       - ``popup`` / ``dialog``：只在可操作窗口中匹配，无命中返回空列表由
@@ -691,7 +685,7 @@ def pick_window(windows: Sequence[WindowInfo], selector: Any = None) -> WindowIn
     """按选择器挑出一个窗口，返回 :class:`WindowInfo`。
 
     Args:
-        windows: 窗口目录（通常来自 ``op=windows`` / 平台后端枚举）。
+        windows: 窗口目录（通常来自平台后端枚举）。
         selector: 选择器文本（``None`` = 主窗口）；也可以是已解析的
             :class:`WindowSelector`。
 
@@ -705,7 +699,7 @@ def pick_window(windows: Sequence[WindowInfo], selector: Any = None) -> WindowIn
     if resolved.kind == "all":
         raise SelectorError(
             f"选择器 {resolved.describe()!r} 会命中全部窗口，请改用具体窗口"
-            f"（如 '#1' / 'title:子串' / 'handle:0x…'）或先用 op=windows 查看清单"
+            f"（如 '#1' / 'title:子串' / 'handle:0x…'）"
         )
     matched = filter_windows(items, resolved)
     if not matched:
@@ -749,7 +743,7 @@ def indexed_summary(windows: Sequence[WindowInfo],
 
     两者在存在隐藏 / 最小化窗口时并不相同（例如枚举序 ``#33`` 的可操作序号
     其实是 ``#1``）。本函数是「截图结果回填 ``window_summary``」的统一入口，
-    保证摘要编号与选择器一致；同时供 ``op=windows`` 之外的调用方复用。
+    保证摘要编号与选择器一致，供截图结果回填等调用方复用。
     """
     indices = selectable_index(windows)
     return target.summary(indices.get(target.handle, NO_SELECTABLE_INDEX))
@@ -764,9 +758,8 @@ def window_geometry(windows: Sequence[WindowInfo],
       - ``z_index``：目标窗口在可操作窗口中的 Z 序序号（``#N`` 选择器语义，
         不可选时为 ``None``）；
       - ``handle`` / ``handle_hex``：窗口句柄；
-      - ``rect``：窗口外框的屏幕矩形 ``{x, y, width, height}``（与
-        ``op=windows`` 条目里的 ``x`` / ``y`` / ``width`` / ``height`` 同源，
-        可直接喂给 ``window_action`` 的 ``move`` / ``fit``）；
+      - ``rect``：窗口外框的屏幕矩形 ``{x, y, width, height}``（用于把截图
+        坐标换算成屏幕坐标）；
       - ``selectable``：该窗口当前能否被 ``#N`` / ``popup`` / ``dialog`` 选中。
 
     各平台截图后端据此回填截图结果里的窗口几何，使模型能把截图坐标与
@@ -787,181 +780,14 @@ def window_geometry(windows: Sequence[WindowInfo],
     }
 
 
-def describe_windows(windows: Sequence[WindowInfo],
-                    limit: int = DEFAULT_LIST_LIMIT) -> list[dict]:
-    """把窗口清单转为可序列化列表（按 Z 序，``limit`` 截断）。
-
-    每个条目的 ``z_index`` 是它在可操作窗口中的 Z 序序号（``#N`` 选择器用的
-    就是这个序号），``selectable`` 标记该窗口当前能否被选中 / 注入。
-    """
-    items = sort_by_z(windows)
-    indices = selectable_index(items)
-    return [item.to_dict(indices.get(item.handle, NO_SELECTABLE_INDEX))
-            for item in items[:max(int(limit), 0)]]
-
-
-# ── 窗口控制（激活 / 最大化 / 移动 / 缩放 / 关闭） ───────
-
-#: 窗口控制动作：改变窗口状态或几何，便于把坐标与布局固定下来后再操作
-WINDOW_CONTROL_ACTIONS: tuple[str, ...] = (
-    "activate", "maximize", "minimize", "restore", "close", "move", "resize", "fit",
-    "always_on_top", "not_on_top",
-)
-
-#: 控制动作别名 → 规范动作
-_CONTROL_ALIASES: dict[str, str] = {
-    "activate": "activate", "focus": "activate", "front": "activate",
-    "raise": "activate", "foreground": "activate", "top": "activate",
-    "maximize": "maximize", "max": "maximize", "maximise": "maximize",
-    "minimize": "minimize", "min": "minimize", "minimise": "minimize",
-    "iconify": "minimize",
-    "restore": "restore", "normal": "restore", "unminimize": "restore",
-    "unmaximize": "restore",
-    "close": "close", "quit": "close", "dismiss": "close",
-    "move": "move", "position": "move",
-    "resize": "resize", "size": "resize",
-    "fit": "fit", "move_resize": "fit", "moveresize": "fit", "geometry": "fit",
-    "set_bounds": "fit", "bounds": "fit",
-    # 置顶 / 取消置顶：让被操作窗口保持在其他窗口之上（不被遮挡）
-    "always_on_top": "always_on_top", "ontop": "always_on_top",
-    "on_top": "always_on_top", "topmost": "always_on_top",
-    "pin": "always_on_top", "keep_on_top": "always_on_top",
-    "not_on_top": "not_on_top", "no_topmost": "not_on_top",
-    "untop": "not_on_top", "unpin": "not_on_top",
-    "normal_level": "not_on_top", "remove_topmost": "not_on_top",
-    # 工具层扩展动作（几何记忆；见 WINDOW_MEMORY_ACTIONS）
-    "get_geometry": "get_geometry", "geometry_info": "get_geometry",
-    "current_geometry": "get_geometry",
-    "save_geometry": "save_geometry", "remember_geometry": "save_geometry",
-    "store_geometry": "save_geometry", "save_bounds": "save_geometry",
-    "restore_geometry": "restore_geometry", "reset_geometry": "restore_geometry",
-    "restore_bounds": "restore_geometry",
-}
-
-#: 需要 ``x`` / ``y`` 的动作
-_NEED_POSITION: frozenset[str] = frozenset({"move", "fit"})
-#: 需要 ``width`` / ``height`` 的动作
-_NEED_SIZE: frozenset[str] = frozenset({"resize", "fit"})
-
-#: 工具层扩展的窗口动作（不属平台后端契约，由 ``bash_opt`` 工具层用
-#: 「读取几何 + fit」组合实现）：读取当前几何 / 记住几何 / 恢复几何。
-#: 抽成独立常量便于工具层与测试共用，新增同类动作只需在此登记。
-WINDOW_MEMORY_ACTIONS: tuple[str, ...] = (
-    "get_geometry", "save_geometry", "restore_geometry",
-)
-
-
-def normalize_control_action(action: Any) -> str | None:
-    """把窗口动作文本规范化为标准动作名（未知返回 ``None``）。
-
-    大小写不敏感，接受别名（``topmost`` → ``always_on_top``、``pin`` →
-    ``always_on_top``、``remember_geometry`` → ``save_geometry`` 等）。
-    """
-    text = str(action or "").strip().lower().replace("-", "_")
-    if not text:
-        return None
-    return _CONTROL_ALIASES.get(text)
-
-
-@dataclass(frozen=True)
-class WindowControlRequest:
-    """一次窗口控制请求（跨平台语义）。
-
-    Attributes:
-        action: :data:`WINDOW_CONTROL_ACTIONS` 之一。
-        selector: 目标窗口选择器（见模块文档；``None`` = 主窗口）。
-        x / y: 屏幕坐标（``move`` / ``fit`` 必填）。
-        width / height: 目标尺寸（``resize`` / ``fit`` 必填）。
-    """
-
-    action: str
-    selector: Any = None
-    x: int | None = None
-    y: int | None = None
-    width: int | None = None
-    height: int | None = None
-
-    def __post_init__(self) -> None:
-        if self.action not in WINDOW_CONTROL_ACTIONS:
-            raise SelectorError(
-                f"窗口控制动作非法: {self.action!r}。支持: "
-                f"{', '.join(WINDOW_CONTROL_ACTIONS)}"
-            )
-        if self.action in _NEED_POSITION and (self.x is None or self.y is None):
-            raise SelectorError(f"窗口动作 {self.action} 需要同时提供 x 与 y（屏幕坐标）")
-        if self.action in _NEED_SIZE and (self.width is None or self.height is None):
-            raise SelectorError(f"窗口动作 {self.action} 需要同时提供 width 与 height（像素）")
-        for name in ("width", "height"):
-            value = getattr(self, name)
-            if value is not None and value <= 0:
-                raise SelectorError(f"窗口 {name} 必须为正整数，当前: {value}")
-
-    def to_dict(self) -> dict:
-        payload: dict = {"window_action": self.action}
-        for name in ("x", "y", "width", "height"):
-            value = getattr(self, name)
-            if value is not None:
-                payload[name] = value
-        return payload
-
-
-def parse_control_request(action: Any, *, window: Any = None, x: Any = None,
-                          y: Any = None, width: Any = None,
-                          height: Any = None) -> WindowControlRequest:
-    """解析窗口控制参数（接受字符串数字，动作名大小写与别名不敏感）。
-
-    Raises:
-        SelectorError: 动作未知或几何参数缺失 / 非法。
-    """
-    text = str(action or "").strip().lower().replace("-", "_")
-    if not text:
-        raise SelectorError(
-            f"窗口控制需要 window_action 参数（支持: "
-            f"{', '.join(WINDOW_CONTROL_ACTIONS)}）"
-        )
-    normalized = _CONTROL_ALIASES.get(text)
-    if normalized is None:
-        raise SelectorError(
-            f"窗口控制动作非法: {action!r}。支持: {', '.join(WINDOW_CONTROL_ACTIONS)}"
-        )
-    selector_value = None
-    if window is not None and str(window).strip():
-        parse_selector(window)  # 格式校验：非法选择器在此直接报错
-        selector_value = str(window).strip()
-    return WindowControlRequest(
-        action=normalized,
-        selector=selector_value,
-        x=_optional_int(x, "x"),
-        y=_optional_int(y, "y"),
-        width=_optional_int(width, "width"),
-        height=_optional_int(height, "height"),
-    )
-
-
-def _optional_int(value: Any, label: str) -> int | None:
-    if value is None or (isinstance(value, str) and not value.strip()):
-        return None
-    if isinstance(value, bool):
-        raise SelectorError(f"{label} 必须是整数，当前: {value!r}")
-    try:
-        return int(str(value).strip(), 0) if isinstance(value, str) else int(value)
-    except (TypeError, ValueError):
-        raise SelectorError(f"{label} 必须是整数，当前: {value!r}") from None
-
-
 __all__ = [
-    "DEFAULT_LIST_LIMIT",
     "DEFAULT_SELECTOR",
     "FUZZY_THRESHOLD",
     "NO_SELECTABLE_INDEX",
     "SELECTOR_KINDS",
-    "WINDOW_CONTROL_ACTIONS",
-    "WINDOW_MEMORY_ACTIONS",
     "SelectorError",
-    "WindowControlRequest",
     "WindowInfo",
     "WindowSelector",
-    "describe_windows",
     "filter_windows",
     "indexed_summary",
     "is_auxiliary_window",
@@ -970,8 +796,6 @@ __all__ = [
     "main_rank",
     "main_window",
     "mark_main",
-    "normalize_control_action",
-    "parse_control_request",
     "parse_selector",
     "pick_window",
     "require_capturable",

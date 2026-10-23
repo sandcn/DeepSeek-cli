@@ -333,11 +333,6 @@ class WindowsInputBackend:
         self._held_keys: dict[str, int] = {}
         self._held_buttons: set[str] = set()
         self._state_lock = threading.RLock()
-        #: 输入会话（sequence / replay 批量动作）期间缓存窗口定位结果，
-        #: 避免每个动作都重新枚举窗口；``_session_depth`` 支持嵌套。
-        self._session_lock = threading.RLock()
-        self._session_depth = 0
-        self._locate_cache: dict[tuple, _TargetWindow] = {}
         #: 「上次确认的前台窗口」句柄：弹层 / 工具窗口场景下省去反复遍历
         #: 同进程树窗口（仍会实时复核该句柄是否仍在前台，不牺牲正确性）。
         self._foreground_cache = 0
@@ -351,61 +346,9 @@ class WindowsInputBackend:
         ``window`` 为窗口选择器（``main`` / ``active`` / ``#1`` / ``popup`` 等，
         见 ``_screenshot.windows``）；缺省取主窗口。选择器无匹配时抛
         ``SelectorError``；进程树内没有窗口时返回 ``None``。
-
-        输入会话（``begin_session``）期间结果被缓存：序列 / 宏里成百上千个
-        动作不必每个都重新枚举窗口，游戏连续输入因此更跟手；缓存命中前会用
-        ``IsWindow`` 复核窗口仍然存在，窗口关闭后自动重新定位。
         """
         winapi.ensure_process_dpi_aware()
-        key = (pid, window or "")
-        cached = self._cached_target(key)
-        if cached is not None:
-            return cached
-        target = self._locate(pid, window) if window else self._locate(pid)
-        self._store_target(key, target)
-        return target
-
-    def begin_session(self, pid: int | None = None) -> bool:
-        """开启输入会话（缓存窗口定位 + 前台状态，减少每个动作的开销）。"""
-        if not self.supports():
-            return False
-        with self._session_lock:
-            self._session_depth += 1
-        return True
-
-    def end_session(self) -> None:
-        """结束输入会话并清空缓存（嵌套会话全部退出后才清）。"""
-        with self._session_lock:
-            if self._session_depth > 0:
-                self._session_depth -= 1
-            if self._session_depth == 0:
-                self._locate_cache.clear()
-                self._foreground_cache = 0
-
-    def _cached_target(self, key: tuple) -> _TargetWindow | None:
-        """会话期间复用已定位的窗口（复核句柄仍有效，失效则丢弃缓存）。"""
-        with self._session_lock:
-            if self._session_depth <= 0:
-                return None
-            target = self._locate_cache.get(key)
-            if target is None:
-                return None
-        try:
-            if not winapi.is_window(target.handle):
-                with self._session_lock:
-                    self._locate_cache.pop(key, None)
-                return None
-        except Exception:  # noqa: BLE001 - 复核失败时保守地重新定位
-            return None
-        return target
-
-    def _store_target(self, key: tuple, target: _TargetWindow | None) -> None:
-        """会话期间记住定位结果（未找到窗口时不缓存，以便稍后重试）。"""
-        if target is None:
-            return
-        with self._session_lock:
-            if self._session_depth > 0:
-                self._locate_cache[key] = target
+        return self._locate(pid, window) if window else self._locate(pid)
 
     def send(self, pid: int, action: InputAction) -> InputResult:
         """向 ``pid`` 的目标窗口注入 ``action``，返回注入结果。
@@ -482,23 +425,21 @@ class WindowsInputBackend:
             "键盘 / 文本走 PostMessage 回退通道：只有处理 WM_KEY*/WM_CHAR 的"
             "程序（经典 Win32 控件、对话框）会响应；Chrome、Electron、游戏等"
             "自绘界面通常忽略该通道。若目标无响应，请让目标窗口取得前台后"
-            "用 method='sendinput' 重试"
+            "重试（默认自动走合成输入）"
         )
 
     def _inject(self, target: _TargetWindow, action: InputAction,
                 delivery: str) -> tuple[dict, str]:
         """按投递方式注入，返回 ``(细节, 实际使用的投递方式)``。
 
-        auto 模式下 SendInput 失败（如目标进程权限更高被 UIPI 拒绝）时自动
-        回退 PostMessage 投递，并在结果中如实反映实际投递方式。
+        SendInput 失败（如目标进程权限更高被 UIPI 拒绝）时自动回退
+        PostMessage 投递，并在结果中如实反映实际投递方式。
         """
         if delivery == "message":
             return self._inject_message(target, action), "message"
         try:
             return self._inject_sendinput(target, action), "sendinput"
         except InputError as exc:
-            if action.method != "auto":
-                raise
             logger.debug("SendInput 注入失败，回退 PostMessage 投递: %s", exc)
             return self._inject_message(target, action), "message"
 
@@ -510,15 +451,10 @@ class WindowsInputBackend:
                         ScrollAction)
 
     def _delivery_for(self, target: _TargetWindow, action: InputAction) -> str:
-        if action.method == "message":
-            return "message"
         if (self._application_foreground_handle(target)
                 or self._ensure_foreground(target)):
             return "sendinput"
-        if action.method == "sendinput":
-            raise InputError(self._foreground_error(
-                target, "SendInput 合成的是系统级输入事件，只作用于前台窗口"))
-        # auto：整个应用都不在前台 —— 若真实光标在该坐标命中的就是目标窗口
+        # 整个应用都不在前台 —— 若真实光标在该坐标命中的就是目标窗口
         # （弹层浮在最上层），合成鼠标事件仍能投递；否则退回消息投递。
         if self._pointer_reachable(target, action):
             logger.debug("应用不在前台，但光标位置命中目标窗口，仍用 SendInput 投递")
@@ -535,10 +471,10 @@ class WindowsInputBackend:
         return (
             f"无法把窗口 {target.title or target.handle} 置于前台"
             f"（当前前台窗口: {_foreground_description()}）。"
-            f"{purpose}；可改用 method='message' 直接投递窗口消息"
-            f"（Chrome / Electron / 游戏等自绘界面通常忽略该通道），"
-            f"或先让目标窗口获得焦点（点击其窗口区域、或关闭 / 最小化持续"
-            f"抢占前台的其它程序）后重试"
+            f"{purpose}；请先让目标窗口获得焦点（点击其窗口区域、或关闭 / "
+            f"最小化持续抢占前台的其它程序）后重试。窗口无法取得前台时，"
+            f"鼠标 / 键盘会自动回退窗口消息投递（Chrome / Electron / 游戏等"
+            f"自绘界面通常忽略该通道）"
         )
 
     def _application_foreground_handle(self, target: _TargetWindow) -> int:
@@ -1213,15 +1149,6 @@ class WindowsInputBackend:
             winapi.hwnd_value(target.handle), target.handle)
 
     def _move_message(self, target: _TargetWindow, action: MoveAction) -> dict:
-        if action.is_relative:
-            hint = ("method='message' 通道不支持相对移动（没有真实光标可参照）；"
-                    "去掉 method 走合成输入（真实光标 / 相对位移事件可用），"
-                    "或改用绝对坐标 x/y")
-            if action.relative_event:
-                hint = ("method='message' 通道不能发送相对位移事件（游戏视角）——"
-                        "PostMessage 没有相对移动语义；去掉 method 走合成输入"
-                        "（默认 method='auto' 会发 MOUSEEVENTF_MOVE 相对事件）")
-            raise ActionError(hint)
         point = resolve_point(action.x, action.y, target.frame.width,
                               target.frame.height, label="移动坐标")
         hit = self._message_point(target, point)
@@ -1229,13 +1156,6 @@ class WindowsInputBackend:
         detail = self._point_detail(point, (hit.screen_x, hit.screen_y))
         detail.update({"client_x": hit.client_x, "client_y": hit.client_y,
                        "target_handle": hit.handle})
-        if action.is_smooth:
-            # PostMessage 通道不移动真实光标，没有「连续移动」的语义；
-            # 如实说明已按一步投递，而非静默忽略（需要平滑请用合成输入通道）
-            detail["smooth_ignored"] = (
-                "PostMessage 通道不移动真实光标，无平滑移动语义（已按一步投递）；"
-                "需要平滑移动请去掉 method='message'（默认 method='auto' 走合成输入）"
-            )
         return detail
 
     def _hover_message(self, target: _TargetWindow, action: HoverAction) -> dict:
@@ -1563,12 +1483,12 @@ def _input_target_unavailable(target: _TargetWindow) -> str | None:
     if minimized:
         return (f"窗口「{title}」（{handle_text}）当前已最小化，收不到鼠标 / "
                 f"键盘输入（最小化窗口矩形在屏幕外，合成输入不会生效）。"
-                f"请先 op=window, window_action='restore' 还原窗口后再输入，"
-                f"或改用 op=windows 里其它可操作窗口")
+                f"请先在目标程序里还原窗口后再输入，"
+                f"或改用其它可操作窗口")
     if not visible:
         return (f"窗口「{title}」（{handle_text}）当前不可见，收不到鼠标 / "
-                f"键盘输入。可先用 op=window, window_action='restore' / "
-                f"'activate' 让它显示出来，或改用 op=windows 查看可操作窗口清单")
+                f"键盘输入。请先在目标程序里让窗口显示出来，"
+                f"或改用其它可操作窗口")
     return None
 
 
@@ -1663,18 +1583,16 @@ def _no_client_area_error(handle) -> InputError:
     """窗口没有可换算客户区时的错误（面向大模型的下一步指引）。
 
     PostMessage 投递鼠标消息必须把屏幕坐标换算成客户区坐标；Chrome /
-    Electron 的弹出层与部分自绘窗口没有标准客户区（``op=windows`` 里
-    ``client_area=false``），此时消息投递不可行，应改走合成输入——真实光标
-    按屏幕坐标命中窗口，不需要客户区坐标。
+    Electron 的弹出层与部分自绘窗口没有标准客户区，此时消息投递不可行，
+    应改走合成输入——真实光标按屏幕坐标命中窗口，不需要客户区坐标。
     """
     value = winapi.hwnd_value(handle)
     return InputError(
         f"窗口 0x{value:X} 没有可换算的客户区（ClientToScreen / GetClientRect "
         f"都不可用），无法用 PostMessage 换算鼠标坐标。这类窗口（Chrome / "
-        f"Electron 弹出层、tool window、部分自绘界面）请改用合成输入：去掉 "
-        f"method='message'（默认 method='auto' 会走 SendInput，按屏幕坐标命中"
-        f"光标下的真实窗口），或直接用 op=windows 里的 client_area=true 的窗口"
-        f"作为操作目标"
+        f"Electron 弹出层、tool window、部分自绘界面）请让目标窗口取得前台后"
+        f"重试（合成输入按屏幕坐标命中光标下的真实窗口），或改用目标程序的"
+        f"其它窗口作为操作目标"
     )
 
 

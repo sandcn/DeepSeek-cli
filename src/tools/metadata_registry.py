@@ -38,7 +38,7 @@ BUILTIN_TOOL_METADATA: Dict[str, dict] = {
         "parallel_safe": False, "requires_network": False, "requires_terminal": False,
         "timeout_estimate": 0, "category": "general", "priority": 30,
         "tool_category": "bash",
-        "description": "操作后台bash任务（窗口截图/控件清单/GUI输入/动作序列/剪贴板）",
+        "description": "操作后台bash任务（窗口截图/鼠标键盘输入）",
     },
     "cp": {
         "parallel_safe": False, "requires_network": False, "requires_terminal": False,

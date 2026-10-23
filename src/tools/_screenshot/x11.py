@@ -23,7 +23,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 from dataclasses import dataclass
 
 from . import png, proctree, transform
@@ -33,7 +32,6 @@ from .result import CaptureResult, NoWindowError, ScreenshotError
 from .transform import CropError, CropRegion
 from .windows import (
     DEFAULT_SELECTOR,
-    WindowControlRequest,
     WindowInfo,
     indexed_summary,
     mark_main,
@@ -47,10 +45,6 @@ logger = logging.getLogger(__name__)
 _COMMAND_TIMEOUT = 30.0
 #: 窗口搜索命令超时（秒）
 _SEARCH_TIMEOUT = 15.0
-#: 窗口控制（移动 / 缩放 / 最大化等）后等待状态生效的时间（秒）
-_CONTROL_SETTLE_SECONDS = 0.15
-
-
 @dataclass
 class _X11Window:
     """X11 窗口条目（``x`` / ``y`` 为窗口左上角的屏幕坐标）。"""
@@ -168,7 +162,7 @@ class X11Backend:
         )
 
     def list_windows(self, pid: int) -> list[WindowInfo]:
-        """枚举该进程树的全部可操作窗口（``op=windows`` 数据源）。"""
+        """枚举该进程树的全部可操作窗口（截图 / 输入共用）。"""
         pids = proctree.collect_process_tree(pid)
         if not pids:
             return []
@@ -236,10 +230,6 @@ class X11Backend:
             "当前会话无可用全屏截图工具：请安装 ImageMagick（import）或 "
             "gnome-screenshot"
         )
-
-    def control(self, pid: int, request: WindowControlRequest) -> dict:
-        """对被选窗口执行激活 / 最大化 / 最小化 / 还原 / 关闭 / 移动 / 缩放。"""
-        return control_window(pid, request, runner=self._run)
 
     # ── 窗口发现 ─────────────────────────────────────────
 
@@ -455,123 +445,6 @@ def list_windows(pid: int) -> list[WindowInfo]:
                       for index, item in enumerate(windows)])
 
 
-def control_window(pid: int, request: WindowControlRequest, *,
-                   runner=None) -> dict:
-    """对 ``pid`` 进程树中被选窗口执行状态 / 几何控制（xdotool / wmctrl）。
-
-    Raises:
-        NoWindowError: 进程树内没有可操作窗口。
-        SelectorError: 窗口选择器非法或没有匹配窗口。
-        ScreenshotError: 窗口控制命令不可用（缺少 xdotool / wmctrl）。
-    """
-    run = runner or _run
-    windows = find_process_windows(pid)
-    if not windows:
-        raise NoWindowError(
-            f"进程 {pid} 及其子进程没有可操作窗口"
-            f"（纯命令行进程没有图形窗口；Wayland 原生窗口无法按 PID 定位）"
-        )
-    infos = mark_main([to_window_info(item, index)
-                       for index, item in enumerate(windows)])
-    target_info = pick_window(infos, request.selector)
-    target = _find_by_info(windows, target_info)
-    window_id = target.window_id
-    action = request.action
-    before = _window_state(window_id, target)
-    _apply_control(run, window_id, action, request)
-    time.sleep(_CONTROL_SETTLE_SECONDS)
-    after = _window_state(window_id, target)
-    return {
-        "window_action": action,
-        "handle": target_info.handle,
-        "handle_hex": target_info.handle_hex,
-        "window_title": target_info.title,
-        "before": before,
-        "after": after,
-    }
-
-
-def _apply_control(run, window_id: str, action: str,
-                   request: WindowControlRequest) -> None:
-    """按动作调用对应的 X11 工具命令（缺工具时给出可执行提示）。"""
-    hex_id = _hex_window_id(window_id)
-    if action == "activate":
-        if not _try(run, ["wmctrl", "-i", "-a", hex_id]):
-            _require(run, ["xdotool", "windowactivate", "--sync", window_id], "激活窗口")
-    elif action == "minimize":
-        _require(run, ["xdotool", "windowminimize", window_id], "最小化窗口")
-    elif action == "maximize":
-        if not _try(run, ["wmctrl", "-i", "-r", hex_id, "-b",
-                          "add,maximized_vert,maximized_horz"]):
-            _require(run, ["xdotool", "windowsize", window_id, "100%", "100%"],
-                     "最大化窗口")
-    elif action == "restore":
-        _try(run, ["wmctrl", "-i", "-r", hex_id, "-b",
-                   "remove,maximized_vert,maximized_horz"])
-        _require(run, ["xdotool", "windowactivate", "--sync", window_id], "还原窗口")
-    elif action == "close":
-        if not _try(run, ["wmctrl", "-i", "-c", hex_id]):
-            _require(run, ["xdotool", "windowclose", window_id], "关闭窗口")
-    elif action == "move":
-        _require(run, ["xdotool", "windowmove", window_id,
-                       str(request.x), str(request.y)], "移动窗口")
-    elif action == "resize":
-        _require(run, ["xdotool", "windowsize", window_id,
-                       str(request.width), str(request.height)], "缩放窗口")
-    elif action == "fit":  # pragma: no branch - 动作集合由上层校验
-        _require(run, ["xdotool", "windowmove", window_id,
-                       str(request.x), str(request.y)], "移动窗口")
-        _require(run, ["xdotool", "windowsize", window_id,
-                       str(request.width), str(request.height)], "缩放窗口")
-    elif action == "always_on_top":
-        _require(run, ["wmctrl", "-i", "-r", hex_id, "-b", "add,above"], "窗口置顶")
-    elif action == "not_on_top":
-        _require(run, ["wmctrl", "-i", "-r", hex_id, "-b", "remove,above"], "取消置顶")
-
-
-def _try(run, command: list[str]) -> bool:
-    """执行可选命令（工具缺失或失败返回 False，不抛异常）。"""
-    if shutil.which(command[0]) is None:
-        return False
-    completed = run(command)
-    return completed is not None and completed.returncode == 0
-
-
-def _require(run, command: list[str], label: str) -> None:
-    """执行必需命令，工具缺失或失败抛 ScreenshotError。"""
-    if shutil.which(command[0]) is None:
-        raise ScreenshotError(
-            f"{label}失败：缺少工具 {command[0]}（安装 xdotool / wmctrl 后重试）"
-        )
-    completed = run(command)
-    if completed is None or completed.returncode != 0:
-        detail = ""
-        if completed is not None:
-            text = (completed.stderr or completed.stdout or "").strip().splitlines()
-            detail = f": {text[-1]}" if text else f": 退出码 {completed.returncode}"
-        raise ScreenshotError(f"{label}失败{detail}")
-
-
-def _hex_window_id(window_id: str) -> str:
-    """xdotool / wmctrl 的窗口 ID → ``0x`` 十六进制（wmctrl 要求该格式）。"""
-    text = str(window_id).strip()
-    if text.lower().startswith("0x"):
-        return text
-    try:
-        return hex(int(text, 10))
-    except ValueError:
-        return text
-
-
-def _window_state(window_id: str, fallback: _X11Window) -> dict:
-    """读取窗口当前几何（失败时回退枚举到的几何）。"""
-    xdotool = shutil.which("xdotool")
-    x, y, width, height = _window_geometry(xdotool, window_id)
-    if width <= 0 or height <= 0:
-        x, y, width, height = fallback.x, fallback.y, fallback.width, fallback.height
-    return {"x": x, "y": y, "width": width, "height": height}
-
-
 def _find_by_info(windows: list[_X11Window], info: WindowInfo) -> _X11Window:
     """按通用描述（句柄）回查平台窗口对象。"""
     return find_platform_window(windows, info)
@@ -657,6 +530,6 @@ def _safe_int(text: str) -> int:
         return 0
 
 
-__all__ = ["X11Backend", "control_window", "find_platform_window",
+__all__ = ["X11Backend", "find_platform_window",
            "find_process_windows", "list_windows", "to_window_info",
            "window_id_int"]
