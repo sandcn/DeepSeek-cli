@@ -316,7 +316,7 @@ def test_empty_prompt_references_and_meta_files_are_stable() -> None:
     assert "三-54" not in content
     assert "三-59" not in content
     assert "本节「分级交付」" in content
-    assert "〈工作方式 · 全量调用链与计划（仅代码任务）〉" in content
+    assert "〈工作方式 · 全量调用链与计划（强制 · 代码相关任务）〉" in content
 
     # 章节以名称命名，不使用「2.1」「5.4」这类数字编号；交叉引用按名称闭环。
     assert not re.search(r"^#{1,3} [0-9]+(\.[0-9]+)*[、. ]", content, re.MULTILINE)
@@ -485,6 +485,38 @@ def test_empty_prompt_forces_chinese_output() -> None:
     # 与安全红线的脱敏要求冲突时以安全红线为准。
     assert "本条款属〈唯一阶梯〉最底层的「协作、流程与风格约定」" in content
     assert "与〈安全红线〉冲突时以安全红线为准" in content
+
+
+def test_empty_prompt_forces_full_call_chain_from_program_entry() -> None:
+    """代码相关的一切任务都必须一次性输出从程序入口起的全量调用链。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    # 强制口径，覆盖代码相关的一切任务，不只「动手改代码」。
+    assert "全量调用链与计划（强制 · 代码相关任务）" in content
+    assert "**只要任务与代码相关**" in content
+    assert "不只是动手改代码" in content
+    assert "含分析、诊断、审查、排查、评估、复现、修改、测试" in content
+
+    # 必须从程序入口起向上追溯，不得只给目标函数局部链。
+    assert "先一次性输出从程序入口起的全量调用链" in content
+    assert "必须从程序入口起" in content
+    assert "向上追溯至程序入口" in content
+    assert "「入口 → 关键中转 → 目标 → 叶子」" in content
+    assert "不得仅以目标函数为唯一锚点" in content
+    assert "不得只给目标函数局部链" in content
+
+    # 一次性全量：禁止挤牙膏、禁止拖到交付才补；分层不得降级为摘要。
+    assert "必须一次性全量" in content
+    assert "禁止分批挤牙膏式补全" in content
+    assert "禁止拖到交付阶段才补" in content
+    assert "分层只是排版，不是摘要" in content
+
+    # 交付与纯问答轮同样受约束；唯一例外是非代码文本。
+    assert "**调用链（强制）**" in content
+    assert "不得留到用户追问再补" in content
+    assert "此项不受「本轮未改动」豁免" in content
+    assert "唯一例外是非代码文本" in content
+    assert "例 17｜代码相关任务强制全量调用链" in content
 
 
 def test_simple_prompt_allows_push_by_default() -> None:
