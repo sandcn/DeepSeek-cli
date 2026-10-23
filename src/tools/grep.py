@@ -109,21 +109,27 @@ class GrepFunc(Func):
             "type": "function",
             "function": {
                 "name": "grep",
-                "description": "按正则搜索内容，返回「文件:行号:内容」列表。",
+                "description": (
+                    "按正则搜索内容，返回「文件:行号:内容」列表；优先用 rg/grep，"
+                    "缺失时纯 Python 兜底。自动跳过 .git/node_modules 等目录与二进制文件；"
+                    "结果超过 1000 行时保留前 500 + 后 500 行。"
+                    "例：grep({\"query\": \"def main\\\\(\", \"path\": \"src\", "
+                    "\"include\": \"*.py\"})"
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "搜索模式（正则）",
+                            "description": "搜索模式（正则，如 def main；过度复杂时按字面量）",
                         },
                         "path": {
                             "type": "string",
-                            "description": "搜索路径",
+                            "description": "搜索路径（默认当前目录，如 src）",
                         },
                         "include": {
                             "type": "string",
-                            "description": "文件类型过滤（空格分隔）",
+                            "description": "文件类型过滤（空格分隔 glob，如 *.py）",
                         },
                     },
                     "required": ["query"],

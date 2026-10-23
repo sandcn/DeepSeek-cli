@@ -495,51 +495,54 @@ class ReadImageFunc(Func):
             "function": {
                 "name": "read_image",
                 "description": (
-                    "Read an image (PNG/JPEG/WebP/GIF or Pillow-readable) and return it; "
-                    "optional crop region and image operation."
+                    "读取图像（image）文件（PNG/JPEG/WebP/GIF 等 Pillow 可解码格式）"
+                    "并返回图片；可选像素区域裁剪与灰度/旋转/翻转/缩放，要求模型支持图像输入。"
+                    "扩展名须与实际格式一致，单边 ≤8192px、总像素 ≤6400 万、文件 ≤20MB。"
+                    "例：read_image({\"file_path\": \"shot.png\", \"start_x\": 0, "
+                    "\"start_y\": 0, \"end_x\": 400, \"end_y\": 300})"
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "file_path": {
                             "type": "string",
-                            "description": "Image file path."
+                            "description": "图像文件路径（如 shot.png）"
                         },
                         "start_x": {
                             "type": "integer",
                             "minimum": 0,
-                            "description": "Crop region start x."
+                            "description": "裁剪区域起点 X（像素，含端点）"
                         },
                         "start_y": {
                             "type": "integer",
                             "minimum": 0,
-                            "description": "Crop region start y."
+                            "description": "裁剪区域起点 Y（像素，含端点）"
                         },
                         "end_x": {
                             "type": "integer",
                             "minimum": 0,
-                            "description": "Crop region end x."
+                            "description": "裁剪区域终点 X（像素，含端点）"
                         },
                         "end_y": {
                             "type": "integer",
                             "minimum": 0,
-                            "description": "Crop region end y."
+                            "description": "裁剪区域终点 Y（像素，含端点）"
                         },
                         "operation": {
                             "type": "string",
                             "enum": sorted(_SUPPORTED_OPERATIONS),
-                            "description": "Image operation.",
+                            "description": "图像操作（默认 none）",
                             "default": "none"
                         },
                         "scale_width": {
                             "type": "integer",
                             "minimum": 1,
-                            "description": "Scale target width."
+                            "description": "缩放目标宽度（像素，按比例补另一维）"
                         },
                         "scale_height": {
                             "type": "integer",
                             "minimum": 1,
-                            "description": "Scale target height."
+                            "description": "缩放目标高度（像素，按比例补另一维）"
                         },
                     },
                     "required": ["file_path"]

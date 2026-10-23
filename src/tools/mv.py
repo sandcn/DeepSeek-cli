@@ -24,17 +24,22 @@ class MvFunc(FileSystemToolBase):
             "type": "function",
             "function": {
                 "name": "mv",
-                "description": "移动文件或目录（source → destination）。",
+                "description": (
+                    "移动文件或目录（source → destination）；目标为已存在目录时移入该目录内，"
+                    "同名则覆盖。源不存在或源目标相同会报错；跨文件系统复制成功但源删除失败时"
+                    "报告部分成功。"
+                    "例：mv({\"source\": \"a.py\", \"destination\": \"src/a.py\"})"
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "source": {
                             "type": "string",
-                            "description": "源路径"
+                            "description": "源路径（如 a.py）"
                         },
                         "destination": {
                             "type": "string",
-                            "description": "目标路径"
+                            "description": "目标路径（目录则移入其内部）"
                         }
                     },
                     "required": ["source", "destination"]

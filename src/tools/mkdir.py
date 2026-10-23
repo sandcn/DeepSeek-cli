@@ -19,17 +19,21 @@ class MkdirFunc(FileSystemToolBase):
             "type": "function",
             "function": {
                 "name": "mkdir",
-                "description": "创建目录。",
+                "description": (
+                    "创建目录；父目录不存在时需 parents=true 才会递归创建。"
+                    "目录已存在时返回提示而不报错，路径已被同名文件占用则失败。"
+                    "例：mkdir({\"path\": \"src/new_mod\", \"parents\": true})"
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "要创建的目录路径"
+                            "description": "要创建的目录路径（如 src/new_mod）"
                         },
                         "parents": {
                             "type": "boolean",
-                            "description": "是否递归创建父目录",
+                            "description": "是否递归创建缺失的父目录（默认 false）",
                             "default": False
                         }
                     },

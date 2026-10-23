@@ -35,27 +35,33 @@ class GlobFunc(Func):
             "type": "function",
             "function": {
                 "name": "glob",
-                "description": "按文件名模式（fnmatch 通配符）查找文件和目录，返回匹配路径列表。",
+                "description": (
+                    "按文件名模式（fnmatch 通配符，空格分隔多个模式）查找文件和目录，"
+                    "返回相对路径列表；自动跳过 .git/node_modules 等目录。"
+                    "depth=0 不限深度，depth=N 仅查 N 层。"
+                    "例：glob({\"pattern\": \"*.py\", \"path\": \"src\", "
+                    "\"type\": \"file\", \"depth\": 2})"
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "pattern": {
                             "type": "string",
-                            "description": "文件/目录名匹配模式",
+                            "description": "文件/目录名通配模式（空格分隔多个，如 *.py）",
                         },
                         "path": {
                             "type": "string",
-                            "description": "搜索根路径",
+                            "description": "搜索根路径（默认当前目录，如 src）",
                         },
                         "type": {
                             "type": "string",
-                            "description": "过滤类型",
+                            "description": "过滤类型：file / dir（默认全部）",
                             "enum": ["file", "dir"],
                         },
                         "depth": {
                             "type": "integer",
                             "minimum": 0,
-                            "description": "最大搜索深度",
+                            "description": "最大搜索深度（0 不限，默认 0；如 2）",
                             "default": 0,
                         },
                     },

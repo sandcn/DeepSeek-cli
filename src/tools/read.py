@@ -43,28 +43,34 @@ class ReadFunc(Func):
             "type": "function",
             "function": {
                 "name": "read",
-                "description": "读取文件内容，返回文件文本（支持整文件或行号范围）。",
+                "description": (
+                    "读取文本文件并返回内容，支持整文件或 start_line/end_line 行号范围"
+                    "（行号从 1 开始，start_line>end_line 自动交换）。自动检测编码并统一为 LF；"
+                    "show_line_numbers=true 时逐行附加行号。文件超过 100MB 拒绝读取。"
+                    "例：read({\"file_path\": \"src/app.py\", \"start_line\": 10, "
+                    "\"end_line\": 40, \"show_line_numbers\": true})"
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "file_path": {
                             "type": "string",
-                            "description": "文件路径"
+                            "description": "文件路径（支持 ~，如 src/app.py）"
                         },
                         "start_line": {
                             "type": "integer",
                             "minimum": 1,
-                            "description": "起始行号"
+                            "description": "起始行号（从 1 开始，缺省从头；如 10）"
                         },
                         "end_line": {
                             "type": "integer",
                             "minimum": 1,
-                            "description": "结束行号"
+                            "description": "结束行号（含该行，缺省到末尾；如 40）"
                         },
                         "show_line_numbers": {
                             "type": "boolean",
                             "default": False,
-                            "description": "是否附加行号"
+                            "description": "是否逐行附加行号（默认 false）"
                         }
                     },
                     "required": ["file_path"]

@@ -49,23 +49,27 @@ class SubagentFunc(Func):
             "function": {
                 "name": cls.name,
                 "description": (
-                    "派发子 Agent 执行任务；type：execute（默认）/ map / review / plan。"
+                    "派发子 Agent 执行任务，立即返回 task_id（sa-xxx）后台执行；"
+                    "type：execute（默认）/ map / review / plan。仅主 Agent 可用，"
+                    "结果在轮次结束后自动插入对话，也可用 subagent_opt 管理。"
+                    "例：subagent({\"type\": \"map\", \"description\": \"分析: src/tools\", "
+                    "\"prompt\": \"输出调用链与关联文件清单\"})"
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "description": {
                             "type": "string",
-                            "description": "任务摘要",
+                            "description": "任务摘要（用于显示与识别，如 分析: src/tools）",
                         },
                         "prompt": {
                             "type": "string",
-                            "description": "完整任务指令",
+                            "description": "完整任务指令（自包含）",
                         },
                         "type": {
                             "type": "string",
                             "enum": ["map", "review", "plan", "execute"],
-                            "description": "子 Agent 类型",
+                            "description": "子 Agent 类型（默认 execute）",
                         },
                     },
                     "required": ["description", "prompt"],

@@ -24,17 +24,21 @@ def build_bash_opt_schema() -> dict[str, Any]:
         "function": {
             "name": "bash_opt",
             "description": (
-                "按 task_id 操作后台 bash 任务；op：read / wait / kill / stdin / "
-                "close_stdin / keys / screenshot / windows / window / elements / "
-                "wait_window / clipboard / locate / pixel / annotate / record / replay / "
-                "sequence / move / hover / click / drag / scroll / key / type / release。"
+                "按 task_id 操作后台 bash 任务或 GUI；op：read/wait/kill/stdin/"
+                "close_stdin/keys/screenshot/windows/window/elements/wait_window/"
+                "clipboard/locate/pixel/annotate/record/replay/sequence/move/hover/"
+                "click/drag/scroll/key/type/release。read 默认返回最后 1000 行，"
+                "wait 超时返回 timeout=true。"
+                "例：bash_opt({\"task_id\": \"bg-abc123\", \"op\": \"read\", "
+                "\"max_lines\": 100})；截图：bash_opt({\"op\": \"screenshot\", "
+                "\"window\": \"mintty\", \"shot\": \"shot.png\"})"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "task_id": {
                         "type": "string",
-                        "description": "后台任务 ID（bg-xxx）",
+                        "description": "后台任务 ID（bg-xxx；部分 op 可省略，如 bg-abc123）",
                     },
                     "op": {
                         "type": "string",
@@ -45,11 +49,11 @@ def build_bash_opt_schema() -> dict[str, Any]:
                                  "locate", "pixel", "annotate",
                                  "record", "replay", "sequence",
                                  *INPUT_OPS],
-                        "description": "要执行的操作",
+                        "description": "要执行的操作（见功能描述）",
                     },
                     "timeout": {
                         "type": "number",
-                        "description": "超时秒数",
+                        "description": "超时秒数（wait 默认 300，0 不限）",
                     },
                     "allow_hidden": {
                         "type": "boolean",
@@ -65,11 +69,11 @@ def build_bash_opt_schema() -> dict[str, Any]:
                     },
                     "encoding": {
                         "type": "string",
-                        "description": "文本编码",
+                        "description": "文本编码（默认 utf-8）",
                     },
                     "max_lines": {
                         "type": "integer",
-                        "description": "最大返回行数",
+                        "description": "最多返回行数（默认 1000，0 不限）",
                     },
                     "key": {
                         "type": "string",

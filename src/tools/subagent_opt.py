@@ -41,23 +41,27 @@ class SubagentOptFunc(Func):
             "function": {
                 "name": "subagent_opt",
                 "description": (
-                    "按 task_id 操作后台 subagent 任务；op：read / wait / kill / wait_all。"
+                    "按 task_id 操作后台 subagent 任务；op：read（读当前状态/结果）/ "
+                    "wait（等待完成）/ kill（取消）/ wait_all（等待全部，无需 task_id）。"
+                    "task_id 必须是 sa-xxx，timeout 默认 300 秒（0 不限）。"
+                    "例：subagent_opt({\"task_id\": \"sa-abc123\", \"op\": \"wait\", "
+                    "\"timeout\": 60})"
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "task_id": {
                             "type": "string",
-                            "description": "任务 ID（sa-xxx）",
+                            "description": "任务 ID（sa-xxx；wait_all 可省略，如 sa-abc123）",
                         },
                         "op": {
                             "type": "string",
                             "enum": ["read", "wait", "kill", "wait_all"],
-                            "description": "要执行的操作",
+                            "description": "要执行的操作（见功能描述）",
                         },
                         "timeout": {
                             "type": "number",
-                            "description": "超时秒数",
+                            "description": "超时秒数（wait 默认 300，0 不限）",
                         },
                     },
                     "required": ["op"],

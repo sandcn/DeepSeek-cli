@@ -196,19 +196,24 @@ class UserSelectFunc(Func):
             "function": {
                 "name": "user_select",
                 "description": (
-                    "向用户显示交互式选择界面。"
-                    "1 分钟没有任何操作（按键/滚动）自动超时并回退 default_options。"
+                    "向用户显示交互式选择界面，返回 JSON（selected/action）；"
+                    "支持单选/多选，多个问题可在同一轮并发弹出、以 tab 切换。"
+                    "1 分钟没有任何操作（按键/滚动）即超时并回退 default_options；"
+                    "非交互环境同样回退。"
+                    "例：user_select({\"title\": \"选择方向\", \"options\": "
+                    "[{\"label\": \"方案A\", \"description\": \"说明\"}], "
+                    "\"multi_select\": true})"
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "title": {
                             "type": "string",
-                            "description": "选择界面标题"
+                            "description": "选择界面标题（问题正文，如 选择执行方式）"
                         },
                         "header": {
                             "type": "string",
-                            "description": "多问题 tab 标签（≤12 字符）"
+                            "description": "多问题 tab 标签（≤12 字符，如 方向）"
                         },
                         "options": {
                             "type": "array",
@@ -233,13 +238,13 @@ class UserSelectFunc(Func):
                         },
                         "multi_select": {
                             "type": "boolean",
-                            "description": "是否多选",
+                            "description": "是否多选（默认 false）",
                             "default": False
                         },
                         "default_options": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "默认选项列表（与 options[].label 文本一致）",
+                            "description": "默认选项 label 列表（超时/非交互回退）",
                             "default": []
                         }
                     },

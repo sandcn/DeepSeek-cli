@@ -1056,8 +1056,11 @@ class BashFunc(Func):
             "function": {
                 "name": "bash",
                 "description": (
-                    "执行 shell 命令，返回 JSON（stdout/stderr/returncode）。"
-                    f"前台执行超过 {cls._AUTO_BG_TIMEOUT} 秒自动转后台，返回 task_id。"
+                    "执行 shell 命令，返回 JSON（stdout/stderr/returncode）；"
+                    "stdout/stderr 各最多保留 1000 行（超出保留尾部并标注截断）。"
+                    f"前台执行超过 {cls._AUTO_BG_TIMEOUT} 秒自动转后台，返回 task_id"
+                    "（bg-xxx），可用 bash_opt 继续 read/wait/kill；危险命令会被拒绝执行。"
+                    "例：bash({\"command\": \"pytest -q\", \"background\": true})"
                 ),
                 "parameters": {
                     "type": "object",
@@ -1065,14 +1068,15 @@ class BashFunc(Func):
                         "command": {
                             "type": "string",
                             "description": (
-                                "要执行的 shell 命令"
+                                "要执行的 shell 命令（如 pytest -q）"
                             )
                         },
                         "background": {
                             "type": "boolean",
                             "description": (
-                                "是否后台执行"
-                            )
+                                "true 立即后台执行并返回 task_id，默认 false"
+                            ),
+                            "default": False
                         }
                     },
                     "required": ["command"]

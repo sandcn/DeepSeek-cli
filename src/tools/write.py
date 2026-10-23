@@ -10,17 +10,22 @@ class WriteFunc(FileToolBase):
             "type": "function",
             "function": {
                 "name": "write",
-                "description": "创建新文件或整体覆盖写入。",
+                "description": (
+                    "创建新文件或整体覆盖写入，父目录不存在时自动创建；"
+                    "内容超过 100MB 拒绝写入。成功返回写入行数与字节数。"
+                    "例：write({\"file_path\": \"docs/guide.md\", "
+                    "\"content\": \"# 标题\\n正文\"})"
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "file_path": {
                             "type": "string",
-                            "description": "目标文件路径"
+                            "description": "目标文件路径（支持 ~，如 docs/guide.md）"
                         },
                         "content": {
                             "type": "string",
-                            "description": "完整文件内容"
+                            "description": "完整文件内容（整体覆盖）"
                         }
                     },
                     "required": ["file_path", "content"]

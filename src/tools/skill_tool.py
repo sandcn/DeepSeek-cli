@@ -16,7 +16,11 @@ from typing import Optional
 from ..skills import default_registry, is_model_invocable, render_skill_content
 from .base import Func
 
-_TOOL_DESCRIPTION = "加载可用技能的完整指令。"
+_TOOL_DESCRIPTION = (
+    "按名称加载技能的完整指令，返回 <skill_content> 块；"
+    "技能须在可用技能目录中且允许模型调用。未知或禁用技能返回以 ( 开头的错误文本。"
+    "例：skill({\"name\": \"code-review\"})"
+)
 
 
 class SkillFunc(Func):
@@ -45,7 +49,7 @@ class SkillFunc(Func):
                     "properties": {
                         "name": {
                             "type": "string",
-                            "description": "技能名"
+                            "description": "技能名（kebab-case，如 code-review）"
                         },
                     },
                     "required": ["name"],

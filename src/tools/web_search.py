@@ -54,13 +54,18 @@ class WebSearchFunc(Func):
             "type": "function",
             "function": {
                 "name": "web_search",
-                "description": "搜索网页，返回来源列表（标题、URL、摘要片段）。",
+                "description": (
+                    "搜索网页，返回来源列表（标题、URL、摘要片段、日期）与引用指令；"
+                    "最多 8 条来源，摘要超 200 字符截断。需要网络，超时或提供者错误时"
+                    "返回以 ( 开头的错误文本。"
+                    "例：web_search({\"query\": \"python asyncio timeout\"})"
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "搜索关键词"
+                            "description": "搜索关键词（不能为空，如 python asyncio timeout）"
                         }
                     },
                     "required": ["query"]

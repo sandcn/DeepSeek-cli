@@ -36,27 +36,32 @@ class LsFunc(Func):
             "type": "function",
             "function": {
                 "name": "ls",
-                "description": "列出目录下的文件和子目录。",
+                "description": (
+                    "列出目录下的文件和子目录（默认不含隐藏项，目录在前）；"
+                    "path 指向文件时只返回该文件名。long=true 输出权限/大小/时间等详情，"
+                    "human 控制大小可读性。"
+                    "例：ls({\"path\": \"src\", \"long\": true, \"all\": true})"
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "目录路径",
+                            "description": "目录路径（默认当前目录，如 src）",
                         },
                         "long": {
                             "type": "boolean",
-                            "description": "是否详细格式",
+                            "description": "是否输出详细格式（默认 false）",
                             "default": False,
                         },
                         "all": {
                             "type": "boolean",
-                            "description": "是否显示隐藏文件",
+                            "description": "是否包含隐藏项（默认 false）",
                             "default": False,
                         },
                         "human": {
                             "type": "boolean",
-                            "description": "大小是否人类可读",
+                            "description": "大小是否人类可读（默认 true）",
                             "default": True,
                         },
                     },

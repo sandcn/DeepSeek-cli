@@ -3,6 +3,7 @@
 覆盖：
 - 全部内置工具 schema 可构建且 JSON 可序列化；
 - 提词长度预算（功能描述 + 参数短语，防止回涨）；
+- 每个工具给出 1-2 条单行 JSON 调用示例，示例参数名与 schema 一致；
 - 关键调用约定（参数集合、必填项、enum、默认值）不因精简丢失；
 - ``user_select`` 的 1 分钟空闲超时与 header 12 字符限制文案保留；
 - ``bash_opt`` 的 op 清单在功能描述中给出。
@@ -11,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from src.tools._bash_opt_schema import build_bash_opt_schema
 from src.tools.registry import discover_builtin_tools
@@ -18,14 +20,14 @@ from src.tools.registry import discover_builtin_tools
 #: 当前内置工具数量（新增/删除内置工具时同步更新）
 _EXPECTED_TOOL_COUNT = 19
 
-#: 单工具 function.description 字符上限（bash_opt 当前 262）
-_DESC_LIMIT = 300
+#: 单工具 function.description 字符上限（含 1-2 条调用示例）
+_DESC_LIMIT = 550
 
-#: 全部工具 function.description 总字符上限（当前 884）
-_TOTAL_DESC_LIMIT = 1000
+#: 全部工具 function.description 总字符上限（示例化后留余量）
+_TOTAL_DESC_LIMIT = 6000
 
-#: 参数 description 字符上限（只保留一句功能短语）
-_PARAM_DESC_LIMIT = 30
+#: 参数 description 字符上限（功能短语 + 默认值/边界/示例值）
+_PARAM_DESC_LIMIT = 80
 
 
 def _schemas():
@@ -59,6 +61,22 @@ def test_description_length_budget() -> None:
             desc = spec.get("description", "")
             assert len(desc) <= _PARAM_DESC_LIMIT, f"{name}.{param} 参数描述过长: {desc!r}"
     assert total <= _TOTAL_DESC_LIMIT, f"功能描述总长 {total} 超预算"
+
+
+def test_every_tool_description_has_example() -> None:
+    """每个工具 1-2 条单行 JSON 示例，且示例参数名存在于 schema。"""
+    schemas = _schemas()
+    for name, schema in schemas.items():
+        function = schema["function"]
+        description = function["description"]
+        count = description.count('({"')
+        assert 1 <= count <= 2, f"{name} 示例数量异常: {count}"
+        assert "例：" in description, f"{name} 缺少「例：」引导"
+        props = set(function["parameters"]["properties"])
+        # 示例内嵌对象（如 user_select.options[]）允许出现被嵌套对象的键
+        allowed = props | {"label", "description"}
+        keys = set(re.findall(r'"([a-z_]+)"\s*:', description))
+        assert keys <= allowed, f"{name} 示例含未知参数: {sorted(keys - allowed)}"
 
 
 def test_key_parameter_contracts() -> None:
@@ -115,7 +133,8 @@ def test_bash_opt_schema_keeps_ops_and_op_list() -> None:
         assert op in enum
 
     # op 说明收敛为一句，op 清单放在功能描述中
-    assert props["op"]["description"] == "要执行的操作"
+    assert props["op"]["description"].startswith("要执行的操作")
+    assert "见功能描述" in props["op"]["description"]
     description = function["description"]
     for op in ("read", "wait", "kill", "release", "click", "type"):
         assert op in description
