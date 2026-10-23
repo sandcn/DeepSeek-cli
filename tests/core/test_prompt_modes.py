@@ -449,3 +449,26 @@ def test_empty_prompt_forces_chinese_output() -> None:
     # 与安全红线的脱敏要求冲突时以安全红线为准。
     assert "本条款属〈唯一阶梯〉最底层的「协作、流程与风格约定」" in content
     assert "与〈安全红线〉冲突时以安全红线为准" in content
+
+
+def test_simple_prompt_allows_push_by_default() -> None:
+    """简单模式：`git push` 默认放行，不得被「没用户指定禁止操作 git」拦下。"""
+    content = builder._load_prompt("prompts_export_main_simple")
+
+    # 条款存在，且明确「默认直接执行 / 无需确认」。
+    assert "`git push` 默认直接执行" in content
+    assert "是默认允许的操作，任务需要推送时直接执行" in content
+    assert "无需 `user_select` 确认" in content
+    # 禁止把 push 当成需要先问一句的远程写。
+    assert "禁止以「没用户指定操作 git」「属于远程写」为由拒绝、跳过或反过来问用户" in content
+
+    # git 禁令必须给 push 开例外，不得与默认放行条款互斥。
+    assert "没用户指定强制禁止操作 git svn（`git push` 除外" in content
+    # 提问口子不得把普通 push 归入「远程写」。
+    assert "普通 `git push` 按「`git push` 默认直接执行」条款直接放行，不属②" in content
+
+    # 默认远端 / 分支有确定口径；失败反馈与不可逆操作的边界明确。
+    assert "无上游时用 `origin` + 当前分支" in content
+    assert "非快进被拒" in content
+    assert "强制推送（`--force` / `--force-with-lease` / `+refs`）" in content
+    assert "删除远程分支等不可逆远程操作不属默认放行范围" in content
