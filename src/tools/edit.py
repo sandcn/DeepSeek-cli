@@ -52,13 +52,13 @@ class EditFunc(FileToolBase):
                 "name": "edit",
                 "description": (
                     "精确替换文件中的文本片段（old_string→new_string）；"
-                    "非 replace_all 时 old_string 必须在文件中唯一匹配，否则报错。"
+                    "局部修改一律用本工具，整文件覆盖才用 write。"
+                    "非 replace_all 时 old_string 必须在文件中唯一匹配"
+                    "（逐字一致，含缩进与空白），否则报错；"
                     "old_string 为空表示追加到文件末尾；use_regex=true 时按正则匹配"
-                    "（regex_flags 如 i/m/s）。"
+                    "（regex_flags 如 i/m/s，new_string 可用 \\1 反向引用）。"
                     "例：edit({\"file_path\": \"src/app.py\", \"old_string\": \"DEBUG = False\", "
-                    "\"new_string\": \"DEBUG = True\"})；正则替换："
-                    "edit({\"file_path\": \"src/app.py\", \"old_string\": \"debug\", "
-                    "\"new_string\": \"DEBUG\", \"use_regex\": true, \"regex_flags\": \"i\"})"
+                    "\"new_string\": \"DEBUG = True\"})"
                 ),
                 "parameters": {
                     "type": "object",
@@ -69,25 +69,25 @@ class EditFunc(FileToolBase):
                         },
                         "old_string": {
                             "type": "string",
-                            "description": "要被替换的原文（为空=追加到末尾；须唯一匹配）"
+                            "description": "要被替换的原文（逐字匹配且须唯一；空=追加到末尾）"
                         },
                         "new_string": {
                             "type": "string",
-                            "description": "替换后的新文本"
+                            "description": "替换后的新文本（正则模式可用 \\1 反向引用）"
                         },
                         "replace_all": {
                             "type": "boolean",
                             "default": False,
-                            "description": "是否替换全部匹配（默认 false）"
+                            "description": "是否替换全部匹配（默认 false：要求唯一匹配）"
                         },
                         "use_regex": {
                             "type": "boolean",
                             "default": False,
-                            "description": "是否按正则匹配（默认 false）"
+                            "description": "是否按正则匹配（默认 false=纯文本替换）"
                         },
                         "regex_flags": {
                             "type": "string",
-                            "description": "正则标志，如 i/m/s（默认空）"
+                            "description": "正则标志组合 i/m/s/a/x（如 im，默认空）"
                         }
                     },
                     "required": ["file_path", "old_string", "new_string"]

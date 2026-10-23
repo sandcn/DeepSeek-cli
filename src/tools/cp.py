@@ -24,9 +24,9 @@ class CpFunc(FileSystemToolBase):
             "function": {
                 "name": "cp",
                 "description": (
-                    "复制文件或目录（source → destination）；目录必须 recursive=true，"
-                    "不支持复制符号链接。目标为已存在目录时，文件会复制到该目录内；"
-                    "成功后返回实际落点。"
+                    "复制文件或目录（source → destination）；目标为已存在目录时"
+                    "文件复制到该目录内，已存在文件会被覆盖；目录必须 recursive=true，"
+                    "不支持复制符号链接；成功后返回实际落点，变更记录到沙盒可撤销。"
                     "例：cp({\"source\": \"src/a.py\", \"destination\": \"backup/\"})；"
                     "复制目录：cp({\"source\": \"src\", \"destination\": \"backup/src\", "
                     "\"recursive\": true})"
@@ -36,15 +36,15 @@ class CpFunc(FileSystemToolBase):
                     "properties": {
                         "source": {
                             "type": "string",
-                            "description": "源路径（如 src/a.py）"
+                            "description": "源路径（如 src/a.py；不支持符号链接）"
                         },
                         "destination": {
                             "type": "string",
-                            "description": "目标路径（目录则复制到其内部）"
+                            "description": "目标路径（已存在目录则复制到其内部）"
                         },
                         "recursive": {
                             "type": "boolean",
-                            "description": "是否递归复制目录（默认 false）",
+                            "description": "是否递归复制目录（默认 false；目录必须 true）",
                             "default": False
                         }
                     },

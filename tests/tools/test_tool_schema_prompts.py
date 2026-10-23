@@ -142,6 +142,56 @@ def test_bash_opt_schema_keeps_ops_and_op_list() -> None:
     json.dumps(schema, ensure_ascii=False)
 
 
+def test_tool_selection_guidance_present() -> None:
+    """每个工具提词都要给出「何时用 / 不要用什么替代」的可执行指引。"""
+    schemas = _schemas()
+
+    # 文件读写：禁止 shell 替代内部工具（本项目的核心纪律）
+    assert "禁止用 bash cat/sed/head" in schemas["read"]["function"]["description"]
+    assert "局部修改一律用本工具" in schemas["edit"]["function"]["description"]
+    assert "局部修改用 edit" in schemas["write"]["function"]["description"]
+    assert "禁止用 bash 读写或搜索文件" in schemas["bash"]["function"]["description"]
+    assert "不要用 bash grep" in schemas["grep"]["function"]["description"]
+    assert "不要用 bash find/ls" in schemas["glob"]["function"]["description"]
+    assert "递归查找文件用 glob" in schemas["ls"]["function"]["description"]
+
+    # 读图：不能用 shell 解析图片（本项目红线）
+    assert "禁止用 bash base64/xxd/file 读图" in schemas["read_image"]["function"]["description"]
+
+    # 破坏性/可撤销语义必须对模型可见
+    for name in ("cp", "mv", "rm", "mkdir", "write"):
+        assert "沙盒" in schemas[name]["function"]["description"], name
+
+    # 后台任务：read 为增量读取、wait 超时任务继续
+    bash_opt_desc = schemas["bash_opt"]["function"]["description"]
+    assert "增量读取" in bash_opt_desc
+    assert "任务继续运行" in bash_opt_desc
+
+    # 子代理：prompt 自包含、kill 级联取消
+    assert "自包含" in schemas["subagent"]["function"]["description"]
+    assert "级联取消" in schemas["subagent_opt"]["function"]["description"]
+
+    # 联网工具分工、技能加载约束、user_select 使用场景
+    assert "web_search" in schemas["web_fetch"]["function"]["description"]
+    assert "web_fetch" in schemas["web_search"]["function"]["description"]
+    assert "auto_load" in schemas["skill"]["function"]["description"]
+    assert "互斥方向选择" in schemas["user_select"]["function"]["description"]
+
+
+def test_bash_opt_param_guide() -> None:
+    """bash_opt 的关键参数要说明取值形态与默认值（而非只给一个名词）。"""
+    props = _schemas()["bash_opt"]["function"]["parameters"]["properties"]
+
+    assert "#N" in props["window"]["description"]
+    assert "center" in props["x"]["description"]
+    assert "x,y,width,height" in props["crop"]["description"]
+    assert "clear" in props["clipboard_action"]["description"]
+    assert "change" in props["wait_for"]["description"]
+    assert "#RRGGBB" in props["color"]["description"]
+    assert "默认 1" in props["times"]["description"]
+    assert "默认 true" in props["restore_clipboard"]["description"]
+
+
 def test_key_function_contracts_after_trimming() -> None:
     schemas = _schemas()
 

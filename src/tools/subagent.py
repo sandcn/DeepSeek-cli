@@ -50,7 +50,9 @@ class SubagentFunc(Func):
                 "name": cls.name,
                 "description": (
                     "派发子 Agent 执行任务，立即返回 task_id（sa-xxx）后台执行；"
-                    "type：execute（默认）/ map / review / plan。仅主 Agent 可用，"
+                    "type：execute（默认）/ map / review / plan。仅主 Agent 可用；"
+                    "同轮多次调用各自并行；prompt 必须自包含"
+                    "（目标、范围、验收标准，禁止 How-to）；"
                     "结果在轮次结束后自动插入对话，也可用 subagent_opt 管理。"
                     "例：subagent({\"type\": \"map\", \"description\": \"分析: src/tools\", "
                     "\"prompt\": \"输出调用链与关联文件清单\"})"
@@ -64,7 +66,7 @@ class SubagentFunc(Func):
                         },
                         "prompt": {
                             "type": "string",
-                            "description": "完整任务指令（自包含）",
+                            "description": "完整任务指令（自包含：目标、范围、验收标准）",
                         },
                         "type": {
                             "type": "string",

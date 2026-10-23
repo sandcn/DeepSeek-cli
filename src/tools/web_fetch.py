@@ -40,7 +40,10 @@ class WebFetchFunc(Func):
                 "name": "web_fetch",
                 "description": (
                     "获取指定 URL 的网页全文，返回 markdown（标题、来源、日期与正文）；"
-                    "正文超过 50000 字符会截断。需要网络，URL 为空或抓取失败时返回错误文本。"
+                    "正文去掉导航/广告/页脚噪音，超过 50000 字符会截断。"
+                    "需要网络；仅支持 http/https（禁止内网与本机地址），"
+                    "URL 为空或抓取失败时返回以 ( 开头的错误文本；"
+                    "需要先找 URL 时用 web_search。"
                     "例：web_fetch({\"url\": \"https://docs.python.org/3/\"})"
                 ),
                 "parameters": {

@@ -39,7 +39,8 @@ class LsFunc(Func):
                 "description": (
                     "列出目录下的文件和子目录（默认不含隐藏项，目录在前）；"
                     "path 指向文件时只返回该文件名。long=true 输出权限/大小/时间等详情，"
-                    "human 控制大小可读性。"
+                    "human 控制大小可读性（默认 true），all=true 含隐藏项。"
+                    "只看一层用 ls，递归查找文件用 glob。"
                     "例：ls({\"path\": \"src\", \"long\": true, \"all\": true})"
                 ),
                 "parameters": {
@@ -47,11 +48,11 @@ class LsFunc(Func):
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "目录路径（默认当前目录，如 src）",
+                            "description": "目录路径（默认当前目录；文件则只返回文件名）",
                         },
                         "long": {
                             "type": "boolean",
-                            "description": "是否输出详细格式（默认 false）",
+                            "description": "输出权限/大小/修改时间等详情（默认 false）",
                             "default": False,
                         },
                         "all": {

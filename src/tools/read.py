@@ -45,8 +45,10 @@ class ReadFunc(Func):
                 "name": "read",
                 "description": (
                     "读取文本文件并返回内容，支持整文件或 start_line/end_line 行号范围"
-                    "（行号从 1 开始，start_line>end_line 自动交换）。自动检测编码并统一为 LF；"
-                    "show_line_numbers=true 时逐行附加行号。文件超过 100MB 拒绝读取。"
+                    "（行号从 1 开始，缺省读全文，start_line>end_line 自动交换）。"
+                    "读代码/文本/日志一律用它，禁止用 bash cat/sed/head 读文件；"
+                    "大文件用行号范围分段读。自动检测编码并统一为 LF；"
+                    "show_line_numbers=true 时逐行附加行号；文件超过 100MB 拒绝读取。"
                     "例：read({\"file_path\": \"src/app.py\", \"start_line\": 10, "
                     "\"end_line\": 40, \"show_line_numbers\": true})"
                 ),
@@ -55,7 +57,7 @@ class ReadFunc(Func):
                     "properties": {
                         "file_path": {
                             "type": "string",
-                            "description": "文件路径（支持 ~，如 src/app.py）"
+                            "description": "文件路径（相对路径或 ~，如 src/app.py）"
                         },
                         "start_line": {
                             "type": "integer",

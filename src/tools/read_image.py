@@ -496,8 +496,11 @@ class ReadImageFunc(Func):
                 "name": "read_image",
                 "description": (
                     "读取图像（image）文件（PNG/JPEG/WebP/GIF 等 Pillow 可解码格式）"
-                    "并返回图片；可选像素区域裁剪与灰度/旋转/翻转/缩放，要求模型支持图像输入。"
-                    "扩展名须与实际格式一致，单边 ≤8192px、总像素 ≤6400 万、文件 ≤20MB。"
+                    "并返回图片；查看截图、UI 渲染与图片一律用它，"
+                    "禁止用 bash base64/xxd/file 读图。"
+                    "可选像素区域裁剪与灰度/旋转/翻转/缩放；要求模型支持图像输入。"
+                    "扩展名须与实际格式一致，单边 ≤8192px、总像素 ≤6400 万、"
+                    "文件 ≤20MB（大图自动降采样）。"
                     "例：read_image({\"file_path\": \"shot.png\", \"start_x\": 0, "
                     "\"start_y\": 0, \"end_x\": 400, \"end_y\": 300})"
                 ),
@@ -506,7 +509,7 @@ class ReadImageFunc(Func):
                     "properties": {
                         "file_path": {
                             "type": "string",
-                            "description": "图像文件路径（如 shot.png）"
+                            "description": "图像文件路径（如 shot.png；扩展名须与实际格式一致）"
                         },
                         "start_x": {
                             "type": "integer",
@@ -531,18 +534,21 @@ class ReadImageFunc(Func):
                         "operation": {
                             "type": "string",
                             "enum": sorted(_SUPPORTED_OPERATIONS),
-                            "description": "图像操作（默认 none）",
+                            "description": (
+                                "none/grayscale/rotate90/rotate180/rotate270/"
+                                "flip_h/flip_v/scale（默认 none）"
+                            ),
                             "default": "none"
                         },
                         "scale_width": {
                             "type": "integer",
                             "minimum": 1,
-                            "description": "缩放目标宽度（像素，按比例补另一维）"
+                            "description": "缩放目标宽度（像素，按比例补另一维；需 operation=scale）"
                         },
                         "scale_height": {
                             "type": "integer",
                             "minimum": 1,
-                            "description": "缩放目标高度（像素，按比例补另一维）"
+                            "description": "缩放目标高度（像素，按比例补另一维；需 operation=scale）"
                         },
                     },
                     "required": ["file_path"]

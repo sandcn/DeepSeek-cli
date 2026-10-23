@@ -197,6 +197,7 @@ class UserSelectFunc(Func):
                 "name": "user_select",
                 "description": (
                     "向用户显示交互式选择界面，返回 JSON（selected/action）；"
+                    "用于互斥方向选择、破坏性操作确认等必须由用户决定的分支。"
                     "支持单选/多选，多个问题可在同一轮并发弹出、以 tab 切换。"
                     "1 分钟没有任何操作（按键/滚动）即超时并回退 default_options；"
                     "非交互环境同样回退。未回答（answered=false，action 为 "
@@ -237,19 +238,19 @@ class UserSelectFunc(Func):
                                 },
                                 "required": ["label"]
                             },
-                            "description": "选项列表（每项 label + description）"
+                            "description": "选项列表（每项 label + description，label 为返回值）"
                         },
                         "multi_select": {
                             "type": "boolean",
-                            "description": "是否多选（默认 false）",
+                            "description": "是否多选（默认 false=单选）",
                             "default": False
                         },
                         "default_options": {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": (
-                                "默认选项 label 列表（超时/非交互回退）；"
-                                "提问时必须传非空列表，否则未回答时无默认项可回退"
+                                "超时/非交互回退的默认 label 列表（须非空，"
+                                "否则未回答时无默认项可回退）"
                             ),
                             "default": []
                         }

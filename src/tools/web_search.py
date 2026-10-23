@@ -56,7 +56,9 @@ class WebSearchFunc(Func):
                 "name": "web_search",
                 "description": (
                     "搜索网页，返回来源列表（标题、URL、摘要片段、日期）与引用指令；"
-                    "最多 8 条来源，摘要超 200 字符截断。需要网络，超时或提供者错误时"
+                    "最多 8 条来源，摘要超 200 字符截断。需要网络；"
+                    "列表用于挑选来源，回答须基于来源自行组织并标注引用，"
+                    "需要原文时再用 web_fetch；超时或提供者错误时"
                     "返回以 ( 开头的错误文本。"
                     "例：web_search({\"query\": \"python asyncio timeout\"})"
                 ),

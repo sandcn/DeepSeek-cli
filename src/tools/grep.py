@@ -111,7 +111,9 @@ class GrepFunc(Func):
                 "name": "grep",
                 "description": (
                     "按正则搜索内容，返回「文件:行号:内容」列表；优先用 rg/grep，"
-                    "缺失时纯 Python 兜底。自动跳过 .git/node_modules 等目录与二进制文件；"
+                    "缺失时纯 Python 兜底。搜代码一律用它，不要用 bash grep。"
+                    "自动跳过 .git/node_modules 等目录与二进制文件；"
+                    "query 过度复杂时降级为字面量搜索；"
                     "结果超过 1000 行时保留前 500 + 后 500 行。"
                     "例：grep({\"query\": \"def main\\\\(\", \"path\": \"src\", "
                     "\"include\": \"*.py\"})"
@@ -121,7 +123,7 @@ class GrepFunc(Func):
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "搜索模式（正则，如 def main；过度复杂时按字面量）",
+                            "description": "搜索模式（正则，如 def main；过度复杂时降级字面量）",
                         },
                         "path": {
                             "type": "string",

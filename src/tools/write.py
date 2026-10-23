@@ -11,8 +11,9 @@ class WriteFunc(FileToolBase):
             "function": {
                 "name": "write",
                 "description": (
-                    "创建新文件或整体覆盖写入，父目录不存在时自动创建；"
-                    "内容超过 100MB 拒绝写入。成功返回写入行数与字节数。"
+                    "创建新文件或整体覆盖写入（原内容不保留，局部修改用 edit），"
+                    "父目录不存在时自动创建。内容超过 100MB 拒绝写入；"
+                    "变更记录到沙盒可撤销；成功返回写入行数与字节数。"
                     "例：write({\"file_path\": \"docs/guide.md\", "
                     "\"content\": \"# 标题\\n正文\"})"
                 ),
@@ -25,7 +26,7 @@ class WriteFunc(FileToolBase):
                         },
                         "content": {
                             "type": "string",
-                            "description": "完整文件内容（整体覆盖）"
+                            "description": "完整文件内容（整体覆盖；超 100MB 拒绝）"
                         }
                     },
                     "required": ["file_path", "content"]

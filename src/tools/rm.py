@@ -26,7 +26,8 @@ class RmFunc(FileSystemToolBase):
                 "name": "rm",
                 "description": (
                     "删除文件或目录；文件与空目录可直接删除，非空目录必须 recursive=true"
-                    "（递归删除全部内容）。删除后记录到沙盒，可撤销。"
+                    "（递归删除全部内容）。删除内容记录到沙盒可撤销；"
+                    "系统关键路径与设备文件会被安全校验拒绝。"
                     "例：rm({\"path\": \"build\", \"recursive\": true})"
                 ),
                 "parameters": {
@@ -34,11 +35,11 @@ class RmFunc(FileSystemToolBase):
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "要删除的路径（如 build）"
+                            "description": "要删除的路径（文件或目录，如 build）"
                         },
                         "recursive": {
                             "type": "boolean",
-                            "description": "是否递归删除非空目录（默认 false）",
+                            "description": "非空目录必须 true（递归删除全部内容，默认 false）",
                             "default": False
                         }
                     },
