@@ -76,6 +76,13 @@ class EffectHook:
     destroy: Any = None
     last_deps: Any = None
     layout: bool = False
+    #: 连续失败次数（create/destroy 抛异常）——0=正常。失败后 reconciler 把
+    #: ``last_deps`` 记为已尝试（避免 60Hz 逐帧重试），仅 deps 再次变化才重试；
+    #: 本字段用于诊断与降级上报（>0 表示该 effect 处于失败态）。
+    fail_count: int = 0
+    #: 失败退避截止时刻（monotonic）——deps=None 的 effect 本身每次渲染都
+    #: 执行，失败后按指数退避（0.05→1s 封顶）限制重试频率，避免 60Hz 刷屏。
+    next_retry_at: float = 0.0
 
 
 @dataclass
@@ -438,6 +445,37 @@ class Fiber:
         return self.tag == TAG_FUNCTION
 
     # ── hook 访问 ─────────────────────────────────────
+
+    def invalidate_layout_caches(self) -> None:
+        """props 内容变化时统一失效布局/绘制缓存（2026-10-24 架构收敛）。
+
+        背景：下列缓存此前分散在 ``fiber.py`` 字段声明与各使用模块的
+        docstring 里，失效点由调用方各自维护（``_set_props`` 只清
+        ``_key_cache``）——新增缓存时容易漏掉失效，历史上已出现多起
+        "原地修改绕过缓存"问题。本方法作为**唯一失效入口**，由
+        ``Reconciler._set_props`` 在内容变化时调用。
+
+        不清的字段与理由：
+          - ``_committed_prefix`` / ``_merged_rows_cache`` / ``_canvas_line_cache``：
+            由 ``widgets.staticlines`` / ``render_frame`` 维护，自身带
+            「源对象身份 + 宽度 + 长度」快照校验，清掉只会让前缀缓存失效
+            （安全但更慢），保留校验机制即可；
+          - ``_host_only_subtree``：结构属性（子树是否只含 host），与 props
+            内容无关，由调和器每次子调和后重算；
+          - ``_committed_chat_present`` / ``_has_absolute_present`` /
+            ``_has_float_present``：每帧布局前由 ``layout_tree`` 复位。
+        """
+        self._key_cache = None
+        self._measure_cache = None
+        self._wrapped_lines = None
+        self._geom_cache = None
+        self._wrap_cache = None
+        self._input_layout_cache = None
+        self._truncated_prefix_cache = None
+        self._resolved_lines = None
+        self._last_children = None
+        self._parent_avail_h = None
+        self._placeholder_fade_key = None
 
     def reset_hooks(self) -> None:
         """渲染开始前重置 hook 索引。"""

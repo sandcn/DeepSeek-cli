@@ -20,6 +20,7 @@ import queue
 import sys
 import threading
 import time
+import weakref
 from enum import Enum
 from typing import Any, Callable
 
@@ -58,8 +59,16 @@ from ._session_frame_mixin import (
     _SessionFrameMixin,
     _safe_int,
 )
+from ._metrics import FrameMetrics
 
 _logger = logging.getLogger(__name__)
+
+#: 活跃 InkSession 弱引用表（2026-10-24：单会话契约可观测）。
+#: 框架的 hooks 状态已按会话隔离（``HookContext``），但表现层数据表
+#: （``ink._data`` provider）与应用侧活跃 consumer 仍是进程级单例——多会话
+#: 并存时只有 hooks 层是真正隔离的。构造时检测并 warning，避免"看起来支持
+#: 多会话、实际串台"的静默问题（契约见 docs/architecture/tui.md「多会话」）。
+_LIVE_SESSIONS: "weakref.WeakSet" = weakref.WeakSet()
 # ── 内容命令集合（真源在 _const.CONTENT_COMMANDS） ──────────
 _CONTENT_COMMANDS = CONTENT_COMMANDS
 
@@ -238,6 +247,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         sigwinch_processor: Callable[[], Any] | None = None,
         sigwinch_unregister: Callable[[Any], None] | None = None,
         input_fiber_finder: Callable[[Any], Any] | None = None,
+        data_provider: Any | None = None,
     ):
         self._model = model
         self._apply_fn = apply_cmd
@@ -276,6 +286,10 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #: 渲染线程整个生命周期激活它（``_render`` push/pop）——同一进程可
         #: 并存多个 InkSession / render() 会话而互不覆盖状态。
         self._hook_ctx = self._reconciler.hook_context
+        # ★ 2026-10-24（多会话补缺）：表现层数据表（边框字符/UI 默认值/Spinner）
+        #   挂到本会话上下文——``ink._data`` 读取时优先会话级 provider，
+        #   多渲染根不再互相覆盖；未传时回退模块级默认（兼容独立 render()）。
+        self._hook_ctx.data_provider = data_provider
         self._root_fiber = self._reconciler.create_root()
         # ★ 增量渲染屏幕坐标（方向1）：渲染器接收终端屏幕高度——文档高于屏幕
         #   时按屏幕坐标跟踪物理光标（防 cursor_up 越出屏幕顶部错位）、可见区
@@ -468,6 +482,27 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._bottom_area_fiber = None
         #: 最近一帧实际补白行数（诊断/测试用）
         self._frame_bottom_pad: int = 0
+        # ── 帧指标（2026-10-24）：分段耗时环形采样，debug 输出/测试断言用 ──
+        self._metrics = FrameMetrics()
+        # ── 单会话契约守卫（2026-10-24）：hooks 已按会话隔离，但表现层数据表
+        #    （ink._data provider）与应用侧活跃 consumer 仍是进程级单例——
+        #    多会话并存时只有 hooks 层真正隔离。检测到活跃实例时告警，避免
+        #    「看起来支持多会话、实际串台」的静默问题。契约见
+        #    docs/architecture/tui.md「多会话」。异常一律吞掉（诊断不影响构造）。
+        try:
+            active = [
+                session for session in _LIVE_SESSIONS
+                if session is not self and getattr(session, "_render_running", False)
+            ]
+            if active:
+                _logger.warning(
+                    "检测到 %d 个活跃 InkSession：hooks 状态按会话隔离，但表现层"
+                    "数据表/应用 consumer 仍为进程级单例（多会话仅部分支持）",
+                    len(active) + 1,
+                )
+            _LIVE_SESSIONS.add(self)
+        except Exception:
+            _logger.debug("单会话守卫检测异常", exc_info=True)
 
     # ── 注入 ─────────────────────────────────────────
 
@@ -1929,10 +1964,12 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             out = self._stderr_stream
             if out is None:  # stderr 被关闭/分离：debug 输出无从写入
                 return
+            metrics = self._metrics.summary()
             out.write(
                 f"[ink:debug] frame lines={self._last_frame_lines} "
                 f"queue={self._cmd_queue.qsize()} "
-                f"failures={self._consecutive_render_failures}\n"
+                f"failures={self._consecutive_render_failures} "
+                f"{FrameMetrics.format_summary(metrics)}\n"
             )
             out.flush()
         except Exception:

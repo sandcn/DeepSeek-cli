@@ -382,6 +382,16 @@ from ._ansi_sequences import (  # noqa: F401  （显式重导出，见 __all__�
     sgr_reset,
 )
 
+#: 纯 re-export 的紧急 ANSI 常量（本模块内无使用者，仅经 ``__all__`` 对外）。
+#: ★ 2026-10-24：部分 pyflakes 版本不识别「`__all__` 中的名字视为已使用」，
+#: 会把这 4 个报成 F401；显式引用一次，既消除误报也表明这是有意重导出。
+_ANSI_EMERGENCY_REEXPORTS = (
+    ANSI_EMERGENCY_RED,
+    ANSI_EMERGENCY_YELLOW,
+    ANSI_EMERGENCY_RESET,
+    ANSI_EMERGENCY_CURSOR_BOTTOM,
+)
+
 __all__ = [
     # ANSI 序列（re-export 自 ink/ansi.py）
     "ANSI_EMERGENCY_RED", "ANSI_EMERGENCY_YELLOW", "ANSI_EMERGENCY_RESET",

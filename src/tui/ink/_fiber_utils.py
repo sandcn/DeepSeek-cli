@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from .markers import is_input_area_fiber
+
 __all__ = ["find_input_fiber"]
 
 
@@ -31,10 +33,7 @@ def find_input_fiber(root_fiber):
         fiber = stack.pop()
         if getattr(fiber, "deleted", False):
             continue
-        if fiber.is_host and (
-            fiber.type == "input-area"
-            or bool(fiber.props.get("dataInputArea"))
-        ):
+        if is_input_area_fiber(fiber):
             return fiber
         siblings = []
         sibling = fiber.sibling

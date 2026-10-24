@@ -100,6 +100,7 @@ from .helpers import (
 from .registry import register_host, unregister_host, get_host, has_host
 from .error_boundary import ErrorBoundary, create_error_boundary
 from .extra import Transform, Static, Newline, Fragment, STATIC_TEXT
+from ._cmd_priority import cmd_name
 from ._render_api import render, renderToString, measureElement
 from .kitty import kittyFlags, kittyModifiers, resolveFlags
 from .terminal import (
@@ -221,6 +222,8 @@ __all__ = [
     "render",
     "renderToString",
     "measureElement",
+    # 命令诊断（app 层日志用；避免跨层导入私有模块）
+    "cmd_name",
     # kitty keyboard protocol
     "kittyFlags",
     "kittyModifiers",

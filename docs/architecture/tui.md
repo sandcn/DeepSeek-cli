@@ -87,3 +87,71 @@ L0  src/_text_width、src/_ansi_text、src/_compat
 - `InkOptions` 默认值须与 `TuiConfig` 一致（同为测试守护）；
 - 视图注册表的点分引用只允许指向可 import 的模块属性（元测试守护）；
 - 覆盖率门槛随测试补齐分阶段上调（见 `pyproject.toml` 注释）。
+
+## 7. 多会话契约（2026-10-24）
+
+**当前状态：hooks + 表现层数据表按会话隔离；应用侧活跃 consumer 仍是单例。**
+
+- 已隔离：`HookContext`（每个 `Reconciler` 一个）——hooks 状态、focus、
+  animation、window size、输入 router 回调；
+- 已隔离（2026-10-24）：`ink._data` 表现层数据表——`InkSession(data_provider=...)`
+  写入 `HookContext.data_provider`，`_data` 读取时**会话级优先**，未挂载会话
+  回退 `set_data_provider` 的模块级默认；
+- 仍未隔离：`src/tui/state/consumer_registry` 的「当前活跃 consumer」
+  （引用计数支持多实例注册，但 `get_active_chat_ui()` 仍返回单一活跃实例）、
+  `TuiConfig`。
+- `InkSession.__init__` 检测到另一个活跃会话时记录 warning（不阻断，诊断用）。
+
+新增会话级状态时：**必须挂到 `HookContext` 或 `InkSession`**，不得新增模块级
+可变全局；否则请先补齐契约再宣称多会话。测试：
+`tests/tui/ink/test_hooks_fastpath.py`（上下文切换）、
+`tests/tui/ink/test_private_import_baseline.py`（跨层导入）。
+
+## 8. 帧指标与性能回归（2026-10-24）
+
+- `FrameMetrics`（`ink/_metrics.py`）环形采样 build / reconcile / frame /
+  write / total 分段耗时，`render(debug=True)` 输出 P50/P95/max；
+- 空闲复用帧把同一 `Frame` 对象再次交给 `InkRenderer.render` 时 **O(1) 短路**
+  （不再做整篇 `first_diff_line` 扫描）；测试
+  `tests/tui/ink/test_renderer_idle_short_circuit.py` 锁定；
+- 性能型测试（`test_frame_budget.py` 等）在 `--cov` 下由
+  `tests/conftest.py` 跳过，CI 分两步跑（先无插桩全量，再覆盖率门槛）。
+
+## 9. 布局语义支持矩阵（React Ink / Yoga 子集）
+
+| 能力 | 状态 | 备注 |
+|---|---|---|
+| `flexDirection` / `justifyContent` / `alignItems` / `alignSelf` | 支持 | `_layout_flex.py` |
+| `flexGrow` / `flexShrink` | 支持 | row 超宽收缩 `_shrink_row_children` |
+| `width` / `height` / `min*` / `max*` / 百分比 | 支持 | `_layout_sizing.py` |
+| `padding` / `margin` / `gap` / `columnGap` / `rowGap` | 支持 | `_container_geometry` |
+| `border` / `borderStyle` | 支持 | `_paint_border.py` |
+| `position="absolute"` | 支持 | 第二遍布局 `_layout_absolute.py` |
+| `aspectRatio` | 支持 | `_apply_aspect_ratio` |
+| `flexWrap` / `alignContent` / `order` / `flexBasis` | **未实现** | 使用会按普通 flex 处理（无换行/排序语义） |
+
+新增布局特性时：在 `_layout_measure` 的测量契约（`_measure_cache` 键）与
+paint 契约（`Line` 宽度）之间必须同时对齐，并补 golden-frame 测试。
+
+## 10. 缓存失效与私有导入
+
+- `Fiber.invalidate_layout_caches()` 是 props 内容变化时的**唯一布局缓存失效
+  入口**（由 `Reconciler._set_props` 调用）；新增 fiber 级缓存必须登记到该
+  方法或说明为何自带快照校验；
+- `src/tui/app`、`src/tui/pipeline` **不得**导入 `src/tui/ink/_*` 私有模块
+  （`tests/tui/ink/test_private_import_baseline.py` 断言为 0）；需要的能力
+  经 `src.tui.ink` 门面（如 `cmd_name`）或公开模块（`markers`）暴露。
+
+## 11. 兼容层删除里程碑
+
+`src/tui/input.py`、`src/tui/core/singleton.py`、`src/tui/events/*`、
+`src/tui/_ink_bridge_compat.py`、`src/tui/_const.py` 的命令协议部分按以下
+顺序删除（每步先 `grep` 调用点迁移、再删模块、最后跑分层契约）：
+
+1. `_ink_bridge_compat`（调用点最少）；
+2. `events/*`（迁移到 `src/core/events` 真源）；
+3. `core/singleton` → 显式实例注入；
+4. `input.py` → `_input.Input`；
+5. `_const` 命令协议 → `_command_protocol`（保留常量别名一周期后删除）。
+
+兼容层内**不得新增逻辑**；新增代码直接 import 真源。

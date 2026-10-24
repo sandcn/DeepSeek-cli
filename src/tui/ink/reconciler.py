@@ -77,6 +77,26 @@ def _warn_input_handler_error() -> None:
     )
 
 
+#: effect 生命周期异常告警限频间隔（秒）——失败 effect 不再逐帧重试
+#: （2026-10-24），但同一组件可能因 deps 变化反复失败，限频防刷屏。
+_EFFECT_ERROR_WARN_INTERVAL = 5.0
+_last_effect_error_warn = 0.0
+
+
+def _warn_effect_error(fiber: Fiber, stage: str, exc: Exception) -> None:
+    """限频记录 effect create/destroy 异常（含失败态降级说明）。"""
+    global _last_effect_error_warn
+    now = time.monotonic()
+    if now - _last_effect_error_warn < _EFFECT_ERROR_WARN_INTERVAL:
+        _logger.debug("effect %s 异常 fiber=%s", stage, fiber.type, exc_info=exc)
+        return
+    _last_effect_error_warn = now
+    _logger.warning(
+        "effect %s 执行异常 fiber=%s（该 effect 已标记失败，deps 再次变化前不重试）",
+        stage, fiber.type, exc_info=exc,
+    )
+
+
 class _MaskedCharEvent:
     """mask 掩码事件（鸭子类型 KeyEvent，供 router per-hook 掩码）。
 
@@ -404,7 +424,7 @@ class Reconciler:
         try:
             if len(old) != len(props):
                 fiber.props = props
-                fiber._key_cache = None
+                fiber.invalidate_layout_caches()
                 return
         except TypeError:
             pass
@@ -423,8 +443,9 @@ class Reconciler:
                 fiber.type, exc_info=True,
             )
         fiber.props = props
-        # props 变化 → key 缓存失效（PERF-24；内容相等路径已提前 return）
-        fiber._key_cache = None
+        # props 变化 → 统一失效布局/绘制缓存（key/measure/wrap/geom/...；
+        # 内容相等路径已提前 return）。单一失效入口见 Fiber.invalidate_layout_caches。
+        fiber.invalidate_layout_caches()
 
     @classmethod
     def _revive_reused(cls, fiber: Fiber, return_fiber: Fiber) -> None:
@@ -1382,21 +1403,33 @@ class Reconciler:
     # ── effects 提交 ────────────────────────────────
 
     def _run_destroy(self, fiber: Fiber, hook: EffectHook | SyncStoreHook) -> None:
+        """执行卸载清理。
+
+        ★ 2026-10-24（effect 失败语义修复）：destroy 抛异常时**仍清空**
+        ``hook.destroy`` / ``hook.last_deps``（放 finally）——修复前异常让
+        ``hook.destroy = None`` 永不执行，60Hz 渲染循环每帧重复调用同一个
+        失败 destroy（日志刷屏 + 重复副作用）。React 语义：清理失败不应无限
+        重试；失败次数记入 ``fail_count`` 供诊断。
+        """
         try:
             if isinstance(hook, SyncStoreHook):
                 # useSyncExternalStore 卸载：取消外部 store 订阅
-                if hook.cleanup is not None:
-                    hook.cleanup()
-                hook.cleanup = None
+                cleanup = hook.cleanup
+                if cleanup is not None:
+                    hook.cleanup = None
+                    cleanup()
                 return
-            if hook.destroy is not None:
-                hook.destroy()
-            hook.destroy = None
+            destroy = hook.destroy
+            if destroy is not None:
+                hook.destroy = None
+                destroy()
             hook.last_deps = None
-        except Exception:
-            # ★ 可观测性修复：effect 销毁异常会泄漏资源（订阅/定时器/子进程），
-            #   原 debug 级别在默认日志配置下不可见——提升为 warning。
-            _logger.warning("effect 销毁执行异常 fiber=%s", fiber.type, exc_info=True)
+        except Exception as exc:
+            # 失败态落位（不重试）+ 限频告警；资源可能泄漏，但不再放大。
+            if isinstance(hook, EffectHook):
+                hook.fail_count += 1
+                hook.last_deps = None
+            _warn_effect_error(fiber, "destroy", exc)
 
     def _run_live_effects_collected(self, function_fibers: list) -> None:
         """提交依赖变化的 effect（PERF-25：用 ``_collect_render_metadata`` 合并
@@ -1420,18 +1453,55 @@ class Reconciler:
                 continue
             if not _hooks.deps_changed(hook):
                 continue
-            try:
-                if hook.destroy is not None:
-                    hook.destroy()
+            # ★ 2026-10-24：失败 effect 的退避窗口内不重试。仅对 deps=None 的
+            #   effect 生效（它按 React 语义每次渲染都执行，失败后会 60Hz 重试，
+            #   限速到最多 1 次/秒）；deps 非 None 时 ``last_deps`` 已推进，
+            #   只有 deps 再次变化才会走到这里——那是新的尝试，应正常重试。
+            if (
+                hook.deps is None
+                and hook.fail_count
+                and hook.next_retry_at > time.monotonic()
+            ):
+                continue
+            # 清理失败不阻塞新副作用建立：destroy 异常记录后继续 create
+            # （否则组件会永久停留在"无订阅/无初始化"状态）。
+            destroy_error: Exception | None = None
+            if hook.destroy is not None:
+                destroy = hook.destroy
                 hook.destroy = None
+                try:
+                    destroy()
+                except Exception as exc:  # noqa: BLE001 - 生命周期清理异常降级
+                    destroy_error = exc
+                    hook.fail_count += 1
+            if destroy_error is not None:
+                _warn_effect_error(fiber, "destroy", destroy_error)
+            try:
                 result = hook.create() if hook.create is not None else None
                 if callable(result):
                     hook.destroy = result
                 _hooks.mark_effect_committed(hook)
-            except Exception:
-                # ★ 可观测性修复：effect 执行异常使副作用缺失（订阅/初始化/
-                #   上报），原 debug 级别不可见——提升为 warning。
-                _logger.warning("effect 执行异常 fiber=%s", fiber.type, exc_info=True)
+                hook.fail_count = 0
+            except Exception as exc:
+                # ★ 2026-10-24（effect 失败语义修复）：失败后**不逐帧重试**——
+                #   修复前 create 抛异常时 ``mark_effect_committed`` 未执行，
+                #   ``last_deps`` 保持旧值 → 60Hz 循环每帧重跑同一失败 effect
+                #   （每秒 60 条 warning + 重复副作用）。现把 ``last_deps`` 记为
+                #   本次 deps（"已尝试"），仅 deps 再次变化才重试；fail_count
+                #   记录失败态供诊断/降级。
+                hook.fail_count += 1
+                # 指数退避（0.05 → 1.0s 封顶）：deps=None 的 effect 仍会在
+                # 窗口过后重试（每次渲染都执行的语义保留），但不会 60Hz 刷屏。
+                hook.next_retry_at = time.monotonic() + min(
+                    1.0, 0.05 * (2 ** min(hook.fail_count - 1, 5))
+                )
+                if hook.deps is None:
+                    # 无 deps（每次渲染都应执行）——保持 last_deps=None，
+                    # 由 next_retry_at 限速。
+                    hook.last_deps = None
+                else:
+                    hook.last_deps = list(hook.deps)
+                _warn_effect_error(fiber, "create", exc)
 
     def _traverse_functions(
         self,

@@ -48,6 +48,7 @@ from src.tui.ink._cmd_priority import (
     _get_cmd_id,
     _get_cmd_priority,
     _cmd_name,
+    evict_low_cmd,
 )
 
 _logger = logging.getLogger(__name__)
@@ -251,39 +252,17 @@ class _SessionQueueMixin:
             #   STREAM/CRITICAL 不丢）。
             evicted = False
             if priority < _CMD_PRIORITY_LOW:
-                with self._cmd_queue.mutex:
-                    for i, item in enumerate(self._cmd_queue.queue):
-                        if item[0] >= _CMD_PRIORITY_LOW:
-                            removed = self._cmd_queue.queue.pop(i)
-                            # ★ BUG-31（review 方向）：``PriorityQueue`` 底层是
-                            #   heapq 数组，任意下标 ``pop`` 后堆序被破坏——后续
-                            #   ``heappush``/``heappop`` 在损坏堆上操作可能返回非
-                            #   最小项 → 命令优先级/同批顺序错乱（如 PHASE_DONE
-                            #   先于 CONTENT 出队致内容通道提前关闭、TOOL_CLOSE
-                            #   先于 TOOL_OUTPUT 致输出落到无名新 box）。pop 后
-                            #   ``heapq.heapify`` 恢复堆序（O(n)，仅队列满腾位
-                            #   罕见路径触发，成本可接受）。
-                            heapq.heapify(self._cmd_queue.queue)
-                            self._cmd_queue_dropped += 1
-                            _logger.warning(
-                                "渲染命令队列已满，腾位移除 LOW 命令: %s",
-                                _cmd_name(_get_cmd_id(removed[2])),
-                            )
-                            evicted = True
-                            break
+                # heapq 细节（任意下标 pop + heapify + task_done 记账）收在
+                # ``_cmd_priority.evict_low_cmd``（2026-10-24 架构收敛）。
+                removed = evict_low_cmd(self._cmd_queue, _CMD_PRIORITY_LOW)
+                if removed is not None:
+                    self._cmd_queue_dropped += 1
+                    _logger.warning(
+                        "渲染命令队列已满，腾位移除 LOW 命令: %s",
+                        _cmd_name(_get_cmd_id(removed[2])),
+                    )
+                    evicted = True
             if evicted:
-                # ★ 修复（长任务思考/回答丢失）：pop 绕过 get() 直接移除 heapq
-                #   元素，须补 task_done() 减 unfinished_tasks——否则
-                #   queue.join()（flush 等待排空）因 unfinished_tasks 虚高而
-                #   永远等待 → flush 恒超时 → _drain_queue_safe 丢弃未消费的
-                #   reasoning/content 命令（视觉「只显示工具调用」）。
-                #   task_done() 须在 mutex 外调用：其内部经 all_tasks_done
-                #   （Condition，与 mutex 同源普通 Lock 不可重入）再次获取
-                #   mutex，持 mutex 调用会自死锁。
-                try:
-                    self._cmd_queue.task_done()
-                except ValueError:
-                    pass
                 try:
                     self._cmd_queue.put(
                         (priority, next(self._cmd_seq), cmd), block=False,

@@ -28,6 +28,7 @@ import logging
 from collections import deque
 
 from .fiber import Fiber
+from .markers import is_static_lines_fiber
 from .layout import layout_tree, wrap_text_lines, _skip_function
 from .output import Frame, Line
 from ._layout_transform import _translate_subtree_x, _translate_subtree_y
@@ -441,8 +442,7 @@ def _find_committed_chat(root: Fiber):
     cached = root._committed_chat_cache
     if (
         cached is not None
-        and cached.is_host
-        and cached.type == "static-lines"
+        and is_static_lines_fiber(cached)
         and not getattr(cached, "deleted", False)
     ):
         return cached
@@ -452,7 +452,7 @@ def _find_committed_chat(root: Fiber):
         f = stack.pop()
         if getattr(f, "deleted", False):
             continue
-        if f.is_host and f.type == "static-lines":
+        if is_static_lines_fiber(f):
             found = f
             break
         child = f.child

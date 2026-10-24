@@ -48,6 +48,7 @@ import time
 
 from .command import RenderCommand
 from ._cmd_priority import _get_cmd_id, _cmd_name
+from .markers import is_input_area_fiber
 from . import components as _components
 from . import hooks as _hooks
 from . import _stream_height
@@ -486,7 +487,44 @@ class _SessionFrameMixin:
             return True  # 时间基准异常 → 保守重建
         return elapsed >= interval
 
+    def _record_frame_metrics(
+        self, started_at: float, build_ms: float, reconcile_ms: float,
+        frame_build_ms: float, *, lines: int, reused: bool,
+    ) -> None:
+        """记录本帧分段耗时（``FrameMetrics``；未注入/异常静默降级）。
+
+        分段口径：
+          - ``build``：``_build_tree``（元素树构建，App 组件函数执行）；
+          - ``reconcile``：``Reconciler.render``（调和 + 布局 + effects）；
+          - ``frame``：``components.render_frame``（画布绘制 + 成帧）；
+          - ``write``：其余（写屏 + 光标 + 输出历史），由总耗时倒推。
+        复用帧的 build/reconcile/frame 均为 0（未重建）。
+        """
+        metrics = getattr(self, "_metrics", None)
+        if metrics is None:
+            return
+        try:
+            total_ms = (time.monotonic() - started_at) * 1000.0
+            write_ms = max(
+                0.0, total_ms - build_ms - reconcile_ms - frame_build_ms,
+            )
+            metrics.record(
+                build_ms=build_ms,
+                reconcile_ms=reconcile_ms,
+                frame_ms=frame_build_ms,
+                write_ms=write_ms,
+                total_ms=total_ms,
+                lines=lines,
+                reused=reused,
+            )
+        except Exception:
+            _logger.debug("帧指标记录异常", exc_info=True)
+
     def _render_frame_impl(self) -> None:
+        # ★ 2026-10-24（帧指标）：分段耗时采样（构建/调和/成帧/写屏）——
+        #   debug 输出与测试断言用；time.monotonic 4 次/帧开销可忽略。
+        frame_started_at = time.monotonic()
+        build_ms = reconcile_ms = frame_build_ms = 0.0
         # ★ 2026-10-23（game_loop 单次调用）：清屏请求在帧内统一消费——
         #   模型 reset_display + 终端 full_clear 都发生在 render 线程本帧，
         #   外部线程只置 ``_clear_pending``（见 InkSession.clear_screen）。
@@ -501,6 +539,10 @@ class _SessionFrameMixin:
         #   帧后补白（否则重复补白两次）。每帧复位，仅由钩子置位。
         self._stream_pad_handled = False
         if self._build_tree is None:
+            self._record_frame_metrics(
+                frame_started_at, 0.0, 0.0, 0.0,
+                lines=0, reused=False,
+            )
             return
         # 终端尺寸变化标志（下方内容行基线同步用；模型为空时保持 False）
         size_changed = False
@@ -656,11 +698,16 @@ class _SessionFrameMixin:
             #   完成（重跑提交阶段，最多 ``_MAX_PRE_PAINT_PASSES`` 轮）——不再
             #   由本方法循环重建组件树。返回值表示达到上限仍有待 flush 更新，
             #   此时保留脏标记到下一拍（不静默丢弃）。
+            _t_build = time.monotonic()
             element = self._build_tree(self._model, width)
+            _t_reconcile = time.monotonic()
             pending_update = self._reconciler.render(
                 self._root_fiber, element, width,
                 self._width_cache.get_height(),
             )
+            _t_frame = time.monotonic()
+            build_ms = (_t_reconcile - _t_build) * 1000.0
+            reconcile_ms = (_t_frame - _t_reconcile) * 1000.0
             self._dirty = bool(pending_update)
             if pending_update:
                 from .reconciler import _MAX_PRE_PAINT_PASSES
@@ -689,6 +736,7 @@ class _SessionFrameMixin:
                 self._root_fiber, width, viewport_height=viewport_height,
                 stream_pad=self._make_stream_pad_callback(reset=lock_reset),
             )
+            frame_build_ms = (time.monotonic() - _t_frame) * 1000.0
             self._last_frame = frame
             self._last_frame_idle_static = static_now
             # ★ 浮窗定时刷新基准（2026-10-21）：记录**实际重建**时刻——
@@ -738,6 +786,10 @@ class _SessionFrameMixin:
         except Exception:
             _logger.debug("注入固定区行数异常", exc_info=True)
         self._ink_renderer.render(frame)
+        self._record_frame_metrics(
+            frame_started_at, build_ms, reconcile_ms, frame_build_ms,
+            lines=len(frame.lines), reused=not built_frame,
+        )
         # ★ render({onRender})：每帧渲染后回调（官方 RenderMetrics 语义）——
         #   回调异常仅记录日志，不中断渲染循环。
         if self._on_render_callback is not None:
@@ -759,10 +811,7 @@ class _SessionFrameMixin:
         if (
             self._input_fiber is None
             or self._input_fiber.deleted
-            or not (
-                self._input_fiber.type == "input-area"
-                or bool(self._input_fiber.props.get("dataInputArea"))
-            )
+            or not is_input_area_fiber(self._input_fiber)
         ):
             self._input_fiber = self._find_input_fiber(self._root_fiber)
         self._position_cursor()

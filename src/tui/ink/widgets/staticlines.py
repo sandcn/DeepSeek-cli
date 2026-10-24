@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from ..element import h
 from ..helpers import truncate_line
+from ..markers import STATIC_LINES_TYPE
 from ..output import Line
 
 __all__ = ["StaticLines"]
@@ -312,7 +313,7 @@ def StaticLines(props: dict):
             lines = []
         props = dict(props)
         props["lines"] = lines
-    return h("static-lines", props)
+    return h(STATIC_LINES_TYPE, props)
 
 
 # host 注册迁移到清单条目（src.plugins.host_entries）——``static-lines`` 的

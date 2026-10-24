@@ -23,8 +23,10 @@ import threading
 from src.tui.app.model import _role_header_line
 from src.tui.app.toolcard import ToolCard
 from src.tui.core.style import Style
-from src.tui.ink import h, TEXT, StyledRun, StaticLines, use_memo, Column, FRAGMENT
-from src.tui.ink._runs_utils import wrap_runs_by_width
+from src.tui.ink import (
+    h, TEXT, StyledRun, StaticLines, use_memo, Column, FRAGMENT,
+    wrap_runs_by_width,
+)
 from src.tui.ink.widgets.livelines import LiveLines
 from .subagent_panel import SubAgentCard
 # ★ P3-7：time_glow/_fx 模块顶部集中导入（_theme/_fx 仅依赖 core 层，无

@@ -52,6 +52,7 @@ from __future__ import annotations
 import logging
 
 from ._fiber_utils import find_input_fiber
+from .markers import is_input_area_fiber
 from ._layout_transform import _translate_subtree_x, _translate_subtree_y
 from ._layout_tree import _skip_function
 
@@ -292,10 +293,7 @@ def _find_input_fiber(root_fiber):
     if root_fiber is None:
         return None
     cache = _float_cache(root_fiber)
-    hit = _cached(
-        cache, "input",
-        lambda f: f.type == "input-area" or bool(f.props.get("dataInputArea")),
-    )
+    hit = _cached(cache, "input", is_input_area_fiber)
     if hit is not None:
         return hit
     fiber = find_input_fiber(root_fiber)

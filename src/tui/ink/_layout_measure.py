@@ -23,6 +23,7 @@ from src._compat import dataclass
 from src._text_width import needs_grapheme_clusters
 from src.tui._width import wcswidth_simple
 from .fiber import Fiber
+from .markers import STATIC_LINES_TYPE
 from .output import StyledRun, Line
 from ._style_fp import style_fingerprint
 from ._layout_sizing import (
@@ -666,7 +667,7 @@ def _measure_leaf_or_special(
         #   供 render_frame 的 _find_committed_chat O(1) 判定（无静态行 host
         #   的组件树每帧零 DFS）。静态行 host 每帧仅一个，向上 O(树深) 完全
         #   可接受。
-        if ftype == "static-lines":
+        if ftype == STATIC_LINES_TYPE:
             _f = fiber.return_
             while _f is not None:
                 if getattr(_f, "tag", None) == "root":

@@ -46,7 +46,7 @@ from .fiber import (
 #   本模块加载期获取 hooks 门面引用，运行期经 ``_hooks_module._xxx`` 属性
 #   访问（门面以 PEP 562 代理到「当前上下文」——循环 import 安全）。
 from src.tui.ink import hooks as _hooks_module
-from ._hook_context import HookContext, current_context
+from ._hook_context import HookContext, current_context, current_fiber_stack
 
 # ★ logger 名保持 ``src.tui.ink.hooks``（模块拆分后日志命名不变——
 #   外部 caplog/日志过滤按旧名监听，如 test_schedule_callback_exception_logged）。
@@ -102,21 +102,28 @@ def set_std_accessors(
 
 
 def _push_current(fiber: Fiber) -> None:
-    """渲染函数组件前压入当前 fiber（供 reconciler 调用）。"""
-    _hooks_module._current_fiber_stack.append(fiber)
+    """渲染函数组件前压入当前 fiber（供 reconciler 调用）。
+
+    ★ 2026-10-24（性能）：直接操作当前上下文的栈**引用**（
+    ``_hook_context.current_fiber_stack``），不再经 ``hooks`` 模块代理
+    （PEP 562 ``__getattr__`` 单次 ~2µs，每组件每次渲染 2 次调用）。
+    """
+    current_fiber_stack().append(fiber)
 
 
 def _pop_current() -> None:
     """渲染函数组件结束后弹出当前 fiber（供 reconciler 调用）。"""
-    if _hooks_module._current_fiber_stack:
-        _hooks_module._current_fiber_stack.pop()
+    stack = current_fiber_stack()
+    if stack:
+        stack.pop()
 
 
 def _current() -> Fiber:
-    """读取当前 fiber。"""
-    if not _hooks_module._current_fiber_stack:
+    """读取当前 fiber（热路径：直接读上下文栈引用，见 ``_push_current``）。"""
+    stack = current_fiber_stack()
+    if not stack:
         raise HookStateError("use_* hook 只能在函数组件渲染期间调用")
-    return _hooks_module._current_fiber_stack[-1]
+    return stack[-1]
 
 
 def _schedule_ctx(ctx: "HookContext") -> None:

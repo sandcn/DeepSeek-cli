@@ -64,6 +64,8 @@ _SLOTS = (
     "animation_tick",
     "animation_last_time",
     "animation_listeners",
+    # ── 表现层数据表（2026-10-24：会话级注入，补多多会话隔离缺口） ──
+    "data_provider",
 )
 
 
@@ -111,6 +113,9 @@ class HookContext:
         self.animation_tick = 0
         self.animation_last_time = 0.0
         self.animation_listeners: set = set()
+        #: 表现层数据表提供者（``ink._data``）：会话级覆盖优先，None 时用
+        #: ``_data`` 模块级全局（框架独立使用/非渲染线程回退）。
+        self.data_provider = None
 
     # ── 快照 / 还原（renderToString 等隔离场景） ──
 
@@ -131,6 +136,11 @@ class HookContext:
         for name, value in saved.items():
             if name in _SLOTS:
                 setattr(self, name, value)
+        # ★ 2026-10-24：fiber 栈对象可能被 snapshot/restore 替换——同步线程
+        #   local 的快速路径缓存，避免 hooks._current 读到旧列表。
+        active = getattr(_local, "ctx", None)
+        if active is self or (active is None and self is _default_context):
+            _local.fiber_stack = self.current_fiber_stack
 
     def install_headless(self, columns: int = 80, rows: int = 24) -> None:
         """安装「无终端」环境（renderToString 用）：流/焦点/光标返回安全默认。"""
@@ -168,21 +178,39 @@ def current_context() -> HookContext:
     return ctx if ctx is not None else _default_context
 
 
+def current_fiber_stack() -> list:
+    """当前激活上下文的 fiber 栈**引用**（hooks 热路径专用）。
+
+    ★ 2026-10-24（性能）：``hooks._current`` / ``_push_current`` /
+    ``_pop_current`` 原先每次经 ``hooks`` 模块代理（PEP 562
+    ``__getattr__`` → ``current_context()`` → thread-local），实测单次
+    2.03µs；组件树每次渲染每组件至少 2 次，300 组件即 ~1.2ms/帧。
+    本函数直接读线程 local 缓存的栈引用（push/pop 时维护），实测
+    0.2µs 量级；``restore`` 替换栈对象时同步缓存（见 ``restore``）。
+    """
+    stack = getattr(_local, "fiber_stack", None)
+    if stack is None:
+        return _default_context.current_fiber_stack
+    return stack
+
+
 def push_context(ctx: HookContext) -> None:
     """激活上下文（返回上一个，供 ``pop_context`` 还原；支持嵌套）。"""
     previous = getattr(_local, "ctx", None)
     _local.stack = getattr(_local, "stack", None) or []
     _local.stack.append(previous)
     _local.ctx = ctx
+    _local.fiber_stack = ctx.current_fiber_stack
 
 
 def pop_context() -> None:
     """还原上一个激活上下文。"""
     stack = getattr(_local, "stack", None)
-    if stack:
-        _local.ctx = stack.pop()
-    else:
-        _local.ctx = None
+    ctx = stack.pop() if stack else None
+    _local.ctx = ctx
+    _local.fiber_stack = (
+        ctx.current_fiber_stack if ctx is not None else _default_context.current_fiber_stack
+    )
 
 
 __all__ = [

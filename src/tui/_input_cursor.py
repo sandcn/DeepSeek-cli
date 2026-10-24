@@ -23,6 +23,7 @@ from src.tui._input_layout import (
 )
 from src.tui._input_metrics import _completion_height, _is_search_active
 from src.tui.ink._ansi_utils import visual_width
+from src.tui.ink.markers import is_input_area_fiber
 
 _logger = logging.getLogger(__name__)
 
@@ -60,10 +61,7 @@ def find_input_fiber(root_fiber):
         #   返回已删除但仍可达的 input fiber（光标定位到失效节点）。
         if getattr(f, "deleted", False):
             continue
-        if f.is_host and (
-            f.type == "input-area"
-            or bool(f.props.get("dataInputArea"))
-        ):
+        if is_input_area_fiber(f):
             return f
         # sibling 链逆序压入（LIFO 弹出恢复从左到右），child 最后压入
         # （栈顶先处理——原递归 child 深度优先语义）。

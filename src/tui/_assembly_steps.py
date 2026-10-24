@@ -324,6 +324,9 @@ def create_framework(model, tui_config, line_tracker, input_instance):
         command_coalescer=coalesce_commands,
         view_refresh_provider=_make_view_refresh_provider(),
         cursor_provider=position_cursor,
+        # 会话级数据表（多会话隔离）：同时保留模块级 set_data_provider
+        # 供独立 render()/非会话路径回退。
+        data_provider=_presentation_data,
     )
     # ★ 2026-08-05 装配层重构：输出历史接线收敛为公开方法 set_line_tracker
     #   （取代对 ``session._ink_renderer.set_line_callback`` + 私有字段

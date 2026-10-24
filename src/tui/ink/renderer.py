@@ -722,6 +722,13 @@ class InkRenderer(_RendererContentMixin):
         时重置记账并用**同一帧重试一次**（重置后走全量写入）；单帧最多自愈
         一次，二次失败原样上抛，由会话错误帧旁路兜底。
         """
+        # ★ 2026-10-24（空闲帧 O(1) 短路）：会话空闲复用路径会把**同一个
+        #   Frame 对象**再次传入（``_last_frame``）——修复前仍进入
+        #   ``_render_frame_impl`` → ``first_diff_line`` 逐行扫描整篇文档
+        #   （实测 5000 行 0.707ms/帧，60Hz 约 42ms/s 纯扫描）。同一对象必然
+        #   无差异：锚点/输出历史/光标均无变化，直接返回。
+        if frame is self._prev:
+            return
         prev_before = self._prev
         try:
             try:

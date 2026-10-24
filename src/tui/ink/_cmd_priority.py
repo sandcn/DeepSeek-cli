@@ -10,6 +10,8 @@ Layer 0 约束：仅依赖 ``_const``（RenderCommand/RenderCmd），零内部�
 
 from __future__ import annotations
 
+import heapq
+
 from .command import RenderCommand, RenderCmd
 
 # ── 命令优先级（值越小越优先） ──────────────────────────────
@@ -99,11 +101,57 @@ def _get_cmd_priority(cmd: RenderCmd) -> int:
     return _CMD_PRIORITY_LOW
 
 
+def evict_low_cmd(cmd_queue, threshold: int):
+    """从优先级队列中腾位移除一条低优先级命令（``prio >= threshold``）。
+
+    背景（2026-10-24 架构收敛）：``_session_queue_mixin.push_cmd`` 原先在
+    队列满时直接操作 ``PriorityQueue.queue``（heapq 数组）并自行
+    ``heapify`` —— 依赖标准库实现细节，且 ``pop`` 后漏 ``task_done()`` 会
+    让 ``queue.join()`` 永久等待（历史上修过两次）。本函数把「遍历/移除/
+    恢复堆序/补 task_done」收进一处，调用方只关心「是否腾出位置」。
+
+    锁语义：``with cmd_queue.mutex`` 内完成移除；``task_done()`` 必须在
+    mutex **外**调用（其内部经 ``all_tasks_done`` Condition 复用同一把不可
+    重入锁，持锁调用会自死锁）。
+
+    Args:
+        cmd_queue: 目标队列（``queue.PriorityQueue``，元素为
+            ``(priority, seq, cmd)``）。
+        threshold: 低优先级阈值；``item[0] >= threshold`` 的命令可被移除。
+
+    Returns:
+        被移除的队列元素 ``(priority, seq, cmd)``；无低优先级项时返回 None。
+    """
+    removed = None
+    with cmd_queue.mutex:
+        for index, item in enumerate(cmd_queue.queue):
+            if item[0] >= threshold:
+                removed = cmd_queue.queue.pop(index)
+                # 任意下标 pop 破坏堆序 → heapify 恢复（O(n)，仅队列满的罕见
+                # 路径触发）。
+                heapq.heapify(cmd_queue.queue)
+                break
+    if removed is None:
+        return None
+    # pop 绕过 get()：补 task_done() 维持 unfinished_tasks 记账（否则
+    # queue.join()/flush 永久等待）。
+    try:
+        cmd_queue.task_done()
+    except ValueError:
+        pass
+    return removed
+
+
 def _cmd_name(cid: int) -> str:
     try:
         return RenderCommand(cid).name
     except ValueError:
         return str(cid)
+
+
+#: 公开别名（2026-10-24）：app 层诊断日志需要命令名，私有名不应跨层导入
+#: （``src/tui/app/apply.py`` 曾是唯一私有导入点）。实现仍只有一份。
+cmd_name = _cmd_name
 
 
 __all__ = [
@@ -120,4 +168,6 @@ __all__ = [
     "_get_cmd_id",
     "_get_cmd_priority",
     "_cmd_name",
+    "cmd_name",
+    "evict_low_cmd",
 ]

@@ -20,6 +20,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Callable
 
+from ._hook_context import current_context
+
 __all__ = [
     "set_data_provider",
     "get_data_provider",
@@ -46,12 +48,22 @@ def set_data_provider(provider: Any | None) -> None:
 
 
 def get_data_provider() -> Any | None:
-    """当前数据提供者（诊断/测试用）。"""
+    """当前数据提供者（会话级优先，回退模块级默认）。
+
+    ★ 2026-10-24（多会话）：``InkSession`` 把 provider 写入自己的
+    ``HookContext.data_provider``——渲染线程激活该上下文时读取会话级
+    数据表，避免多会话/多渲染根互相覆盖。未挂载会话（独立 ``render()``、
+    非渲染线程调用）回退 ``set_data_provider`` 的模块级默认，行为不变。
+    """
+    ctx = current_context()
+    scoped = getattr(ctx, "data_provider", None)
+    if scoped is not None:
+        return scoped
     return _provider
 
 
 def _call(name: str) -> Any:
-    provider = _provider
+    provider = get_data_provider()
     if provider is None:
         return None
     fn = getattr(provider, name, None)
@@ -121,7 +133,7 @@ UI_DEFAULTS_FALLBACK: dict = {
 
 def ui_default(key: str, fallback: Any) -> Any:
     """读取 UI 默认参数（提供者优先，缺席/异常回退 ``fallback``）。"""
-    provider = _provider
+    provider = get_data_provider()
     if provider is not None:
         fn: Callable | None = getattr(provider, "ui_default", None)
         if fn is not None:
@@ -181,7 +193,7 @@ def spinner_presets() -> dict:
 
 def inline_spinner_frames() -> str:
     """读取行内 Spinner 帧序列（提供者优先，缺席回退内置串）。"""
-    provider = _provider
+    provider = get_data_provider()
     if provider is not None:
         fn: Callable | None = getattr(provider, "inline_spinner_frames", None)
         if fn is not None:

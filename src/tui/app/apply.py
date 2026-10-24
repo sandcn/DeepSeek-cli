@@ -18,7 +18,7 @@ from src.tui._const import (
     ReasoningCmd,
     _CLEAR_PARSE_LINE,
 )
-from src.tui.ink._cmd_priority import _cmd_name
+from src.tui.ink import cmd_name
 from src.tui.core.style import Style
 from src.renderer.ansi.helpers import AnsiLine, ansi_to_line
 # 方向C 步骤4：_S_USER_ICON/_S_USER_TEXT/_S_NOTICE 迁入 app/_theme.py 共享池
@@ -47,7 +47,7 @@ def apply_cmd(model, cmd: RenderCmd) -> None:
     cid = cmd.cid
     handler = _HANDLERS.get(cid)
     if handler is None:
-        _logger.warning("未知渲染命令: %s", _cmd_name(cid))
+        _logger.warning("未知渲染命令: %s", cmd_name(cid))
         return
     try:
         handler(model, cmd)
@@ -60,7 +60,7 @@ def apply_cmd(model, cmd: RenderCmd) -> None:
         #   检查（未知命令直接返回）+ 各 handler 内部字段防御（如 _do_parse_info
         #   的 float() 归一化、_do_bg_bash_count 的 int()），此处捕获即 handler
         #   实现异常——exc_info=True 保留完整堆栈，可据 traceback 定位根因。
-        _logger.warning("渲染命令 %s 执行异常", _cmd_name(cid), exc_info=True)
+        _logger.warning("渲染命令 %s 执行异常", cmd_name(cid), exc_info=True)
 
 
 # ═══════════════════════════════════════════════════════════
