@@ -468,11 +468,20 @@ def test_empty_prompt_has_positive_and_negative_examples() -> None:
     assert "例 7｜未回答" in content
     assert "例 8｜破坏性 / 远程确认" in content
     assert "例 10｜验证时序" in content
-    assert "例 12｜回归举证" in content
-    assert "例 13｜两个清单" in content
-    assert "例 14｜如实报告" in content
-    assert "例 15｜条款冲突" in content
-    assert "例 16｜用户明确覆盖" in content
+    assert "例 12｜bash_opt 操作 TUI（mintty 窗口）" in content
+    assert "例 13｜回归举证" in content
+    assert "例 14｜两个清单" in content
+    assert "例 15｜如实报告" in content
+    assert "例 16｜条款冲突" in content
+    assert "例 17｜用户明确覆盖" in content
+
+    # TUI / GUI 例子必须体现「background 启动 → 截图 → 操作 → kill」这条真实路径，
+    # 并说明 mintty daemon 化后窗口仍在（否则示例会诱导模型不后台启动）。
+    assert 'mintty -t demo-tui -e less README.md", "background": true' in content
+    assert '"op": "type"' in content
+    assert "`op=key`" in content and "ctrl+c" in content
+    assert "daemon 化不等于窗口消失" in content
+    assert "不带 `background` —— start 立即返回" in content
 
     # 反例必须给出具体的错误动作与依据，而不是空泛措辞。
     assert "回「请确认是否要我修改该文件」" in content
@@ -541,7 +550,7 @@ def test_empty_prompt_forces_full_call_chain_from_program_entry() -> None:
     assert "不得留到用户追问再补" in content
     assert "此项不受「本轮未改动」豁免" in content
     assert "唯一例外是不含代码的纯文本" in content
-    assert "例 17｜涉及代码的任务强制全量调用链（先链后事）" in content
+    assert "例 18｜涉及代码的任务强制全量调用链（先链后事）" in content
 
 
 def test_simple_prompt_allows_push_by_default() -> None:
