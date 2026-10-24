@@ -30,7 +30,8 @@ class MvFunc(FileSystemToolBase):
                     "移动文件或目录（source → destination）；目标为已存在目录时移入该目录内，"
                     "同名则覆盖（返回「覆盖成功」）。源不存在或源目标相同会报错；"
                     "跨文件系统复制成功但源删除失败时报告部分成功；"
-                    "变更记录到沙盒可撤销。"
+                    "变更记录到沙盒可撤销；"
+                    "不得用 bash 替代（✗ bash mv a.py src/a.py ↦ ✓ mv）。"
                     "例：mv({\"source\": \"a.py\", \"destination\": \"src/a.py\"})"
                 ),
                 "parameters": {

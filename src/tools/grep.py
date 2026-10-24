@@ -111,7 +111,8 @@ class GrepFunc(Func):
                 "name": "grep",
                 "description": (
                     "按正则搜索内容，返回「文件:行号:内容」列表；优先用 rg/grep，"
-                    "缺失时纯 Python 兜底。搜代码一律用它，不要用 bash grep。"
+                    "缺失时纯 Python 兜底。搜代码一律用它，"
+                    "不得用 bash grep 替代（✗ bash grep -rn def src ↦ ✓ grep）。"
                     "自动跳过 .git/node_modules 等目录与二进制文件；"
                     "query 过度复杂时降级为字面量搜索；"
                     "结果超过 1000 行时保留前 500 + 后 500 行。"

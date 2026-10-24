@@ -52,7 +52,8 @@ class EditFunc(FileToolBase):
                 "name": "edit",
                 "description": (
                     "精确替换文件中的文本片段（old_string→new_string）；"
-                    "局部修改一律用本工具，整文件覆盖才用 write。"
+                    "局部修改一律用本工具，整文件覆盖才用 write，"
+                    "不得用 bash 替代（✗ bash sed -i ↦ ✓ edit）。"
                     "非 replace_all 时 old_string 必须在文件中唯一匹配"
                     "（逐字一致，含缩进与空白），否则报错；"
                     "old_string 为空表示追加到文件末尾；use_regex=true 时按正则匹配"

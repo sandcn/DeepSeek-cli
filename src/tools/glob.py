@@ -39,7 +39,8 @@ class GlobFunc(Func):
                     "按文件名模式（fnmatch 通配符，空格分隔多个模式）查找文件和目录，"
                     "返回相对路径列表；自动跳过 .git/node_modules 等目录，"
                     "无匹配时返回提示文本。depth=0 不限深度，depth=N 仅查 N 层；"
-                    "type 限定 file/dir。找代码位置优先用它，不要用 bash find/ls。"
+                    "type 限定 file/dir。找代码位置优先用它，"
+                    "不得用 bash find/ls 替代（✗ bash find src -name '*.py' ↦ ✓ glob）。"
                     "例：glob({\"pattern\": \"*.py\", \"path\": \"src\", "
                     "\"type\": \"file\", \"depth\": 2})"
                 ),

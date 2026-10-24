@@ -497,7 +497,8 @@ class ReadImageFunc(Func):
                 "description": (
                     "读取图像（image）文件（PNG/JPEG/WebP/GIF 等 Pillow 可解码格式）"
                     "并返回图片；查看截图、UI 渲染与图片一律用它，"
-                    "禁止用 bash base64/xxd/file 读图。"
+                    "禁止用 bash base64/xxd/file 读图"
+                    "（✗ bash base64 shot.png ↦ ✓ read_image）。"
                     "可选像素区域裁剪与灰度/旋转/翻转/缩放；要求模型支持图像输入。"
                     "扩展名须与实际格式一致，单边 ≤8192px、总像素 ≤6400 万、"
                     "文件 ≤20MB（大图自动降采样）。"

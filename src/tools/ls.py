@@ -40,7 +40,8 @@ class LsFunc(Func):
                     "列出目录下的文件和子目录（默认不含隐藏项，目录在前）；"
                     "path 指向文件时只返回该文件名。long=true 输出权限/大小/时间等详情，"
                     "human 控制大小可读性（默认 true），all=true 含隐藏项。"
-                    "只看一层用 ls，递归查找文件用 glob。"
+                    "只看一层用 ls，递归查找文件用 glob；"
+                    "不得用 bash 替代（✗ bash ls -la src ↦ ✓ ls）。"
                     "例：ls({\"path\": \"src\", \"long\": true, \"all\": true})"
                 ),
                 "parameters": {

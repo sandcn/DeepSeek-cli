@@ -28,7 +28,8 @@ class CpFunc(FileSystemToolBase):
                 "description": (
                     "复制文件或目录（source → destination）；目标为已存在目录时"
                     "文件复制到该目录内，已存在文件会被覆盖；目录必须 recursive=true，"
-                    "不支持复制符号链接；成功后返回实际落点，变更记录到沙盒可撤销。"
+                    "不支持复制符号链接；成功后返回实际落点，变更记录到沙盒可撤销；"
+                    "不得用 bash 替代（✗ bash cp a.py backup/ ↦ ✓ cp）。"
                     "例：cp({\"source\": \"src/a.py\", \"destination\": \"backup/\"})；"
                     "复制目录：cp({\"source\": \"src\", \"destination\": \"backup/src\", "
                     "\"recursive\": true})"

@@ -25,7 +25,8 @@ class MkdirFunc(FileSystemToolBase):
                 "description": (
                     "创建目录；父目录不存在时需 parents=true 才会递归创建。"
                     "目录已存在时返回提示而不报错，路径已被同名文件占用则失败；"
-                    "创建记录到沙盒可撤销。"
+                    "创建记录到沙盒可撤销；"
+                    "不得用 bash 替代（✗ bash mkdir -p src/new_mod ↦ ✓ mkdir）。"
                     "例：mkdir({\"path\": \"src/new_mod\", \"parents\": true})"
                 ),
                 "parameters": {

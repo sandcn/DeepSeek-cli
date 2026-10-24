@@ -13,7 +13,8 @@ class WriteFunc(FileToolBase):
                 "description": (
                     "创建新文件或整体覆盖写入（原内容不保留，局部修改用 edit），"
                     "父目录不存在时自动创建。内容超过 100MB 拒绝写入；"
-                    "变更记录到沙盒可撤销；成功返回写入行数与字节数。"
+                    "变更记录到沙盒可撤销；成功返回写入行数与字节数；"
+                    "不得用 bash 替代（✗ bash cat > a.py ↦ ✓ write）。"
                     "例：write({\"file_path\": \"docs/guide.md\", "
                     "\"content\": \"# 标题\\n正文\"})"
                 ),

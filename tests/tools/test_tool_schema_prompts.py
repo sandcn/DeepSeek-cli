@@ -30,8 +30,10 @@ _DESC_LIMIT = 550
 #: 模型最容易用错 op 的工具，提词收益高于同等长度的其它描述。
 _DESC_LIMITS = {"bash_opt": 2200}
 
-#: 全部工具 function.description 总字符上限（示例化后留余量）
-_TOTAL_DESC_LIMIT = 6800
+#: 全部工具 function.description 总字符上限（示例化后留余量）。
+#: 2026-10-24（用户需求）：文件 / 目录类工具统一补「不得用 bash 替代」正反例，
+#: 每处约 +40~55 字符，预算相应上调（仍作为防回涨硬上限）。
+_TOTAL_DESC_LIMIT = 7200
 
 #: 参数 description 字符上限（功能短语 + 默认值/边界/示例值）
 _PARAM_DESC_LIMIT = 80
@@ -215,9 +217,19 @@ def test_tool_selection_guidance_present() -> None:
     assert "局部修改一律用本工具" in schemas["edit"]["function"]["description"]
     assert "局部修改用 edit" in schemas["write"]["function"]["description"]
     assert "禁止用 bash 读写或搜索文件" in schemas["bash"]["function"]["description"]
-    assert "不要用 bash grep" in schemas["grep"]["function"]["description"]
-    assert "不要用 bash find/ls" in schemas["glob"]["function"]["description"]
+    assert "不得用 bash grep 替代" in schemas["grep"]["function"]["description"]
+    assert "不得用 bash find/ls 替代" in schemas["glob"]["function"]["description"]
     assert "递归查找文件用 glob" in schemas["ls"]["function"]["description"]
+
+    # 2026-10-24（用户需求）：文件 / 目录类工具提词统一声明「不得用 bash 替代」，
+    # 并各给一条可照抄的正反例（✗ shell 命令 ↦ ✓ 内部工具）。
+    for name in ("cp", "mv", "mkdir", "write", "edit", "rm", "ls"):
+        desc = schemas[name]["function"]["description"]
+        assert "不得用 bash 替代" in desc, name
+        assert "✗ bash" in desc and "↦ ✓" in desc, name
+    for name in ("grep", "glob", "read_image"):
+        desc = schemas[name]["function"]["description"]
+        assert "✗ bash" in desc and f"↦ ✓ {name}" in desc, name
 
     # 读图：不能用 shell 解析图片（本项目红线）
     assert "禁止用 bash base64/xxd/file 读图" in schemas["read_image"]["function"]["description"]

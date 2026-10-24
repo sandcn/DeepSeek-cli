@@ -28,7 +28,8 @@ class RmFunc(FileSystemToolBase):
                 "description": (
                     "删除文件或目录；文件与空目录可直接删除，非空目录必须 recursive=true"
                     "（递归删除全部内容）。删除内容记录到沙盒可撤销；"
-                    "系统关键路径与设备文件会被安全校验拒绝。"
+                    "系统关键路径与设备文件会被安全校验拒绝；"
+                    "不得用 bash 替代（✗ bash rm -rf build ↦ ✓ rm）。"
                     "例：rm({\"path\": \"build\", \"recursive\": true})"
                 ),
                 "parameters": {
