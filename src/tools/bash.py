@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import errno as _errno
 import inspect
 import json
 import logging
@@ -36,7 +35,7 @@ from ._bash_support import (
 )
 from ._process_output import OutputLineDecoder
 
-from ..core.constants import GREEN, RED, DIM, RESET
+from ..core.constants import RED, DIM, RESET
 from ..api.interrupt_async import is_interrupted
 from ..prompt_builder.shell_info import SHELL_ENV_MARKER, detect_shell
 
@@ -308,6 +307,173 @@ def _command_exe_hint(command: str) -> str | None:
     hints = _command_exe_hints(command)
     return hints[0] if hints else None
 
+
+# ── 危险命令按「命令位」判定 ────────────────────────────
+# ★ 2026-10-24（review 修复）：原先 ``_has_dangerous_command`` 对整串文本做
+#   正则匹配，``echo sudo`` / ``grep sudo README.md`` 这类**参数**也会被拒
+#   （实测误报），而主 Agent 的 ``display()`` 路径又完全没检查（真正的漏洞）。
+#   这里按 shell 语义分段，只看每段的**程序位**：纯文本命令的参数不参与
+#   匹配，解释器包装（``bash -c`` / ``cmd /c``）递归扫描脚本文本，其余按
+#   整段正则兜底。
+
+#: 只做文本输出 / 查询的命令：其参数不参与危险判定（``echo sudo`` 应放行）。
+_TEXT_ONLY_PROGRAMS = frozenset({
+    "echo", "printf", "grep", "egrep", "fgrep", "rg", "true", "false",
+    "test", "[", ":", "which", "type",
+})
+
+#: 能接收「脚本文本」参数的解释器：危险命令可能藏在脚本文本里，需递归扫描。
+#: 与 ``_bash_support.is_shell_like_exe`` 区分——后者含 sudo / xargs / nohup
+#: 等透传启动器，不能用来判断「参数是脚本文本」。
+_INTERPRETER_PROGRAMS = frozenset({
+    "bash", "sh", "dash", "ash", "zsh", "ksh", "mksh", "fish", "csh", "tcsh",
+    "cmd", "powershell", "pwsh", "python", "python2", "python3", "py",
+    "node", "nodejs", "ruby", "perl", "php", "dotnet",
+})
+
+#: 解释器「后面跟脚本文本」的选项（bash -c / cmd /c / powershell -Command / python -c）
+_SCRIPT_FLAGS = frozenset({"-c", "/c", "/k", "-command", "-e"})
+
+#: 提权命令：只要出现在执行链上就拒绝（不论其参数是什么）
+_PRIVILEGE_PROGRAMS = frozenset({"sudo", "su", "doas", "pkexec"})
+
+#: 命令替换语法（``$(...)`` / 反引号）：纯文本命令的参数里也可能藏命令
+_COMMAND_SUBST_RE = re.compile(r"\$\((.*?)\)|`([^`]*)`", re.S)
+
+
+def _command_substitutions(text: str) -> list[str]:
+    """取命令替换 ``$(...)`` / 反引号内的文本（不处理嵌套，用于安全扫描）。"""
+    return [first or second for first, second in _COMMAND_SUBST_RE.findall(text or "")]
+
+
+def _interpreter_script(args: list[str]) -> str | None:
+    """解释器参数里的脚本文本（``-c`` / ``/c`` / ``-Command`` 之后的部分）。"""
+    for index, raw in enumerate(args):
+        if _hint_token(raw).lower() in _SCRIPT_FLAGS:
+            script = " ".join(args[index + 1:]).strip()
+            return script or None
+    return None
+
+
+def _program_candidates(tokens: list[str]) -> list[tuple[str, int]]:
+    """一段简单命令里**可能被执行**的程序位（沿透传启动器链）。
+
+    与 :func:`_program_token` 的区别：返回整条执行链而不是只取最终程序——
+    ``sudo -n true`` 的最终程序是 ``true``，但 ``sudo`` 本身就是必须拒绝的
+    提权命令；``nohup bash -c 'rm -rf /'`` 需要同时看 ``nohup`` 与 ``bash``。
+    """
+    result: list[tuple[str, int]] = []
+    index = 0
+    while index < len(tokens):
+        token = _hint_token(tokens[index])
+        if not token:
+            index += 1
+            continue
+        if _ASSIGNMENT_RE.match(token) or token in _SHELL_KEYWORDS:
+            index += 1
+            continue
+        break
+    while index < len(tokens):
+        result.append((tokens[index], index))
+        if _hint_stem(tokens[index]) not in _LAUNCHER_STEMS:
+            break
+        index += 1
+        while index < len(tokens):
+            nxt = _hint_token(tokens[index])
+            if (not nxt or nxt.startswith("-")
+                    or _ASSIGNMENT_RE.match(nxt) or _NUMERIC_RE.match(nxt)):
+                index += 1
+                continue
+            break
+    return result
+
+
+def _scan_dangerous_command(command: str, depth: int = 0) -> str | None:
+    """按「命令位」判定危险命令，返回描述或 ``None``。
+
+    ``_bash_support._has_dangerous_command`` 是整串正则兜底；本函数在其之上
+    区分「程序」与「参数」，避免 ``echo sudo`` 这类误报：
+
+      - 执行链上的提权命令（``sudo`` / ``su`` / ``doas`` / ``pkexec``）直接拒绝；
+      - 最终程序是纯文本命令（``echo`` / ``printf`` / ``grep`` …）：参数不参与
+        匹配，只递归扫描 ``$(...)`` / 反引号里的命令替换；
+      - 最终程序是解释器（``bash -c`` / ``cmd /c`` / ``powershell -Command`` /
+        ``python -c`` …）：递归扫描被执行的脚本文本；
+      - 其余程序位对整段文本做正则兜底（``rm -rf /`` / ``find . -exec rm -rf /``
+        / ``chmod -R 777 .``）。
+
+    Args:
+        command: 用户命令（可含 ``&&`` / ``;`` / ``|`` 多段）。
+        depth: 递归深度（解释器包装 / 命令替换），上限 3 层。
+
+    Returns:
+        命中的危险描述（与 ``_DANGEROUS_PATTERNS`` 文案一致）；未命中为 None。
+    """
+    text = str(command or "")
+    if not text.strip():
+        return None
+    if depth > 2:
+        # 嵌套过深（``bash -c "bash -c '...'"``）：退回整串兜底
+        return _has_dangerous_command(text)
+    for segment in _split_segments(text):
+        try:
+            tokens = shlex.split(segment, comments=False, posix=True)
+        except ValueError:
+            tokens = segment.split()
+        candidates = _program_candidates(tokens)
+        if not candidates:
+            danger = _has_dangerous_command(segment)
+            if danger:
+                return danger
+            continue
+        # 1) 执行链上的提权命令：无论参数是什么都拒绝
+        for program, _index in candidates:
+            if _hint_stem(program) in _PRIVILEGE_PROGRAMS:
+                danger = _has_dangerous_command(_hint_stem(program))
+                if danger:
+                    return danger
+        program, index = candidates[-1]
+        stem = _hint_stem(program)
+        # 2) 纯文本命令：参数只是数据，只扫命令替换
+        if stem in _TEXT_ONLY_PROGRAMS:
+            for inner in _command_substitutions(segment):
+                danger = _scan_dangerous_command(inner, depth + 1)
+                if danger:
+                    return danger
+            continue
+        # 3) 解释器包装：递归扫描脚本文本
+        if stem in _INTERPRETER_PROGRAMS:
+            script = _interpreter_script(tokens[index + 1:])
+            if script is not None:
+                danger = _scan_dangerous_command(script, depth + 1)
+                if danger:
+                    return danger
+                continue
+        # 4) 其余程序位：整段正则兜底
+        danger = _has_dangerous_command(segment)
+        if danger:
+            return danger
+    return None
+
+
+#: 日志里脱敏命令中的凭据（``--token=xxx`` / ``Authorization: Bearer xxx`` / ``sk-xxx``）
+_SENSITIVE_CMD_RE = re.compile(
+    r"(?i)((?:--?)?(?:token|password|passwd|api[-_]?key|secret|authorization)"
+    r"\s*[=:]\s*)\S+")
+_BEARER_RE = re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+")
+_SK_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{8,}")
+
+
+def _redact_command(command: str, limit: int = 120) -> str:
+    """脱敏并截断命令文本（写日志用，避免 token / 密码进日志）。"""
+    text = str(command or "")
+    text = _SENSITIVE_CMD_RE.sub(r"\1***", text)
+    text = _BEARER_RE.sub(r"\1***", text)
+    text = _SK_KEY_RE.sub("sk-***", text)
+    text = " ".join(text.split())
+    return text[:limit] + ("..." if len(text) > limit else "")
+
+
 # 尝试探测平台 PTY 可用性（不实际导入模块，避免无谓开销）
 try:
     import importlib.util as _importlib_util
@@ -380,8 +546,20 @@ _WSL_BASH_STUBS = ("\\system32\\bash.exe", "\\windowsapps\\bash.exe")
 
 
 def _is_wsl_bash_stub(path: str) -> bool:
-    """Windows 上该 bash 路径是否只是 WSL 启动器（不是本机 bash）。"""
-    return (path or "").replace("/", "\\").lower().endswith(_WSL_BASH_STUBS)
+    """该 bash 路径是否只是 WSL 启动器（不是本机 bash）。
+
+    原生 Windows 路径形如 ``C:\\Windows\\System32\\bash.exe``；Cygwin / MSYS
+    还会给出 ``/cygdrive/c/Windows/System32/bash.exe``。两种情况都须识别，
+    否则 Cygwin 下可能把 WSL 启动器当成当前 shell 执行命令（工作目录 /
+    文件系统与当前会话不在同一棵树）。
+    """
+    text = (path or "").replace("/", "\\").lower()
+    if text.startswith("\\cygdrive\\"):
+        parts = text.split("\\")
+        # ['', 'cygdrive', 'c', 'windows', 'system32', 'bash.exe']
+        if len(parts) >= 4:
+            text = parts[2] + ":\\" + "\\".join(parts[3:])
+    return text.endswith(_WSL_BASH_STUBS)
 
 
 def _shell_basename(value: str) -> str:
@@ -417,7 +595,7 @@ def _find_shell_executable(shell: str) -> str | None:
         path = shutil.which(name)
         if not path:
             continue
-        if name == "bash" and os.name == "nt" and _is_wsl_bash_stub(path):
+        if name == "bash" and _WINDOWS_LIKE and _is_wsl_bash_stub(path):
             logger.debug("%s 是 WSL 启动器（非本机 bash），不作为当前 shell 执行", path)
             continue
         return path
@@ -438,6 +616,20 @@ def _is_windows_powershell_51(executable: str) -> bool:
 def _line_start(text: str) -> bool:
     """``text`` 末尾是否位于行首（仅空白）——PowerShell here-string 的判定条件。"""
     return not text.rsplit("\n", 1)[-1].strip()
+
+
+def _comment_start(text: str, index: int) -> bool:
+    """``text[index]`` 处的 ``#`` 是否开始 PowerShell 行注释。
+
+    PowerShell 的 ``#`` 只在**词首**（行首或空白 / 分隔符之后）才起注释作用；
+    ``echo a#b`` 里的 ``#`` 是普通参数字符。修复前把任意位置的 ``#`` 都当
+    注释，``echo a#b && c`` 会把 ``&& c`` 吞进注释 → 不识别顶层运算符、
+    不改写 ``&&``（5.1 上直接语法错误）。
+    """
+    if index <= 0:
+        return True
+    previous = text[index - 1]
+    return previous.isspace() or previous in ";|&(){}[]"
 
 
 def _split_chain_operators(command: str):
@@ -480,7 +672,7 @@ def _split_chain_operators(command: str):
                 current.append(char)
                 index += 1
                 continue
-            if char == "#":
+            if char == "#" and _comment_start(command, index):
                 end = command.find("\n", index)
                 if end < 0:
                     current.append(command[index:])
@@ -785,11 +977,17 @@ def _remove_script_file(path: str | None) -> None:
         logger.debug("删除 PowerShell 包装脚本失败: %s", path, exc_info=True)
 
 
-def _resolve_shell_launch(command: str) -> tuple:
+def _resolve_shell_launch(command: str, shell: str | None = None) -> tuple:
     """按「启动本程序的交互 shell」决定命令启动方式。
 
     检测到的交互 shell 就是系统提示词里声明的「命令行」，命令必须由同一个
-    解释器执行（模型按该 shell 的语法写命令）：
+    解释器执行（模型按该 shell 的语法写命令）。
+
+    Args:
+        command: 用户命令。
+        shell: 已检测的 shell 名（归一化）；``None`` 时现场调用
+            :func:`detect_shell`。调用方（``_run_pty`` / ``_run_conpty``）已
+            检测过时传入，避免每条命令重复遍历父进程链。
 
     Returns:
         ``(command_arg, use_shell, shell_name)``：
@@ -805,7 +1003,8 @@ def _resolve_shell_launch(command: str) -> tuple:
           - 检测失败 / 找不到 shell 可执行文件：``(command, True, shell)``
             走平台默认 shell（Windows → cmd.exe，POSIX → /bin/sh）。
     """
-    shell = detect_shell() or ""
+    if shell is None:
+        shell = detect_shell() or ""
     if shell == "powershell":
         executable = _find_powershell_executable()
         if executable:
@@ -836,27 +1035,27 @@ def _default_posix_shell() -> str:
     return 'bash' if sys.platform.startswith('linux') else 'sh'
 
 
-def _pty_launch_argv(command: str) -> list:
+def _pty_launch_argv(command: str, shell: str | None = None) -> list:
     """PTY 分支的命令 argv：与 ConPTY 分支共用同一套交互 shell 解析结果。
 
     PTY 需要 argv 形式（控制终端设置 / ``pass_fds`` 都依赖 exec 而非 shell
     解析）；``_resolve_shell_launch`` 回退到 ``shell=True`` 时，这里用默认
     POSIX shell 显式包一层 ``-c``，保持「命令由某个 shell 解释器执行」的语义。
     """
-    launch_arg, use_shell, _shell_name = _resolve_shell_launch(command)
+    launch_arg, use_shell, _shell_name = _resolve_shell_launch(command, shell)
     if not use_shell and isinstance(launch_arg, (list, tuple)):
         return list(launch_arg)
     return [_default_posix_shell(), "-c", command]
 
 
-def _conpty_launch_argv(command: str) -> list:
+def _conpty_launch_argv(command: str, shell: str | None = None) -> list:
     """Windows ConPTY 分支的命令 argv（``os.name == 'nt'``）。
 
     与 :func:`_pty_launch_argv` 同构，但回退 shell 是 **cmd.exe**（``ComSpec``）
     而不是 POSIX ``sh``——Windows 上没有 ``/bin/sh``，沿用 POSIX 默认会让
     ConPTY 在 cmd 会话里直接「找不到 sh」。
     """
-    launch_arg, use_shell, _shell_name = _resolve_shell_launch(command)
+    launch_arg, use_shell, _shell_name = _resolve_shell_launch(command, shell)
     if not use_shell and isinstance(launch_arg, (list, tuple)):
         return list(launch_arg)
     comspec = (os.environ.get("ComSpec") or "").strip()
@@ -945,6 +1144,9 @@ def _take_pre_background_output(line_cb: dict | None) -> str:
 
 #: 输入回显过滤队列的最大长度（行）。只保留最近写入的行，避免无限增长。
 _ECHO_FILTER_MAX_LINES = 200
+#: 「行尾匹配」回显的最小长度：短输入（``y`` / ``ls``）只允许整行相等匹配，
+#: 否则 ``already`` / ``total 0 ls`` 这类真实输出会被误吞（review 实测）。
+_ECHO_ENDWIDTH_MIN_LEN = 4
 
 
 def _consume_echo_line(echo_filter: dict | None, line: str) -> bool:
@@ -957,6 +1159,8 @@ def _consume_echo_line(echo_filter: dict | None, line: str) -> bool:
 
       - ``C:\\path>echo hi`` / ``>>> echo hi`` / ``$ echo hi`` 这类「提示符 +
         输入」拼在同一行的回显都能命中；
+      - 短输入（长度 < :data:`_ECHO_ENDWIDTH_MIN_LEN`，如 ``y`` / ``ls``）只
+        接受**整行相等**，避免误吞 ``already`` / ``total 0 ls`` 这类真实输出；
       - 只消费一次（真实输出再次出现同样文本时保留第二行）；
       - 空行 / 空白行不参与匹配（避免误删）。
 
@@ -976,7 +1180,12 @@ def _consume_echo_line(echo_filter: dict | None, line: str) -> bool:
     if not text.strip():
         return False
     for index, candidate in enumerate(pending):
-        if candidate and text.endswith(candidate):
+        if not candidate:
+            continue
+        if text == candidate:
+            del pending[index]
+            return True
+        if len(candidate) >= _ECHO_ENDWIDTH_MIN_LEN and text.endswith(candidate):
             del pending[index]
             return True
     return False
@@ -1003,17 +1212,32 @@ def _remember_echo_lines(echo_filter: dict | None, text: str) -> None:
 
 #: Windows 下被 Ctrl+C 终止的退出码（``STATUS_CONTROL_C_EXIT``）
 _WIN_CTRL_C_EXIT = 0xC000013A
+#: POSIX 下子进程被 SIGINT 杀死时 asyncio 给出的**原始**返回码（负值）。
+#: ★ 不能用 ``130`` 判断：``130`` 同时是用户主动 ``exit 130`` 的退出码
+#:   （修复前 ``BashFunc("exit 130")`` 会被误加「命令已被中断」提示）。
+_SIGINT_RAW_RC = -2
+
+#: 终止子进程后等待其退出的上限（秒）。``_run_pty`` / ``_run_conpty`` 的
+#: ``finally`` 里若直接 ``await process.wait()``，遇到忽略 SIGHUP/SIGTERM 的
+#: 长命令（实测 ``trap '' HUP; sleep 600``）会永久挂住工具调用；超时后放弃
+#: 等待并按工具级错误返回（进程树已先终止）。
+_PROCESS_EXIT_WAIT = 5.0
 
 
 def _is_ctrl_c_exit(returncode: "int | None") -> bool:
-    """退出码是否表示「被 Ctrl+C 终止」（POSIX 130 / Windows 0xC000013A）。
+    """**原始**返回码是否表示「被 Ctrl+C 终止」。
 
     PTY 模式里 Ctrl+C 由终端驱动投递成信号（不经过 ``_read_loop`` 的中断
     检测），``_interrupted`` 标志不会置位；只能从退出码判断，否则模型拿到的
-    是「stdout 空、stderr 空、returncode 130」，无法区分「命令无输出」与
-    「被中断」。
+    是「stdout 空、returncode 130」，无法区分「命令无输出」与「被中断」。
+
+    Args:
+        returncode: ``process.returncode`` 原始值（**不是** :meth:`_bash_rc`
+            规范化后的值）——POSIX 被 SIGINT 杀死时为 ``-2``；Windows 为
+            ``0xC000013A``。用户命令主动 ``exit 130`` 时原始值为正数 130，
+            不在此列（不再误判为中断）。
     """
-    return returncode == 130 or returncode == _WIN_CTRL_C_EXIT
+    return returncode == _SIGINT_RAW_RC or returncode == _WIN_CTRL_C_EXIT
 
 
 def _notify_pty_ready(callback, master_fd, resize_fn) -> None:
@@ -1061,7 +1285,9 @@ class BashFunc(Func):
                     "编译构建、跑测试、装依赖、git、进程/系统信息查询；"
                     "禁止用 bash 读写或搜索文件（改用 read/write/edit/cp/mv/rm/grep/glob/ls），"
                     "危险命令（rm -rf / sudo / mkfs / dd 等）会被拒绝执行。"
-                    "stdout/stderr 各最多保留 1000 行（超出保留尾部并标注截断）；"
+                    "命令在伪终端中执行，stdout/stderr 合并到 stdout（stderr 通常为空）；"
+                    "returncode 为命令退出码（信号终止为 128+信号号，-1 表示未真正执行）。"
+                    "stdout 最多保留 1000 行（超出保留尾部并标注截断）；"
                     f"前台超过 {cls._AUTO_BG_TIMEOUT} 秒未完成自动转后台（不终止进程），"
                     "返回 task_id（bg-xxx）；转后台后可用 bash_opt 继续操作命令行"
                     "（read/wait/kill/stdin，如 TUI 程序），也可操作 GUI 窗口"
@@ -1096,10 +1322,12 @@ class BashFunc(Func):
     def display_params(cls, arguments: dict, max_len: int = 80) -> str:
         cmd = arguments.get("command", "")
         display_cmd = cls._sanitize_display(cmd)
+        if max_len and len(display_cmd) > max_len:
+            display_cmd = display_cmd[:max(0, max_len - 3)] + "..."
         return f"'{display_cmd}'"
 
     @classmethod
-    def _get_subprocess_env(cls) -> dict:
+    def _get_subprocess_env(cls, shell: str | None = None) -> dict:
         """返回子进程环境变量，添加反缓冲设置确保实时输出。
 
         ★ 同时注入 :data:`SHELL_ENV_MARKER`（真实交互 shell）：子进程的父链
@@ -1107,12 +1335,17 @@ class BashFunc(Func):
         -EncodedCommand`` ...），单看进程名会把 PowerShell 会话误判成 cmd、
         把 bash 会话误判成 sh；本进程知道自己是从哪个交互 shell 启动的，写进
         环境变量后子进程检测可直接命中（见 ``shell_info``）。
+
+        Args:
+            shell: 已检测的 shell 名；``None`` 时现场调用 :func:`detect_shell`。
+                调用方已检测过时传入，避免每条命令重复遍历父进程链。
         """
         env = os.environ.copy()
         env['PYTHONUNBUFFERED'] = '1'  # Python 脚本强制无缓冲
         env.pop('PAGER', None)         # 禁用分页器（PTY 模拟终端会触发 pager）
         env['GIT_PAGER'] = 'cat'       # git diff 等通过 PTY 运行时不启用分页器
-        shell = detect_shell()
+        if shell is None:
+            shell = detect_shell()
         if shell:
             env[SHELL_ENV_MARKER] = shell
         return env
@@ -1175,9 +1408,12 @@ class BashFunc(Func):
         if len(lines) > max_lines:
             logger.debug("输出截断: %d 行 -> %d 行（保留尾部最新）", len(lines), max_lines)
             tail = '\n'.join(lines[-max_lines:])
-            # ★ join 尾部可能残留换行（截断点恰在换行前/保留行以空行结尾），
-            #   rstrip 保证标记前无多余空行、内容恰好 max_lines 行。
-            return tail.rstrip('\n') + (
+            # ★ 只去掉 join 产生的一个尾换行：内容末尾的空行是真实输出，不能
+            #   像 rstrip 那样全部吃掉（review 实测 1200 行空白密集输出会被
+            #   多去掉一行，保留行数少于 max_lines）。
+            if tail.endswith('\n'):
+                tail = tail[:-1]
+            return tail + (
                 f'\n...(输出已截断：超过 {max_lines} 行，仅展示最后 {max_lines} 行)'
             )
         return output
@@ -1240,8 +1476,12 @@ class BashFunc(Func):
         # ★ PTY 下 stderr 合并到 stdout：语法错误文本可能落在 stdout
         #   （PTY 只有一条输出流）。提示必须贴在错误实际所在的字段，
         #   否则模型看不到「改用 ; 顺序执行」的环境提示。
-        stdout = cls._append_shell_syntax_hint(stdout)
-        stderr = cls._append_shell_syntax_hint(stderr)
+        # ★ 仅在命令**失败**（returncode 非 0）时追加：命令成功但输出正文里
+        #   恰好含 marker（日志 / grep 结果）时不应误加环境结论（review 实测
+        #   returncode 0 的正常输出被追加「当前环境是 PowerShell 5.1」）。
+        returncode = res.get("returncode")
+        stdout = cls._append_shell_syntax_hint(stdout, returncode)
+        stderr = cls._append_shell_syntax_hint(stderr, returncode)
         return json.dumps({
             "stdout": stdout,
             "stderr": stderr,
@@ -1249,12 +1489,12 @@ class BashFunc(Func):
         }, ensure_ascii=False)
 
     @classmethod
-    def _append_shell_syntax_hint(cls, stderr: str) -> str:
+    def _append_shell_syntax_hint(cls, text: str, returncode: "int | None" = None) -> str:
         """PowerShell 5.1 拒绝 ``&&`` / ``||`` 时追加可执行的等价写法。
 
-        ``stderr`` 参数是错误文本所在的字段（PTY 模式下输出合并，错误文本
-        可能位于 ``stdout``）；函数只在该文本命中 PowerShell 5.1 的解析错误
-        标记时追加提示，其余情况原样返回。
+        ``text`` 是错误文本所在的字段（PTY 模式下输出合并，错误文本可能位于
+        ``stdout``）；函数只在该文本命中 PowerShell 5.1 的解析错误标记、**且
+        命令失败**（``returncode`` 非 0）时追加提示，其余情况原样返回。
 
         命令在 PowerShell **解析阶段**就失败（错误文本已是语法错误），这里
         不改执行结果、也不猜测用户意图，只在错误文本后补一条「当前 shell
@@ -1262,24 +1502,26 @@ class BashFunc(Func):
         命令（``cmd /c "a && b"``）本来就能执行，不会进入该分支。
 
         Args:
-            stderr: 已截断的 stderr 文本。
+            text: 已截断的输出文本（stdout 或 stderr）。
+            returncode: 命令退出码。``None`` / 0 时不追加——命令成功但输出正文
+                恰好含 marker（日志、grep 结果）时加提示会误导模型。
 
         Returns:
             原文本，或原文本 + 环境提示。
         """
-        if not stderr:
-            return stderr
-        if any(marker in stderr
+        if not text or not returncode:
+            return text
+        if any(marker in text
                for marker in cls._PS_STATEMENT_SEPARATOR_MARKERS):
-            return stderr + (
+            return text + (
                 "\n(环境提示：当前环境是 Windows PowerShell 5.1，`&&` / `||` 不是"
                 "有效的语句分隔符。请改用 `;` 顺序执行；需要「前一条成功才执行」"
                 "时用 `if ($?) { ... }`；确需在 cmd 内组合时写成 "
                 "`cmd /c \"a && b\"`（引号内由 cmd 解释）)"
             )
-        if any(marker in stderr
+        if any(marker in text
                for marker in cls._PS_RESERVED_REDIRECT_MARKERS):
-            return stderr + (
+            return text + (
                 "\n(环境提示：当前环境是 Windows PowerShell 5.1，不支持把标准输出"
                 "重定向到标准错误（`1>&2` / `3>&2` 这类写法；5.1 只支持 `2>&1` "
                 "等合并到成功流的方向）。可改用由 cmd 解释该重定向："
@@ -1287,7 +1529,7 @@ class BashFunc(Func):
                 "`... | ForEach-Object { [Console]::Error.WriteLine($_) }`；"
                 "只需保留错误日志时直接写文件：`... 2> err.txt`)"
             )
-        return stderr
+        return text
 
     @staticmethod
     def _error_result(message: str) -> str:
@@ -1309,7 +1551,7 @@ class BashFunc(Func):
 
     @staticmethod
     async def _read_loop(reader, process, lines, publish_line_fn,
-                         show_output=False, is_stderr=False,
+                         is_stderr=False,
                          kill_fn=None, decoder=None, echo_filter=None):
         """共享读取循环（PTY / ConPTY 统一使用），消除重复代码。
 
@@ -1355,10 +1597,11 @@ class BashFunc(Func):
             process: asyncio.subprocess.Process，用于中断时 kill（kill_fn 为 None 时回退）
             lines: list[str]，收集到的行追加到此列表
             publish_line_fn: 可选的 async (text, is_stderr) -> None 回调
-            show_output: 是否实时打印 ANSI 剥离后的输出到终端
-            is_stderr: 是否 stderr 流，控制终端输出的颜色
+            is_stderr: 该流的 is_stderr 标记（原样传给行回调，供展示层着色）
             kill_fn: 可选的无参回调，替代 process.kill() 用于进程树终止。
                     传入时使用自定义杀死逻辑；为 None 时回退到 process.kill()。
+                    回调在线程池中执行（进程树扫描是阻塞系统调用，不能占住
+                    事件循环——否则中断瞬间 TUI 渲染会卡顿）。
             decoder: 可选的 ``OutputLineDecoder``（测试/自定义编码候选注入；
                     省略时按本机编码新建）。每个流（stdout/stderr）独立一个。
             echo_filter: 可选的 ``{"lines": [str, ...]}``（PTY 输入回显去重，
@@ -1377,11 +1620,10 @@ class BashFunc(Func):
 
             ★ 终端视角统一（返回内容与终端显示一致）：在数据源头统一
             剥离 ANSI（_strip_ansi）并兑现 \\r 覆盖语义（_simulate_terminal）
-            ——lines（最终返回给大模型的输出）、show_output（终端实时打印）
-            与 publish_line_fn（display / 后台任务 read_buffer）
-            三方拿到同一份「终端视角」文本：进度条/行内刷新（如
-            ``10%\\r20%\\r30%``）折叠为最终状态 ``30%``，不再把字面 \\r
-            传给大模型，返回的行数不会多于真实终端显示。
+            ——lines（最终返回给大模型的输出）与 publish_line_fn（display /
+            后台任务 read_buffer）拿到同一份「终端视角」文本：进度条/行内
+            刷新（如 ``10%\\r20%\\r30%``）折叠为最终状态 ``30%``，不再把字面
+            \\r 传给大模型，返回的行数不会多于真实终端显示。
             """
             # ★ 规范化行尾：PTY ONLCR 将 \n → \r\n，归一化为 \n，
             #   保留行内独立 \r（用于进度条）不动
@@ -1397,18 +1639,6 @@ class BashFunc(Func):
             if _consume_echo_line(echo_filter, clean):
                 return
             lines.append(clean)
-            if show_output:
-                safe = clean  # 已剥 ANSI、已兑现 \r 覆盖
-                if not safe.endswith('\n'):
-                    safe += '\n'
-                if is_stderr:
-                    # ★ BUG-79：行尾 \n 须保持在 RESET 之后（_wrap_colored_line
-                    #   保证）——修复前 ``f"{RED}{safe}{RESET}"`` 把 \n 夹在
-                    #   color 与 RESET 中间，下游 rstrip(\n)/尾空 segment 剔除
-                    #   失效 → 工具卡每个 stderr 行多渲染一个空白行。
-                    await print_to_terminal(_wrap_colored_line(safe, RED))
-                else:
-                    await print_to_terminal(safe)
             if publish_line_fn:
                 try:
                     await publish_line_fn(clean, is_stderr)
@@ -1418,7 +1648,9 @@ class BashFunc(Func):
         while True:
             if is_interrupted():
                 if kill_fn is not None:
-                    kill_fn()
+                    # 进程树扫描 / TerminateProcess 是阻塞系统调用：放线程池，
+                    # 避免中断瞬间占住事件循环（TUI 渲染与 ESC 响应卡顿）。
+                    await asyncio.to_thread(kill_fn)
                 else:
                     process.kill()
                 interrupted = True
@@ -1460,9 +1692,8 @@ class BashFunc(Func):
 
     # ── PTY 执行 ───────────────────────────────────────
 
-    async def _run_pty(self, show_command=False, show_output=False,
-                       publish_line_fn=None, pty_ready_fn=None,
-                       interactive=False, interactive_ready_fn=None):
+    async def _run_pty(self, publish_line_fn=None, pty_ready_fn=None,
+                       interactive_ready_fn=None):
         """使用 PTY（伪终端）执行命令——**所有平台的唯一执行路径**。
 
         Windows 走 ConPTY（:meth:`_run_conpty`），POSIX / Cygwin 走
@@ -1471,8 +1702,6 @@ class BashFunc(Func):
         程序 / TUI / 彩色输出 / 进度条也因此可用。
 
         Args:
-            show_command: 是否打印命令行到终端
-            show_output: 是否实时打印输出到终端
             publish_line_fn: 可选的回调，每读到一行调用一次
                             publish_line_fn(line_text, is_stderr)
                             （PTY 模式下 stdout/stderr 合并，is_stderr 恒为 False）
@@ -1481,10 +1710,6 @@ class BashFunc(Func):
                           PTY master fd 与 resize 函数（``_resize(cols, rows)``），
                           用于终端 resize 时同步更新 PTY winsize。只接受一个
                           位置参数的回调也兼容（不会传 ``resize``）。
-            interactive: 是否启用交互式输入（**仅为签名兼容保留**）。PTY 模式
-                          下子进程 stdin / stdout / stderr 恒连接到 PTY slave——
-                          否则子进程会看到「stdout 是终端、stdin 不是」，
-                          ``isatty(stdin)`` 为假，与真实终端语义不一致。
             interactive_ready_fn: 可选的回调，子进程创建后调用
                           interactive_ready_fn(process, "pty", master_fd=master_fd)
                           供后台任务记录进程句柄（bash_opt 工具写入输入用）。
@@ -1492,9 +1717,9 @@ class BashFunc(Func):
         Returns:
             结构化结果 dict：{"stdout": str, "stderr": str, "returncode": int}
             （PTY 模式 stdout/stderr 物理合并到同一 master fd，无法分离，
-            全部输出归入 stdout；stderr 恒为空——**唯一例外是被中断时**，
-            此时 stderr 放中断提示，便于模型区分「无输出正常退出」与
-            「被 Ctrl+C / 中断取消」。returncode 为子进程退出码。）
+            全部输出归入 stdout；stderr 恒为空——**例外**是命令被中断或读取
+            输出流异常时，此时 stderr 放提示，便于模型区分「无输出正常退出」
+            与「被中断 / 读流失败」。returncode 为子进程退出码。）
             平台完全不支持 PTY 时返回工具级错误（stderr 说明、returncode -1），
             不再有 PIPE 回退分支。
         """
@@ -1510,19 +1735,14 @@ class BashFunc(Func):
             # Windows：PTY 走 ConPTY（见 _conpty 模块）。POSIX 的 pty/fcntl
             # 在原生 Windows 上不存在，不能走下面的 openpty 路径。
             return await self._run_conpty(
-                show_command=show_command, show_output=show_output,
                 publish_line_fn=publish_line_fn,
                 pty_ready_fn=pty_ready_fn,
-                interactive=interactive,
                 interactive_ready_fn=interactive_ready_fn,
             )
         import fcntl
         import pty
         import struct
         import termios
-
-        if show_command:
-            await print_to_terminal(f"\n{GREEN}$ {self.command}{RESET}\n")
 
         master_fd, slave_fd = pty.openpty()
 
@@ -1560,12 +1780,15 @@ class BashFunc(Func):
         if pty_ready_fn is not None:
             _notify_pty_ready(pty_ready_fn, master_fd, _resize)
 
-        env = self._get_subprocess_env()
+        # ★ 交互 shell 只检测一次：环境变量标记与启动 argv 共用同一结果，
+        #   避免每条命令重复遍历父进程链（detect_shell 无内部缓存）。
+        shell = detect_shell() or ""
+        env = self._get_subprocess_env(shell)
         env['TERM'] = 'xterm-256color'  # 告诉子进程这是终端
 
         # ★ 与 ConPTY 分支同一套「交互 shell」解析结果（bash / zsh / fish /
         #   powershell ...）；回退平台默认 POSIX shell 的逻辑在 _pty_launch_argv。
-        launch_argv = _pty_launch_argv(self.command)
+        launch_argv = _pty_launch_argv(self.command, shell)
 
         def _attach_controlling_terminal() -> None:
             """子进程 exec 前把 PTY slave 设为控制终端（preexec_fn 内执行）。
@@ -1685,10 +1908,11 @@ class BashFunc(Func):
             terminate_process_job(win_job)
             _kill_process_tree(process.pid)
 
+        read_error: Exception | None = None
         try:
             _interrupted = await BashFunc._read_loop(
                 reader, process, lines, publish_line_fn,
-                show_output=show_output, is_stderr=False,
+                is_stderr=False,
                 kill_fn=_kill_tree_once,
                 # ★ POSIX 分支不启用输入回显过滤：终端驱动的 ECHO 已在
                 #   openpty 后关闭，剩下的输出都是程序真实输出。再按「写入行」
@@ -1697,25 +1921,42 @@ class BashFunc(Func):
                 #   才在 _run_conpty 里启用该过滤。
                 echo_filter=None,
             )
-        except OSError as e:
-            if e.errno == _errno.EIO:
-                pass  # treat as EOF, fall through to finally
-            else:
-                raise
         except asyncio.CancelledError:
             _kill_tree_once()
             raise
+        except Exception as e:  # noqa: BLE001 - 读流异常统一转为工具级错误
+            # ★ 2026-10-24（review 修复）：读流异常（解码器 / 行处理 / kill
+            #   回调）原先直接冒泡，finally 里只 await process.wait() 不杀进程
+            #   ——实测子进程继续跑满时长、已读输出被整段丢弃。现在先终止整棵
+            #   进程树，已读到的行仍然返回（附错误说明），不再丢弃。
+            read_error = e
+            _kill_tree_once()
         finally:
             try:
                 transport.close()
             except OSError:
                 pass
-            await process.wait()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=_PROCESS_EXIT_WAIT)
+            except asyncio.TimeoutError:
+                logger.warning("等待子进程退出超时（%s 秒），放弃等待", _PROCESS_EXIT_WAIT)
+                _kill_tree_once()
+            except Exception:  # pragma: no cover - 收尸异常不影响返回
+                logger.debug("等待子进程退出异常", exc_info=True)
             _remove_script_file(_script_path_from_launch(launch_argv))
 
-        returncode = self._bash_rc(process.returncode)
-        stdout = ''.join(lines).strip()
-        if _interrupted or _is_ctrl_c_exit(returncode):
+        raw_returncode = process.returncode
+        returncode = self._bash_rc(raw_returncode)
+        # ★ 只去掉尾部换行：保留前导缩进与行内 / 尾随空白（真实终端输出语义），
+        #   strip() 会把 `printf '    x'` 的缩进去掉（review 实测）。
+        stdout = ''.join(lines).rstrip('\n')
+        if read_error is not None:
+            return {
+                "stdout": stdout,
+                "stderr": f"(读取输出异常，命令已终止: {read_error})",
+                "returncode": -1,
+            }
+        if _interrupted or _is_ctrl_c_exit(raw_returncode):
             # ★ 中断提示（2026-10-20 修复）：Ctrl+C / Esc 中断时旧实现返回
             #   {"stdout": "", "stderr": "", "returncode": 130}——既没有输出也
             #   没有提示，模型只能靠退出码猜。这里保留已读到的输出，并像
@@ -1729,9 +1970,7 @@ class BashFunc(Func):
             "returncode": returncode,
         }
 
-    async def _run_conpty(self, show_command=False, show_output=False,
-                          publish_line_fn=None, pty_ready_fn=None,
-                          interactive=False,
+    async def _run_conpty(self, publish_line_fn=None, pty_ready_fn=None,
                           interactive_ready_fn=None):
         """用 Windows ConPTY 执行命令（原生 Windows 的 PTY 执行路径）。
 
@@ -1745,33 +1984,28 @@ class BashFunc(Func):
         输入回显去重、行回调（display / read_buffer）行为一致。
 
         Args:
-            show_command: 是否打印命令行到终端。
-            show_output: 是否实时打印输出到终端。
             publish_line_fn: 可选的行回调 ``async (text, is_stderr) -> None``。
             pty_ready_fn: 可选回调 ``pty_ready_fn(write_fd, resize=_resize)``：
                 外部可获得输入写端 fd 与 resize 函数（调用
                 ``ResizePseudoConsole``）。只接受一个位置参数的回调也兼容。
-            interactive: 是否启用交互式输入（**仅为签名兼容保留**）：
-                ConPTY 的输入写端始终连接伪终端，不存在「非交互」形态。
             interactive_ready_fn: 子进程创建后的回调
                 ``(process, "pty", master_fd=<写端 fd>, job_handle=<Job>)``，
                 供后台任务记录 stdin 写端与进程句柄。
 
         Returns:
-            三元结果 dict（PTY 输出合并，``stderr`` 通常为空；被中断时
-            ``stderr`` 放中断提示，便于模型区分「无输出」与「被中断」）。
+            三元结果 dict（PTY 输出合并，``stderr`` 通常为空；被中断或读取
+            输出流异常时 ``stderr`` 放提示，便于模型区分「无输出」与
+            「被中断 / 读流失败」）。
         """
-        if show_command:
-            await print_to_terminal(f"\n{GREEN}$ {self.command}{RESET}\n")
-
-        env = self._get_subprocess_env()
+        shell = detect_shell() or ""
+        env = self._get_subprocess_env(shell)
         env['TERM'] = 'xterm-256color'
         # 交互式程序（REPL / TUI）在 PTY 下会读取行列数；跟随当前终端尺寸
         # （拿不到时回退 120x30），避免 0 列导致折行异常。
         size = shutil.get_terminal_size(fallback=(120, 30))
         cols = max(int(getattr(size, "columns", 120) or 120), 1)
         rows = max(int(getattr(size, "lines", 30) or 30), 1)
-        launch_argv = _conpty_launch_argv(self.command)
+        launch_argv = _conpty_launch_argv(self.command, shell)
 
         try:
             process = _conpty.spawn(launch_argv, env=env, cols=cols, rows=rows)
@@ -1787,8 +2021,14 @@ class BashFunc(Func):
             _notify_pty_ready(pty_ready_fn, process.write_fd, process.resize)
 
         # Windows Job：kill / 中断时 TerminateJobObject 覆盖 PPID 链断裂的
-        # 孤儿后代（与 POSIX PTY 分支同一套机制）
-        win_job = create_process_job(process.pid)
+        # 孤儿后代（与 POSIX PTY 分支同一套机制）。
+        # ★ Job 创建失败（权限 / 句柄耗尽）不能阻止命令执行：修复前这里直接
+        #   抛出，process 既未 wait 也未 close（子进程与 ConPTY 句柄泄漏）。
+        win_job = None
+        try:
+            win_job = create_process_job(process.pid)
+        except Exception:  # pragma: no cover - 依赖系统调用
+            logger.debug("创建 ConPTY 进程 Job 失败", exc_info=True)
 
         if interactive_ready_fn is not None:
             try:
@@ -1811,27 +2051,44 @@ class BashFunc(Func):
             _kill_process_tree(process.pid)
 
         interrupted = False
+        read_error: Exception | None = None
         try:
             interrupted = await BashFunc._read_loop(
                 process.reader, process, lines, publish_line_fn,
-                show_output=show_output, is_stderr=False,
+                is_stderr=False,
                 kill_fn=_kill_tree_once,
                 echo_filter=self._echo_filter,
             )
         except asyncio.CancelledError:
             _kill_tree_once()
             raise
+        except Exception as e:  # noqa: BLE001 - 读流异常统一转为工具级错误
+            # 与 POSIX 分支一致：先终止进程树，已读输出仍返回（见 _run_pty）。
+            read_error = e
+            _kill_tree_once()
         finally:
             try:
-                await process.wait()
+                await asyncio.wait_for(process.wait(), timeout=_PROCESS_EXIT_WAIT)
+            except asyncio.TimeoutError:
+                logger.warning("等待 ConPTY 子进程退出超时（%s 秒），放弃等待", _PROCESS_EXIT_WAIT)
+                _kill_tree_once()
+            except Exception:  # pragma: no cover - 收尸异常不影响返回
+                logger.debug("等待 ConPTY 子进程退出异常", exc_info=True)
             finally:
                 process.close()
 
         _remove_script_file(_script_path_from_launch(launch_argv))
 
-        returncode = self._bash_rc(process.returncode)
-        stdout = ''.join(lines).strip()
-        if interrupted or _is_ctrl_c_exit(returncode):
+        raw_returncode = process.returncode
+        returncode = self._bash_rc(raw_returncode)
+        stdout = ''.join(lines).rstrip('\n')
+        if read_error is not None:
+            return {
+                "stdout": stdout,
+                "stderr": f"(读取输出异常，命令已终止: {read_error})",
+                "returncode": -1,
+            }
+        if interrupted or _is_ctrl_c_exit(raw_returncode):
             return {"stdout": stdout, "stderr": "(命令已被中断)",
                     "returncode": returncode}
         return {
@@ -1841,8 +2098,7 @@ class BashFunc(Func):
             "returncode": returncode,
         }
 
-    async def _run_async(self, show_command=False, show_output=False,
-                         publish_line_fn=None):
+    async def _run_async(self, publish_line_fn=None):
         """前台执行命令：最多等待 _AUTO_BG_TIMEOUT 秒，超过自动转后台。
 
         与旧版（asyncio.wait_for 超时强杀进程）的区别：
@@ -1862,8 +2118,6 @@ class BashFunc(Func):
         保留——超时转后台后 bash_opt stdin/keys 仍可用。
 
         Args:
-            show_command: 是否打印命令行到终端
-            show_output: 是否实时打印输出到终端（_read_loop 内部）
             publish_line_fn: 可选的行回调（display 用）
 
         Returns:
@@ -1893,11 +2147,12 @@ class BashFunc(Func):
                 except Exception:  # pragma: no cover - 依赖系统调用
                     holder["winpid"] = None
                     holder["win_start_time"] = None
-                holder["win_hint"] = _command_exe_hint(self.command)
-                # 全部候选（``cd /tmp && mintty ...`` 里的 mintty 也要能被
-                # op=kill 的按名兜底找到——它在启动后 daemon 化，进程树 /
-                # Job 都可能够不着）。
-                holder["win_hints"] = _command_exe_hints(self.command)
+                # 一次解析出全部候选：win_hint 取首个（窗口归属 / kill 兜底共用），
+                # win_hints 供 op=kill 的按名兜底（``cd /tmp && mintty ...`` 里的
+                # mintty 启动后 daemon 化，进程树 / Job 都可能够不着）。
+                hints = _command_exe_hints(self.command)
+                holder["win_hint"] = hints[0] if hints else None
+                holder["win_hints"] = hints
 
         # ★ 行回调代理（可变引用）：自动转后台后把 fn 置 None，断开实时输出，
         #   避免转后台后命令输出继续污染已闭合的工具卡片（工具已返回
@@ -1925,10 +2180,7 @@ class BashFunc(Func):
             #   Windows ConPTY / POSIX openpty，stdout/stderr 物理合并。
             try:
                 result = await self._run_pty(
-                    show_command=False,
-                    show_output=show_output,
                     publish_line_fn=_line_proxy,
-                    interactive=True,
                     interactive_ready_fn=_on_ready,
                 )
                 return self._format_result(result)
@@ -1950,6 +2202,13 @@ class BashFunc(Func):
             #   必须取消 exec_task 并终止子进程——修复前 exec_task 被遗弃，
             #   命令子进程脱离控制继续运行（孤儿进程无法再被 kill）。
             exec_task.cancel()
+            # ★ 等取消落地再收尸：仅 cancel 不 await 会让执行任务的异常无人
+            #   取回（"Task exception was never retrieved"），也拿不到它内部的
+            #   清理结果。
+            try:
+                await asyncio.wait({exec_task}, timeout=2.0)
+            except BaseException:  # pragma: no cover - 取消过程异常不影响清理
+                logger.debug("取消执行任务时等待异常（非关键）", exc_info=True)
             process = holder.get("process")
             if process is not None:
                 try:
@@ -1965,7 +2224,7 @@ class BashFunc(Func):
             except asyncio.CancelledError:
                 return self._error_result("(命令已被取消)")
             except Exception as e:
-                logger.exception("异步命令执行异常: %s", self.command[:200])
+                logger.exception("异步命令执行异常: %s", _redact_command(self.command))
                 return self._error_result(f"(执行出错: {e})")
             return result
 
@@ -1997,6 +2256,18 @@ class BashFunc(Func):
         Returns:
             task_id JSON 字符串
         """
+        # ★ 竞态修复（review）：超时窗口刚过、任务恰好完成时不能再注册成
+        #   「运行中」——否则记录里的 job_handle 已被 _run_exec 的 finally
+        #   关闭置空，且 TUI 计数把已完成任务算作运行中。直接返回其结果。
+        if exec_task.done():
+            try:
+                return exec_task.result()
+            except asyncio.CancelledError:
+                return self._error_result("(命令已被取消)")
+            except Exception as e:
+                logger.exception("异步命令执行异常: %s", _redact_command(self.command))
+                return self._error_result(f"(执行出错: {e})")
+
         agent = getattr(self, 'agent', None)
         if agent is None or not hasattr(agent, '_register_background_task'):
             # ★ 无 Agent 上下文时不能「丢下任务不管」：旧实现直接返回错误，
@@ -2134,7 +2405,7 @@ class BashFunc(Func):
         与 _run_async 的区别：
           - **后台任务执行体（background=True）专用**：无限运行，不设超时、
             不自动转后台（本身已是后台任务）；
-          - interactive=True：子进程 stdin 连接 PTY slave，
+          - 子进程 stdin 恒连接 PTY slave（全平台统一 PTY，不存在非交互形态），
             外部可通过任务记录中的 master_fd / stdin_writer 写入输入；
           - on_ready 回调在子进程创建后立即调用，把 process/pid/master_fd
             写入任务记录，供 bash_opt 工具按 task_id 操作；
@@ -2147,19 +2418,21 @@ class BashFunc(Func):
 
         Returns:
             三元 JSON 字符串 {"stdout", "stderr", "returncode"}（已截断）。
-            PTY 模式下 stdout/stderr 物理合并，输出归 stdout、stderr 为空。
+            PTY 模式下 stdout/stderr 物理合并，输出归 stdout、stderr 通常为空。
         """
         try:
             result = await self._run_pty(
-                show_command=False, show_output=False,
                 publish_line_fn=publish_line_fn,
-                interactive=True, interactive_ready_fn=on_ready,
+                interactive_ready_fn=on_ready,
             )
             return self._format_result(result)
         except asyncio.CancelledError:
-            return self._error_result("(后台命令已被取消)")
+            # ★ 取消必须继续向上传播（asyncio 惯例）：调用方
+            #   ``_run_background_task`` 已捕获 CancelledError 并把结果写成
+            #   「(后台命令已被取消)」。修复前在此吞掉会使外层取消语义丢失。
+            raise
         except Exception as e:
-            logger.exception("交互式命令执行异常: %s", self.command[:200])
+            logger.exception("交互式命令执行异常: %s", _redact_command(self.command))
             return self._error_result(f"(执行出错: {e})")
 
     # ── 后台执行模式 ────────────────────────────────────────
@@ -2177,8 +2450,9 @@ class BashFunc(Func):
         需要当前 BashFunc 实例关联了 Agent（registry.dispatch 会自动 set_agent）。
         返回 JSON 字符串（task_id/status），供大模型识别后台任务。
         """
-        # ★ 危险命令检查：display() 路径（主 Agent）进入后台前也需运行时防护
-        danger = _has_dangerous_command(self.command)
+        # ★ 危险命令检查：execute() / display() 已在上层检查，这里是后台入口
+        #   的双保险；用按「命令位」判定的扫描（``echo sudo`` 不误报）。
+        danger = _scan_dangerous_command(self.command)
         if danger:
             return self._error_result(f"(拒绝执行危险命令: {danger})")
 
@@ -2299,9 +2573,12 @@ class BashFunc(Func):
                     from ._task_winpid import now_filetime, register
                     rec["winpid"] = _win_proc.to_winpid(process.pid, retries=5)
                     rec["win_start_time"] = now_filetime()
-                    rec.setdefault("win_hint", _command_exe_hint(self.command))
-                    rec.setdefault(
-                        "win_hints", _command_exe_hints(self.command))
+                    # 一次解析全部候选（与 _run_async._on_ready 一致）
+                    if not rec.get("win_hints"):
+                        hints = _command_exe_hints(self.command)
+                        rec["win_hints"] = hints
+                        if hints and not rec.get("win_hint"):
+                            rec["win_hint"] = hints[0]
                     register(process.pid, rec.get("winpid"),
                              job=job_handle,
                              hint=rec.get("win_hint"),
@@ -2332,7 +2609,7 @@ class BashFunc(Func):
         except asyncio.CancelledError:
             result = self._error_result("(后台命令已被取消)")
         except Exception as e:
-            logger.exception("后台命令执行异常: %s", self.command[:200])
+            logger.exception("后台命令执行异常: %s", _redact_command(self.command))
             result = self._error_result(f"(后台命令执行出错: {e})")
         finally:
             if sample_task is not None:
@@ -2461,6 +2738,28 @@ class BashFunc(Func):
     # execute() → 无 UI 副作用，只返回结果
     # display() → 负责 UI 展示（实时输出到终端）
 
+    async def _reject_dangerous(self) -> str | None:
+        """危险命令运行时防护（``execute`` / ``display`` 共用唯一入口）。
+
+        ★ 2026-10-24（review 修复）：检查原先只在 ``execute()`` 与后台入口，
+        而主 Agent 的 bash 走 ``display()``（``_tool_callbacks._run_with_capture``
+        → ``func.display()``）——生产主路径完全没有防护。现在两个入口共用本
+        方法，任何路径都先过一遍。
+
+        判定用 :func:`_scan_dangerous_command`（按命令位），``echo sudo`` 这类
+        参数不会被误判。
+
+        Returns:
+            None 表示放行；否则为已上屏红色警告的工具级错误 JSON。
+        """
+        danger = _scan_dangerous_command(self.command)
+        if not danger:
+            return None
+        await print_to_terminal(
+            f"{RED}$ {self.command}{RESET}\n"
+            f"{RED}(拒绝执行危险命令: {danger}){RESET}\n")
+        return self._error_result(f"(拒绝执行危险命令: {danger})")
+
     async def execute(self) -> str:
         """异步执行命令并返回三元 JSON 结果。
 
@@ -2475,14 +2774,13 @@ class BashFunc(Func):
         使用 asyncio 子进程 / ConPTY 避免阻塞事件循环。
         """
         # ★ P0 安全防护：运行时检查危险命令（schema 侧 + 运行时侧双保险）
-        danger = _has_dangerous_command(self.command)
-        if danger:
-            await print_to_terminal(f"{RED}$ {self.command}{RESET}\n{RED}(拒绝执行危险命令: {danger}){RESET}\n")
-            return self._error_result(f"(拒绝执行危险命令: {danger})")
+        blocked = await self._reject_dangerous()
+        if blocked is not None:
+            return blocked
         # ── 后台模式：不等待命令完成，立即返回 task_id JSON ──
         if self.background:
             return await self._execute_background()
-        return await self._run_async(show_command=False, show_output=False)
+        return await self._run_async()
 
     async def _run_with_line_callback(self, on_line) -> str:
         """共享的 UI 执行框架：执行命令、异常处理（display 路径）。
@@ -2501,13 +2799,15 @@ class BashFunc(Func):
         if self.background:
             return await self._execute_background()
 
-        return await self._run_async(
-            show_command=False, show_output=False,
-            publish_line_fn=on_line,
-        )
+        return await self._run_async(publish_line_fn=on_line)
 
     async def display(self):
         """异步执行命令并实时输出到终端"""
+        # ★ 与 execute() 同一道危险命令防护（主 Agent 的唯一生产路径）
+        blocked = await self._reject_dangerous()
+        if blocked is not None:
+            return blocked
+
         async def _on_line(text: str, is_stderr: bool) -> None:
             # ★ 终端模拟：先剥 ANSI，再兑现 \r 覆盖语义（进度条等行内刷新
             #   输出在工具卡片呈现与真实终端一致的最终状态，而非字面 \r）。

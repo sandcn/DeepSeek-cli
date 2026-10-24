@@ -734,7 +734,14 @@ class BaseAgent:
                     messages.append(json.dumps(payload, ensure_ascii=False))
                 done_ids.append(task_id)
         for task_id in done_ids:
-            self._background_tasks.pop(task_id, None)
+            record = self._background_tasks.pop(task_id, None)
+            # ★ 修复（review）：对话轮次自动消费（本方法）与 bash_opt 主动消费
+            #   （_remove_background_task）是两条移除路径，后者会关闭任务持有
+            #   的 Windows Job 句柄，前者原先直接 pop → 每次自动消费泄漏一个
+            #   内核句柄（bash.py 在任务记录里写入 job_handle 并约定「记录移除
+            #   时关闭」）。
+            if record is not None:
+                _close_background_job(record)
         if done_ids:
             # 任务移除后发布最新计数（含 subagent 聚合）
             self._publish_background_task_event()
