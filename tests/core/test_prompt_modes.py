@@ -557,3 +557,34 @@ def test_simple_prompt_allows_push_by_default() -> None:
     assert "非快进被拒" in content
     assert "强制推送（`--force` / `--force-with-lease` / `+refs`）" in content
     assert "删除远程分支等不可逆远程操作不属默认放行范围" in content
+
+
+def test_simple_prompt_asks_user_after_code_analysis() -> None:
+    """简单模式：需求决策点必须先分析当前项目代码，再交用户拍板并多给 user_select。"""
+    content = builder._load_prompt("prompts_export_main_simple")
+
+    # 需求决策点纳入提问情形（第四个口子），不得与「仅在必要时提问」互斥。
+    assert "需求本身存在需要用户拍板的决策点" in content
+    assert "这四种情形才用 `user_select` 提问" in content
+
+    # 先分析当前项目代码：目录全貌、源码/配置/测试、调用链与引用关系。
+    assert "需求决策先分析当前项目代码再让用户决定" in content
+    assert "先 `glob` 掌握目录全貌" in content
+    assert "`read` 读完相关源码/配置/测试" in content
+    assert "`grep` 追全调用链与引用关系" in content
+    # 决策材料必须带现状依据、选项后果与推荐方案，不能空口让用户选。
+    assert "代码现状依据 + 各选项后果差异 + 推荐方案" in content
+    # 可推定项自行决定，不得反手全抛给用户。
+    assert "能从用户原话、上下文、代码现状与既有约定推定的一律自行决定" in content
+    assert "可推定项不得抛给用户" in content
+
+    # 多给 user_select：并发问齐、默认项非空、未回答按默认推进。
+    assert "多给 `user_select`" in content
+    assert "禁止只用纯文本问一句" in content
+    assert "每个独立决策点一个问题、同一轮全部并发发出" in content
+    assert "`default_options` 必须非空且推荐方案入选" in content
+    assert "多选默认全选、单选默认推荐方案" in content
+    assert "按默认项推进并写明假设" in content
+    assert "禁止串行逐个问、禁止把同一批决策点拆到多轮" in content
+    # 拒绝语义仍以 action / selected 为准，不得被「多给 user_select」放宽。
+    assert "只有 `action=cancel` 或 `confirmed` 且 `selected` 为空才是拒绝" in content
