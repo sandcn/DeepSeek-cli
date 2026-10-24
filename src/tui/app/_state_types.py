@@ -66,7 +66,7 @@ class ChatBlock:
 
     Attributes:
         kind: 块类型（reasoning/content/user/tool/notification/error/
-            write_line/splash/subagent/parse_info/separator）。
+            write_line/splash/parse_info/separator）。
         lines: 已渲染的 AnsiLine 列表。
         extra: 附加数据（如工具调用组状态）。
     """

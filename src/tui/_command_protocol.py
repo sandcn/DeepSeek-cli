@@ -53,7 +53,6 @@ __all__ = [
     "SubagentFrameCmd",
     "SplashCmd",
     "MainPhaseCmd",
-    "SubagentMarkdownCmd",
     "BgBashCountCmd",
     "CompactionCmd",
     "CONTENT_COMMANDS",
@@ -64,7 +63,7 @@ class RenderCommand(IntEnum):
     """渲染命令类型（框架 ↔ 应用的单向数据协议）。
 
     合并历史上分离的 ``FrameworkCommand``（框架命令）与 ``ChatCommand``
-    （聊天命令），值完全不变（24 个枚举值）——值是队列优先级与跨线程协议
+    （聊天命令），值完全不变（23 个枚举值）——值是队列优先级与跨线程协议
     的一部分，**只允许追加**。
     """
 
@@ -87,7 +86,6 @@ class RenderCommand(IntEnum):
     MAIN_PHASE = 20     # (20, phase: str) — 主 Agent 模型阶段变更
     TOOL_OPEN = 21      # (21, tool_name, tool_id, detail) — 工具 box 打开
     TOOL_CLOSE = 22     # (22, tool_id, success) — 工具 box 关闭
-    SUBAGENT_MARKDOWN = 23  # (23, text: str) — subagent 提词/返回 markdown 区块
     CLEAR_MSGS = 24     # (24,) — 清空消息区显示（编辑/加载会话重渲染前使用）
     BG_BASH_COUNT = 25  # (25, count: int) — 后台 bash 任务总数（主 + subagent 聚合）
     COMPACTION = 26     # (26, active: int) — 上下文压缩中的 Agent 数量
@@ -233,12 +231,6 @@ class SplashCmd(RenderCmd):
 class MainPhaseCmd(RenderCmd):
     cid: int = RenderCommand.MAIN_PHASE
     phase: str = ""
-
-
-@dataclass(frozen=True)
-class SubagentMarkdownCmd(RenderCmd):
-    cid: int = RenderCommand.SUBAGENT_MARKDOWN
-    text: str = ""
 
 
 @dataclass(frozen=True)

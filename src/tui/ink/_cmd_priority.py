@@ -53,8 +53,6 @@ _NORMAL_CMDS = frozenset({
 _LOW_CMDS = frozenset({
     RenderCommand.WRITE_LINE,
     RenderCommand.DISPLAY_MSGS,
-    # 与 WRITE_LINE 同优先级（低优先级批量投递，不抢占流式内容）
-    RenderCommand.SUBAGENT_MARKDOWN,
     # ★ P3（review）：显式归类（修复前二者落入 ``_get_cmd_priority`` 尾分支
     #   默认 LOW——行为一致但无显式记录）——
     #   CLEAR_MSGS：清屏命令，可与其它低优先级命令一同被腾位淘汰（其后再由

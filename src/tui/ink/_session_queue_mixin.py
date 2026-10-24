@@ -95,7 +95,6 @@ _KEEP_CONTENT_CMDS = frozenset({
     RenderCommand.NOTIFICATION,
     RenderCommand.MAIN_PHASE,
     RenderCommand.PARSE_INFO,
-    RenderCommand.SUBAGENT_MARKDOWN,
 })
 
 #: P2-2（review 方向）：``_put_no_drop`` 内容命令背压最大等待时长（秒）。

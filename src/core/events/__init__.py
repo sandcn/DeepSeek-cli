@@ -27,7 +27,6 @@ from .event_types import CoreEvent, EventPriority
 from .display_types import (  # 显式导入（替代 star import，便于静态分析）
     ALL_EVENT_TYPES,
     AgentAddedEvent,
-    AgentResultEvent,
     AgentStatusChanged,
     BackgroundTaskChangedEvent,
     CompactionChangedEvent,
@@ -42,7 +41,6 @@ from .display_types import (  # 显式导入（替代 star import，便于静态
     ReasoningChunkEvent,
     SessionStarted,
     SessionStopped,
-    SubagentPromptEvent,
     ToolBatchStartedEvent,
     ToolDoneEvent,
     ToolNoticeEvent,
@@ -69,7 +67,6 @@ __all__ = [
     "ContentChunkEvent", "ReasoningChunkEvent",
     "ParseInfoEvent", "ParseInfoDoneEvent", "MetricsUpdateEvent",
     "OutputEvent", "ToolSummaryEvent",
-    "SubagentPromptEvent", "AgentResultEvent",
     "BackgroundTaskChangedEvent",
     "CompactionChangedEvent",
     "ALL_EVENT_TYPES",

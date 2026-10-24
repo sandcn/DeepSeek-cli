@@ -23,7 +23,6 @@ from ...core.events.display_types import (
     ContentChunkEvent, ReasoningChunkEvent,
     ParseInfoEvent, ParseInfoDoneEvent, MetricsUpdateEvent,
     OutputEvent, ToolSummaryEvent,
-    SubagentPromptEvent, AgentResultEvent,
     BackgroundTaskChangedEvent,
     ALL_EVENT_TYPES,
 )
@@ -45,8 +44,7 @@ __all__ = [
     "DisplayEvent",
     "SessionStarted", "SessionStopped",
     "ToolParsingEvent", "ToolStartedEvent", "ToolDoneEvent", "ToolOutputChunkEvent", "ToolBatchStartedEvent", "ToolNoticeEvent",
-    "AgentAddedEvent", "AgentStatusChanged", "AgentResultEvent",
-    "SubagentPromptEvent",
+    "AgentAddedEvent", "AgentStatusChanged",
     "ModelPhaseEvent", "PhaseDoneEvent", "UsageUpdatedEvent",
     "ContentChunkEvent", "ReasoningChunkEvent",
     "ParseInfoEvent", "ParseInfoDoneEvent", "MetricsUpdateEvent",

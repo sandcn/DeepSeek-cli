@@ -198,8 +198,7 @@ class SubagentFunc(Func):
         """后台 subagent 执行体：运行 SubAgent 并把结果写入后台任务记录。
 
         复用 ParallelExecutor.run()（独立模式）执行单个 SubAgent——
-        与执行路径一致的 UI 事件（SubagentPromptEvent/AgentResultEvent）、
-        面板管理、stdout 泄漏检测与结果格式化。完成后经
+        与执行路径一致的面板管理、stdout 泄漏检测与结果格式化。完成后经
         ``agent._complete_subagent_task`` 写入 subagent 任务记录（subagent
         专用表 _subagent_tasks），供 _process_subagent_tasks / subagent_opt
         读取——与 bash 后台任务（_background_tasks）完全独立。

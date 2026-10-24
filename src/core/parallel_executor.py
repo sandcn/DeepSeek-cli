@@ -89,9 +89,6 @@ class ParallelExecutor:
         mode_name = "独立模式"
 
         results: list | None = None
-        # BUG-A1：取消路径发布去重标志 — CancelledError 分支已执行
-        # publish_summary 后置位，finally 跳过重复发布。
-        cancel_output_done = False
         try:
             results = await coro
         except asyncio.CancelledError:
@@ -123,9 +120,6 @@ class ParallelExecutor:
                 _logger.warning("%s 取消路径 stdout 泄漏检测异常",
                                 trace_prefix, exc_info=True)
 
-            if results:
-                self._spawner.publish_summary(results)
-            cancel_output_done = True
             raise
         except Exception as e:
             _logger.error("%s: %s", error_prefix, e, exc_info=True)
@@ -163,10 +157,6 @@ class ParallelExecutor:
             except Exception:
                 _logger.warning("%s stdout 泄漏检测异常", trace_prefix, exc_info=True)
 
-            # 统一批量发布 AgentResultEvent
-            # BUG-A1：取消路径已发布过，finally 跳过避免重复发布
-            if results and not cancel_output_done:
-                self._spawner.publish_summary(results)
         return results
 
     async def run(self, agent_specs: List[Dict[str, Any]], max_workers: int | None = None) -> List[Dict[str, Any]]:
@@ -183,8 +173,6 @@ class ParallelExecutor:
         _panel.ensure_active()
 
         try:
-            self._spawner.render_display(agent_specs)
-
             from .adapters.ui_runtime import create_display_proxy
             display = create_display_proxy(max_history=self.max_history)
             coro = self._run_agents(agent_specs, display)
@@ -260,7 +248,6 @@ class ParallelExecutor:
                 label=sa.label, status="done", source="parallel",
             ))
             display.set_result(sa.label, result_text=result)
-            # AgentResultEvent 不再逐个发布，待全部 subagent 完成后统一批量发布
             return {_LABEL_KEY: sa.label, _DESCRIPTION_KEY: sa.description,
                     _RESULT_KEY: result, _ERROR_KEY: "",
                     _AGENT_TYPE_KEY: sa.agent_type}
@@ -287,7 +274,6 @@ class ParallelExecutor:
             emit(_AgentStatusChanged(
                 label=sa.label, status="fail", source="parallel",
             ))
-            # AgentResultEvent 不再逐个发布，待全部 subagent 完成后统一批量发布
             return {_LABEL_KEY: sa.label, _DESCRIPTION_KEY: sa.description,
                     _RESULT_KEY: "", _ERROR_KEY: str(e),
                     _AGENT_TYPE_KEY: sa.agent_type}

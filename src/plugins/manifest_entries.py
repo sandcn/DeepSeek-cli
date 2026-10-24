@@ -129,8 +129,6 @@ _EVENT_TYPE_DISPLAY_NAMES = (
     "ContentChunkEvent", "ReasoningChunkEvent",
     "ParseInfoEvent", "ParseInfoDoneEvent", "MetricsUpdateEvent",
     "OutputEvent", "ToolSummaryEvent",
-    "SubagentPromptEvent",
-    "AgentResultEvent",
     "BackgroundTaskChangedEvent",
     "CompactionChangedEvent",
 )

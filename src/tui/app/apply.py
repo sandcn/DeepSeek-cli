@@ -472,29 +472,6 @@ def _do_user_message(model, cmd) -> None:
     model.append_committed("user", build_user_line(cmd.text))
 
 
-def _do_subagent_markdown(model, cmd) -> None:
-    """subagent 提词/返回 markdown → 消息区块（kind "subagent"）。
-
-    使用主 agent 回答的流式 markdown 渲染路径（``AnsiStreamRenderer``，
-    零控制台往返），渲染结果直接产出 AnsiLine 提交到已关闭块——
-    与主 agent 内容渲染一致，无特殊样式。
-    """
-    if not cmd.text or not cmd.text.strip():
-        return
-    from src.renderer.ansi import AnsiStreamRenderer
-    renderer = AnsiStreamRenderer(width=max(model.width, 20))
-    try:
-        renderer.write(cmd.text)
-    finally:
-        renderer.close()
-    lines = renderer.take_lines()
-    if not lines:
-        return
-    # 保留源文本：终端 resize 时按新宽度整块重渲染（与流式块/历史回放块
-    # 一致，表格/代码块随宽度重排）。
-    model.append_committed("subagent", lines).source_text = cmd.text
-
-
 def _render_markdown_lines(text: str, width: int) -> list:
     """将 markdown 文本渲染为 AnsiLine 列表（与流式内容渲染同管线）。
 
@@ -810,7 +787,6 @@ _HANDLERS: dict[int, Callable[[Any, RenderCmd], None]] = {
     RenderCommand.PARSE_INFO: _do_parse_info,
     RenderCommand.USER_MSG: _do_user_message,
     RenderCommand.DISPLAY_MSGS: _do_display_messages,
-    RenderCommand.SUBAGENT_MARKDOWN: _do_subagent_markdown,
     RenderCommand.CLEAR_MSGS: _do_clear_msgs,
     RenderCommand.BG_BASH_COUNT: _do_bg_bash_count,
     RenderCommand.COMPACTION: _do_compaction,

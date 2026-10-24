@@ -360,44 +360,6 @@ class ToolSummaryEvent(DisplayEvent):
     failed_tools: tuple[tuple[str, str], ...] = ()
 
 
-@dataclass(frozen=True)
-class SubagentPromptEvent(DisplayEvent):
-    """子代理提词 — subagent 开始执行前发布，包含完整提词 markdown 文本。
-
-    Attributes:
-        label: Agent 标识（如 "agent-1"）
-        description: Agent 描述（如 "解析 user.py 模块"）
-        prompt: 提词 markdown 文本（纯文本，不含 ANSI）
-        agent_type: Agent 类型（"execute" 等，用于缩写显示）
-        index: 1 基序号（显示标题前缀，如 "1. [ex] 描述"）
-    """
-    label: str = ""
-    description: str = ""
-    prompt: str = ""
-    agent_type: str = "execute"
-    index: int = 0
-
-
-@dataclass(frozen=True)
-class AgentResultEvent(DisplayEvent):
-    """子代理执行结果 — subagent 完成时发布，包含完整结果文本。
-
-    Attributes:
-        label: Agent 标识（如 "agent-1"）
-        description: Agent 描述（如 "解析 user.py 模块"）
-        result: 执行结果文本（成功时）
-        error: 错误信息（失败时；成功时为空字符串）
-        agent_type: Agent 类型（"execute" 等，用于缩写显示）
-        index: 1 基序号（显示标题前缀，如 "1. [ex] 描述"）
-    """
-    label: str = ""
-    description: str = ""
-    result: str = ""
-    error: str = ""
-    agent_type: str = "execute"
-    index: int = 0
-
-
 # ── 后台任务（bash background=True）状态 ──────────────
 
 @dataclass(frozen=True)
@@ -458,8 +420,6 @@ _DISPLAY_EVENT_TYPES: dict = {
         ContentChunkEvent, ReasoningChunkEvent,
         ParseInfoEvent, ParseInfoDoneEvent, MetricsUpdateEvent,
         OutputEvent, ToolSummaryEvent,
-        SubagentPromptEvent,
-        AgentResultEvent,
         BackgroundTaskChangedEvent,
         CompactionChangedEvent,
     )
@@ -492,8 +452,6 @@ __all__ = [
     "MetricsUpdateEvent",
     "OutputEvent",
     "ToolSummaryEvent",
-    "SubagentPromptEvent",
-    "AgentResultEvent",
     "BackgroundTaskChangedEvent",
     "CompactionChangedEvent",
     "ALL_EVENT_TYPES",

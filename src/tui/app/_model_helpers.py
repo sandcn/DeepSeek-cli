@@ -272,7 +272,7 @@ def _role_header_runs(block, live: bool = False) -> list:
         # （196 邻域 8s 周期）。错误块通常立即提交（frozen），呼吸仅在 live
         # 窗口生效，提交后保持静态红。
         # ★ P3（review 2026-08-19）：对齐 ``not block.closed and live``——
-        #   与 content/reasoning/notification/subagent 一致（修复前缺 live：
+        #   与 content/reasoning/notification 一致（修复前缺 live：
         #   提交/冻结路径遇到未关闭 error 块会把随机呼吸色帧冻结进
         #   committed 缓存）。
         if not block.closed and live:
@@ -280,16 +280,6 @@ def _role_header_runs(block, live: bool = False) -> list:
             glow = time_glow(196, 208, 8.0)
             return [StyledRun("\u258e错误", Style(fg=glow, bold=True))]
         return [StyledRun("\u258e错误", Style(fg=196, bold=True))]
-    if kind == "subagent":
-        # ★ BEAUTY-33：子代理角色头 live 渲染路径呼吸——暗灰 242↔252 脉动
-        #   （8s 周期）；提交/关闭回退静态 pal.dim（冻结缓存确定）。
-        # ★ BEAUTY-36（2026-08-19 美化）：``▎`` 引导条浅紫蓝 75 提亮（与
-        #   subagent 类别色 TOOL_CATEGORY_STYLES["agent"] 同色系）。
-        if not block.closed and live:
-            from src.tui.app._theme import time_glow
-            glow = time_glow(242, 252, 8.0)
-            return [StyledRun("\u258e", Style(fg=75)), StyledRun("子代理", Style(fg=glow))]
-        return [StyledRun("\u258e", Style(fg=75)), StyledRun("子代理", pal.dim)]
     return []
 
 
