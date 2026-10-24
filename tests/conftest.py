@@ -63,6 +63,38 @@ def pytest_collection_modifyitems(
             item.add_marker(marker)
 
 
+# ═══════════════════════════════════════════════════════════
+# 颜色能力隔离（autouse）
+# ═══════════════════════════════════════════════════════════
+#: 测试默认固定为「256 色终端」：清除 COLORTERM / NO_COLOR 并重置真彩能力
+#: 缓存。否则在 COLORTERM=truecolor 的终端上跑测试时，TUI / renderer 会把
+#: 256 色号渲染成 24-bit 序列，颜色断言（``\x1b[38;5;…m``）随本地环境随机
+#: 失败。需要验证真彩路径的用例自行 `monkeypatch.setenv("COLORTERM",
+#: "truecolor")` 并调用 `_reset_color_capability()` 即可。
+
+
+def _reset_color_capability() -> None:
+    """重置 TUI / renderer 的真彩检测缓存与 Style ANSI 缓存。"""
+    from src.renderer.ansi.style import _reset_truecolor_cache as _reset_renderer
+    from src.tui.core.color import _reset_truecolor_cache as _reset_tui
+    from src.tui.core.style import Style
+
+    _reset_tui()
+    _reset_renderer()
+    Style.to_ansi.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _stable_color_capability(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """把测试环境的颜色能力固定为 256 色（与 CI 默认一致）。"""
+    monkeypatch.delenv("COLORTERM", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+    _reset_color_capability()
+    yield
+    _reset_color_capability()
+
+
 class PermissiveValue:
     """递归宽容值：任意属性/调用/迭代都返回自身，布尔为假、数值为 0。
 

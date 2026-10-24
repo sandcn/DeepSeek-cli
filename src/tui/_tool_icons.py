@@ -51,9 +51,9 @@ TOOL_CATEGORY_STYLES: dict[str, Style] = {
     name: Style(fg=spec.fg) for name, spec in _builtin_of_kind("category").items()
 }
 
-#: 类别 → 256 色 ANSI（兼容 re-export，同一色号）
+#: 类别 → ANSI 前景序列（兼容 re-export；按终端能力输出真彩/256 色）
 TOOL_CATEGORY_COLORS: dict[str, str] = {
-    k: f"\033[38;5;{s.fg}m" for k, s in TOOL_CATEGORY_STYLES.items()
+    k: s.to_ansi() for k, s in TOOL_CATEGORY_STYLES.items()
 }
 
 #: Agent 类型 → 缩写（内置默认）
@@ -66,9 +66,9 @@ AGENT_TYPE_STYLES: dict[str, Style] = {
     name: Style(fg=spec.fg) for name, spec in _builtin_of_kind("agent").items()
 }
 
-#: Agent 类型 → 256 色 ANSI（兼容 re-export，同一色号）
+#: Agent 类型 → ANSI 前景序列（兼容 re-export；按终端能力输出真彩/256 色）
 AGENT_TYPE_COLORS: dict[str, str] = {
-    k: f"\033[38;5;{s.fg}m" for k, s in AGENT_TYPE_STYLES.items()
+    k: s.to_ansi() for k, s in AGENT_TYPE_STYLES.items()
 }
 
 __all__ = [

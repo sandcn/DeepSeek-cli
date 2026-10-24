@@ -1,10 +1,11 @@
-"""代码块 — pygments 词法高亮 → 256 色 Style 行（自绘 ANSI）。
+"""代码块 — pygments 词法高亮 → Style 行（自绘 ANSI）。
 
 复用：
   - ``renderer._lexer.get_lexer``（pygments lexer 缓存）
   - ``renderer._utils.get_code_style``（monokai 色板，去背景/文本样式）
 
-映射：pygments token → Style（仅前景色，经 rgb_to_256 降级到 256 色体系）。
+映射：pygments token → Style（仅前景色）。真彩终端保留主题 hex 的精确
+``(r, g, b)``（24-bit 输出），不支持真彩时经 ``rgb_to_256`` 降级到 256 色。
 失败时降级为纯文本（dim）。
 
 结构拆分（供流式预览增量复用）：
@@ -21,7 +22,7 @@ from __future__ import annotations
 import logging
 
 from .style import Style
-from .style import rgb_to_256
+from .style import detect_truecolor, rgb_to_256
 from .helpers import AnsiLine
 
 _logger = logging.getLogger(__name__)
@@ -69,9 +70,10 @@ def _diff_line(line: str) -> AnsiLine:
 
 _CODE_THEME = "monokai"
 
-#: hex 颜色 → 256 色号缓存（主题颜色集合有限，避免重复解析 hex + 搜色板）
-_HEX_256_CACHE: dict = {}
-#: fg 色号 → Style 对象缓存（同色 Style 共享，避免每 token 重建 frozen dataclass）
+#: hex 颜色 → 颜色值缓存（主题颜色集合有限，避免重复解析 hex + 搜色板）；
+#: 键含真彩能力，终端能力切换后不会命中旧编码结果。
+_HEX_COLOR_CACHE: dict = {}
+#: fg 颜色值 → Style 对象缓存（同色 Style 共享，避免每 token 重建 frozen dataclass）
 _FG_STYLE_CACHE: dict = {}
 #: ``(主题, pygments token 类型) → Style`` 缓存：token 类型数很少（数十个），
 #: 缓存后每 token 只需一次 dict 查找——省去沿 parent 链查样式 + 两次子函数
@@ -84,30 +86,35 @@ _NO_FG = object()
 _MISSING = object()
 #: 单行「语言 + 主题 + 源码」→ 高亮行缓存。代码块内重复行（空行、``}``、
 #: ``else:`` 等）命中后免词法高亮；有界，超限整体清空（简单、无淘汰开销）。
-_LINE_HIGHLIGHT_CACHE: dict[tuple[str, str, str], AnsiLine] = {}
+_LINE_HIGHLIGHT_CACHE: dict[tuple, AnsiLine] = {}
 _LINE_HIGHLIGHT_CACHE_MAX = 4096
 
 
-def _hex_to_256(hex_color: str) -> int | None:
-    """#RRGGBB → 256 色号（None 表示无前景色，带结果缓存）。"""
+def _hex_to_color(hex_color: str) -> "int | tuple[int, int, int] | None":
+    """#RRGGBB → 真彩 ``(r, g, b)``（真彩终端）或 256 色号（降级）。
+
+    None 表示无前景色。带结果缓存（键含真彩能力，避免跨能力命中旧结果）。
+    """
     if not hex_color or not hex_color.startswith("#"):
         return None
-    if hex_color in _HEX_256_CACHE:
-        return _HEX_256_CACHE[hex_color]
+    truecolor = detect_truecolor()
+    key = (hex_color, truecolor)
+    if key in _HEX_COLOR_CACHE:
+        return _HEX_COLOR_CACHE[key]
     try:
         r = int(hex_color[1:3], 16)
         g = int(hex_color[3:5], 16)
         b = int(hex_color[5:7], 16)
     except (ValueError, IndexError):
-        _HEX_256_CACHE[hex_color] = None
+        _HEX_COLOR_CACHE[key] = None
         return None
-    result = rgb_to_256(r, g, b)
-    _HEX_256_CACHE[hex_color] = result
+    result = (r, g, b) if truecolor else rgb_to_256(r, g, b)
+    _HEX_COLOR_CACHE[key] = result
     return result
 
 
-def _fg_style(fg: int | None) -> "Style | None":
-    """256 色号 → Style（带缓存；None 表示无前景色）。"""
+def _fg_style(fg: "int | tuple[int, int, int] | None") -> "Style | None":
+    """颜色值（真彩三元组 / 256 色号）→ Style（带缓存；None 表示无前景色）。"""
     if fg is None:
         return None
     style = _FG_STYLE_CACHE.get(fg)
@@ -123,16 +130,16 @@ def _style_for_ttype(theme: str, ttype, pyg_style) -> "Style | None":
     pygments token 为层级类型（如 ``Comment.Single``），样式表常只定义基类型
     （``Comment``）——沿 ``parent`` 链向上找最近定义的样式。结果按
     ``(主题, token 类型)`` 缓存：token 类型集合很小，缓存后热路径只做一次
-    dict 查找（省去每 token 的链遍历与 ``_hex_to_256``/``_fg_style`` 调用）。
+    dict 查找（省去每 token 的链遍历与 ``_hex_to_color``/``_fg_style`` 调用）。
     """
-    key = (theme, ttype)
+    key = (theme, ttype, detect_truecolor())
     hit = _TTYPE_STYLE_CACHE.get(key, _MISSING)
     if hit is not _MISSING:
         return hit
     fg = None
     t = ttype
     while t is not None:
-        fg = _hex_to_256(pyg_style.styles.get(t, ""))
+        fg = _hex_to_color(pyg_style.styles.get(t, ""))
         if fg is not None:
             break
         t = getattr(t, "parent", None)
@@ -147,7 +154,8 @@ def _highlight_line(line: str, lexer, pyg_style, theme: str = _CODE_THEME) -> An
     """单行代码词法高亮 → AnsiLine。
 
     pygments 2.20：样式存于 ``Style.styles``（token → '#RRGGBB' 字符串），
-    无 ``get_style_for_token``。解析 hex → 256 色号（带缓存）。
+    无 ``get_style_for_token``。解析 hex → 真彩三元组（真彩终端）或 256
+    色号（降级），带缓存。
 
     ★ 性能：连续**同样式** token 先在局部列表累积、样式切换时才构造一个
     ``Run``——修复前逐 token 调 ``AnsiLine.append``（每次构造 ``Run`` 并做
@@ -255,7 +263,7 @@ def highlight_code_lines(
             if not use_cache:
                 aline = _highlight_line(src_line, lexer, pyg_style, theme)
             else:
-                cache_key = (lang, theme, src_line)
+                cache_key = (lang, theme, src_line, detect_truecolor())
                 cached_line = _LINE_HIGHLIGHT_CACHE.get(cache_key)
                 if cached_line is None:
                     aline = _highlight_line(src_line, lexer, pyg_style, theme)

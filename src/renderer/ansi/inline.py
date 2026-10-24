@@ -31,7 +31,7 @@ from __future__ import annotations
 from contextvars import ContextVar
 from typing import Any, Literal
 
-from .style import Style
+from .style import Style, detect_truecolor
 from .helpers import Run, AnsiLine
 from .._inline_links import normalize_ref_label as _normalize_ref_label
 from src.presentation_data import LiveMapping
@@ -846,14 +846,14 @@ def _emit_color(node, base, ctx, out, depth):
     if name:
         fg = _COLOR_TO_256.get(name)
         if fg is None:
-            fg = _hex_to_256(name)
+            fg = _hex_to_color(name)
         if fg is None:
             fg = 231
     bg = None
     if bg_name:
         bg = _COLOR_TO_256.get(bg_name)
         if bg is None:
-            bg = _hex_to_256(bg_name)
+            bg = _hex_to_color(bg_name)
     if fg is None and bg is None:
         _emit_children(node, base, ctx, out, depth)
         return
@@ -861,8 +861,11 @@ def _emit_color(node, base, ctx, out, depth):
     _emit_children(node, _merge(base, style), ctx, out, depth)
 
 
-def _hex_to_256(value: str) -> int | None:
-    """``#rrggbb`` / ``#rgb`` → 256 色号（非该格式或解析失败返回 ``None``）。"""
+def _hex_to_color(value: str) -> "int | tuple[int, int, int] | None":
+    """``#rrggbb`` / ``#rgb`` → 真彩三元组（真彩终端）或 256 色号。
+
+    非该格式或解析失败返回 ``None``。
+    """
     if not value.startswith('#'):
         return None
     raw = value[1:]
@@ -876,6 +879,8 @@ def _hex_to_256(value: str) -> int | None:
         b = int(raw[4:6], 16)
     except ValueError:
         return None
+    if detect_truecolor():
+        return (r, g, b)
     from .style import rgb_to_256
     return rgb_to_256(r, g, b)
 
@@ -1196,13 +1201,13 @@ def _inline_tag_style(raw_tag: str) -> Style | None:
         if color:
             fg = _COLOR_TO_256.get(str(color).lower())
             if fg is None:
-                fg = _hex_to_256(str(color))
+                fg = _hex_to_color(str(color))
             if fg is not None:
                 style = Style(fg=fg) if style is None else _merge(style, Style(fg=fg))
         if bg:
             bg_code = _COLOR_TO_256.get(str(bg).lower())
             if bg_code is None:
-                bg_code = _hex_to_256(str(bg))
+                bg_code = _hex_to_color(str(bg))
             if bg_code is not None:
                 style = Style(bg=bg_code) if style is None else _merge(style, Style(bg=bg_code))
         if style is not None and is_close:

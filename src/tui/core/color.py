@@ -3,12 +3,19 @@
 提供：
   - Color256: 256 色值对象（冻结 slots dataclass），带校验/转换/运算
   - RGB: RGB 颜色值对象
+  - TrueColor / detect_truecolor: 24-bit 颜色值对象与终端能力检测
+  - ansi_fg / ansi_bg: TUI 颜色统一输出口——真彩终端把 256 色号按
+    xterm-256 调色板反查精确 RGB 输出 ``38;2``/``48;2``，其余情况降级
+    ``38;5``/``48;5``（``to_ansi_fg``/``to_ansi_bg`` 为不做能力检测的
+    纯编码映射，供需要固定编码的场景使用）
   - hex_to_rgb / rgb_to_256 / lerp_color: 颜色转换纯函数（@lru_cache 缓存）
   - GradientDescriptor: 渐变描述值对象（字段 + 校验；resolve 已随渐变模块删除）
 
 设计原则：
   - 纯函数/值对象：无副作用，不可变
   - 缓存热点：rgb_to_256 / lerp_color 使用 @lru_cache 减少重复计算
+  - 能力检测进程级缓存：真彩检测一次后固定（``_reset_truecolor_cache``
+    仅供测试重置）
 """
 
 from __future__ import annotations
@@ -581,6 +588,70 @@ def to_ansi_bg(color: ColorValue) -> str:
     return f"\033[48;5;{max(0, min(255, color))}m"
 
 
+def ansi_fg(color: ColorValue) -> str:
+    """能力感知的前景色 ANSI 序列（TUI 颜色统一出口）。
+
+    与 ``to_ansi_fg`` 的区别：``to_ansi_fg`` 是「颜色值 → 其天然编码」的
+    直接映射（int 恒为 256 色序列），本函数按终端能力选择**实际输出编码**：
+
+    - ``TrueColor`` → ``\\033[38;2;{r};{g};{b}m``（24-bit，恒真彩）。
+    - ``int``（256 色号）→ 终端支持真彩时按 xterm-256 调色板反查精确 RGB，
+      输出 ``\\033[38;2;{r};{g};{b}m``；不支持（或 ``NO_COLOR``）时降级
+      ``\\033[38;5;{n}m``，保证旧终端不乱码。
+    - 非法输入（bool / None / 非 int）→ 空串（与 ``to_ansi_fg`` 一致）。
+
+    说明：256 色号本身就定义在 xterm 调色板上，反查得到的是该色号的精确
+    RGB，因此真彩化不改变既有配色观感，只是把编码从查表色号变为 24-bit；
+    0-15 系统色使用 xterm 标准值（终端主题自定义的 0-15 会固化为标准色）。
+
+    Args:
+        color: 颜色值（Color256 / TrueColor / int）。
+
+    Returns:
+        ANSI 前景色转义序列（不支持时为 256 色序列，非法输入为空串）。
+    """
+    if isinstance(color, TrueColor):
+        return color.to_ansi_fg()
+    if isinstance(color, Color256):
+        value = color.value
+    elif isinstance(color, bool) or not isinstance(color, int):
+        return ""
+    else:
+        value = max(0, min(255, color))
+    if detect_truecolor():
+        r, g, b = _XTERM_PALETTE[value]
+        return f"\033[38;2;{r};{g};{b}m"
+    return f"\033[38;5;{value}m"
+
+
+def ansi_bg(color: ColorValue) -> str:
+    """能力感知的背景色 ANSI 序列（TUI 颜色统一出口，语义同 ``ansi_fg``）。
+
+    - ``TrueColor`` → ``\\033[48;2;{r};{g};{b}m``。
+    - ``int``（256 色号）→ 真彩终端输出 ``\\033[48;2;{r};{g};{b}m``，
+      否则降级 ``\\033[48;5;{n}m``。
+    - 非法输入（bool / None / 非 int）→ 空串。
+
+    Args:
+        color: 颜色值（Color256 / TrueColor / int）。
+
+    Returns:
+        ANSI 背景色转义序列。
+    """
+    if isinstance(color, TrueColor):
+        return color.to_ansi_bg()
+    if isinstance(color, Color256):
+        value = color.value
+    elif isinstance(color, bool) or not isinstance(color, int):
+        return ""
+    else:
+        value = max(0, min(255, color))
+    if detect_truecolor():
+        r, g, b = _XTERM_PALETTE[value]
+        return f"\033[48;2;{r};{g};{b}m"
+    return f"\033[48;5;{value}m"
+
+
 def to_256(color: ColorValue) -> int:
     """统一降级为 256 色号。
 
@@ -644,6 +715,8 @@ __all__ = [
     "lerp_color",
     "to_ansi_fg",
     "to_ansi_bg",
+    "ansi_fg",
+    "ansi_bg",
     "to_256",
     "auto_color",
     # TrueColor 能力检测

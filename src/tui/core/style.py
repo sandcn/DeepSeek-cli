@@ -127,8 +127,11 @@ class Style:
         按 ``bold → dim → italic → underline → inverse → strikethrough → fg → bg``
         顺序组装，RESET 由调用方（apply）统一追加。
 
-        fg/bg 为 TrueColor 时使用 24-bit ANSI 序列（38;2 / 48;2），
-        为 int 时使用 256 色序列（38;5 / 48;5），保持向后兼容。
+        fg/bg 为 TrueColor 时使用 24-bit ANSI 序列（38;2 / 48;2）；
+        为 int（256 色号）时经 ``ansi_fg``/``ansi_bg`` 按终端能力输出：
+        真彩终端按 xterm-256 调色板反查精确 RGB 输出 24-bit 序列，
+        不支持真彩（或 ``NO_COLOR``）时降级为 256 色序列（38;5 / 48;5），
+        保证旧终端不乱码。
 
         ★ 性能（PERF-7）：frozen dataclass 确定性输出 → lru_cache 缓存。
         Style 为不可变值对象（fg/bg 为 int/TrueColor/None + 6 布尔），
@@ -140,7 +143,7 @@ class Style:
             ANSI 转义序列，不含 RESET。所有属性均为默认值时返回空字符串。
         """
         # 延迟导入避免模块加载循环（仅导入一次）
-        from .color import TrueColor as _TC
+        from .color import ansi_bg as _ansi_bg, ansi_fg as _ansi_fg
         parts: list[str] = []
         if self.bold:
             parts.append("\033[1m")
@@ -155,15 +158,9 @@ class Style:
         if self.strikethrough:
             parts.append("\033[9m")
         if self.fg is not None:
-            if isinstance(self.fg, _TC):
-                parts.append(self.fg.to_ansi_fg())
-            else:
-                parts.append(f"\033[38;5;{self.fg}m")
+            parts.append(_ansi_fg(self.fg))
         if self.bg is not None:
-            if isinstance(self.bg, _TC):
-                parts.append(self.bg.to_ansi_bg())
-            else:
-                parts.append(f"\033[48;5;{self.bg}m")
+            parts.append(_ansi_bg(self.bg))
         return "".join(parts)
 
     def apply(self, text: str) -> str:

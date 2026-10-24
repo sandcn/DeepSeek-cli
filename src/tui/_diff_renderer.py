@@ -47,8 +47,8 @@ if TYPE_CHECKING:
 #   ink 输出模型（StyledRun + Line.render()），不再手动拼接 ANSI 序列。
 #   旧常量保留为兼容 re-export（既有测试/外部调用面）；生产路径经
 #   ``_bg_del``/``_bg_add`` Style。
-_BG_RED = '\033[48;5;124m'    # 256色暗红背景（兼容 re-export；生产用 _bg_del）
-_BG_GREEN = '\033[48;5;28m'   # 256色柔和绿背景（兼容 re-export；生产用 _bg_add）
+_BG_RED = Style(bg=124).to_ansi()    # 暗红背景（兼容 re-export；生产用 _bg_del）
+_BG_GREEN = Style(bg=28).to_ansi()   # 柔和绿背景（兼容 re-export；生产用 _bg_add）
 _BG_OFF = '\033[49m'          # 重置为默认背景色（兼容 re-export）
 
 # ★ P3-13（兼容死代码）：_BG_RED/_BG_GREEN/_BG_OFF/_RESET_STR 生产路径零引用
