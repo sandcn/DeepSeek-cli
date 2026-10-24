@@ -334,15 +334,16 @@ def test_empty_prompt_references_and_meta_files_are_stable() -> None:
     assert "三-54" not in content
     assert "三-59" not in content
     assert "本节「分级交付」" in content
-    assert "〈工作方式 · 全量调用链与计划（强制 · 代码相关任务）〉" in content
+    assert "〈工作方式 · 全量调用链与计划（强制 · 涉及代码的一切任务）〉" in content
 
     # 章节以名称命名，不使用「2.1」「5.4」这类数字编号；交叉引用按名称闭环。
     assert not re.search(r"^#{1,3} [0-9]+(\.[0-9]+)*[、. ]", content, re.MULTILINE)
     assert "## 授权闸门 · 正向判据" in content
     assert "## 协作与安全 · 安全红线" in content
 
-    # 提词改动不要求代码调用链；交付清单用「未完成」而非「没有完成」。
+    # 提词改动默认按非代码文本处理；但一旦文本里涉及代码引用，仍须先给全量调用链。
     assert "不要求代码调用链" in content
+    assert "在普通文件（文档 / 说明 / 注释 / 配置 / 提词 / SQL / README 等）里补一段代码引用" in content
     assert "全量未完成任务列表" in content
 
     # global.md / main.md 按工作目录注入；think.md 无对应子代理。
@@ -505,14 +506,18 @@ def test_empty_prompt_forces_chinese_output() -> None:
 
 
 def test_empty_prompt_forces_full_call_chain_from_program_entry() -> None:
-    """代码相关的一切任务都必须一次性输出从程序入口起的全量调用链。"""
+    """涉及代码的一切任务都必须先一次性输出从程序入口起的全量调用链（含普通文件里的代码引用）。"""
     content = builder._load_prompt("prompts_export_main_empty")
 
-    # 强制口径，覆盖代码相关的一切任务，不只「动手改代码」。
-    assert "全量调用链与计划（强制 · 代码相关任务）" in content
-    assert "**只要任务与代码相关**" in content
-    assert "不只是动手改代码" in content
-    assert "含分析、诊断、审查、排查、评估、复现、修改、测试" in content
+    # 强制口径，覆盖涉及代码的一切任务，不只「动手改代码」。
+    assert "全量调用链与计划（强制 · 涉及代码的一切任务）" in content
+    assert "**只要任务中涉及代码**" in content
+    assert "先一次性输出从程序入口起的全量调用链，再去做别的任何事情" in content
+    assert "分析、修改、新增、补引用" in content
+    # 承载文件是普通文件也触发：补引用、贴函数名 / 文件:行号、描述调用关系都算。
+    assert "判定口径（有代码即触发）" in content
+    assert "在普通文件（文档 / 说明 / 注释 / 配置 / 提词 / SQL / README 等）里补一段代码引用" in content
+    assert "全部涉及点都要纳入同一张全量调用链" in content
 
     # 必须从程序入口起向上追溯，不得只给目标函数局部链。
     assert "先一次性输出从程序入口起的全量调用链" in content
@@ -528,12 +533,12 @@ def test_empty_prompt_forces_full_call_chain_from_program_entry() -> None:
     assert "禁止拖到交付阶段才补" in content
     assert "分层只是排版，不是摘要" in content
 
-    # 交付与纯问答轮同样受约束；唯一例外是非代码文本。
+    # 交付与纯问答轮同样受约束；唯一例外是完全不含代码的纯文本。
     assert "**调用链（强制）**" in content
     assert "不得留到用户追问再补" in content
     assert "此项不受「本轮未改动」豁免" in content
-    assert "唯一例外是非代码文本" in content
-    assert "例 17｜代码相关任务强制全量调用链" in content
+    assert "唯一例外是不含代码的纯文本" in content
+    assert "例 17｜涉及代码的任务强制全量调用链（先链后事）" in content
 
 
 def test_simple_prompt_allows_push_by_default() -> None:
