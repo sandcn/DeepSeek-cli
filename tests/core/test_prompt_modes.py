@@ -140,8 +140,9 @@ def test_prompt_contradictions_fixed_in_empty_mode() -> None:
     # 互斥选项不得同时全选。
     assert "不因方案互斥而少勾" not in content
 
-    # 提词文件以受影响测试替代图形实操；不得再引用不存在的「配置项」。
-    assert "`tests/core/test_prompt_modes.py`" in content
+    # 提词 / 文档改动以受影响测试或静态核查替代图形实操；不得再引用不存在的「配置项」。
+    assert "**仅改提词 / 文档等非代码文本**" in content
+    assert "以受影响的契约测试或静态核查替代" in content
     assert "不要求图形界面实操" in content
     assert "按配置处理" not in content
 
@@ -169,7 +170,7 @@ def test_empty_prompt_has_positive_authorization_path() -> None:
     assert "〈提问规则〉列明的必要提问" in content
     # 提问必须收敛：只在互斥方向 / 破坏性 / 对象无法定位时问，且最多一轮
     assert "最多一轮" in content
-    assert "纯文本答复与弹窗选择同等有效" in content
+    assert "需求澄清的纯文本答复同样有效" in content
 
 
 def test_empty_prompt_distinguishes_unanswered_from_rejection() -> None:
@@ -313,9 +314,11 @@ def test_empty_prompt_execution_path_conflicts_removed() -> None:
     assert "`commit` / `push` 经〈版本控制（Git）〉提问流程并按对应条款确认后" in content
     assert "远程命令经〈安全红线〉确认后" in content
 
-    # 提词例外只覆盖三模式主提词，其它提词按受影响测试处理。
-    assert "`prompts/prompts_export_main*.md`" in content
-    assert "`prompts_loop_prompt.md`" in content
+    # 提词 / 文档改动的三查豁免按文本类型判定，不绑定具体仓库路径。
+    assert "**仅改提词 / 文档等非代码文本**" in content
+    assert "以受影响的契约测试或静态核查替代" in content
+    assert "prompts_export_main" not in content
+    assert "prompts_loop_prompt" not in content
 
     # action=empty 是调用错误，不得被当成默认授权。
     assert "`action=empty`（`options` 为空，工具未真正提问）" in content
@@ -493,7 +496,7 @@ def test_empty_prompt_forces_chinese_output() -> None:
     assert "# 输出语言（强制）" in content
     assert "思考与回答都强制中文" in content
     assert "思考（内部推理过程）" in content
-    assert "与回答,都用中文展示" in content
+    assert "与回答，都用中文展示" in content
 
     # 代码 / 命令 / 报错原文可原样引用，避免与「强制中文」自相矛盾。
     assert "原样保留项" in content
@@ -604,7 +607,7 @@ def test_empty_prompt_defines_question_round_and_exemptions() -> None:
 
     assert "**轮次定义（唯一口径）**" in content
     assert "一轮 = 同一回复内**一次性并发发出的一批**" in content
-    assert "②/④ 的确认类提问**不占用**需求澄清的轮次" in content
+    assert "②/④ 的确认类提问与 ⑤ 的扩权确认**不占用**需求澄清的轮次" in content
     # push / 破坏性确认在用户明确要求执行时可单独开一轮，不被轮次封顶锁死。
     assert "安全红线类确认（`push` / 强制推送 / 不可逆远程 / 破坏性操作）不受此限" in content
     assert "允许单独发起一轮确认（不计入需求澄清轮次）" in content
@@ -618,7 +621,7 @@ def test_empty_prompt_scope_gap_cannot_bypass_authorization() -> None:
     content = builder._load_prompt("prompts_export_main_empty")
 
     assert "**仅限已授权文件内**的非破坏性修复" in content
-    assert "**范围外缺陷不得凭默认项改动**" in content
+    assert "**范围外缺陷不得凭需求澄清的默认项改动**" in content
     assert "只能列入未完成清单" in content
     assert "或单独发起 ⑤ 确认" in content
 
@@ -671,7 +674,9 @@ def test_empty_prompt_delegation_gate_has_tool_layer() -> None:
     content = builder._load_prompt("prompts_export_main_empty")
 
     assert "从 schema 移除 `subagent` / `subagent_opt`" in content
-    assert "filter_schemas_for_empty_mode" in content
+    # 提词只描述行为，不绑定实现文件 / 函数名。
+    assert "filter_schemas_for_empty_mode" not in content
+    assert "src/tools/tool_policy.py" not in content
 
 
 #: 提词交叉引用 → 对应章节标题（后缀匹配；防悬空引用）。
