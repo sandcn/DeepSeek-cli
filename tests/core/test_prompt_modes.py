@@ -88,6 +88,24 @@ def test_simple_prompt_forbids_deferring_work_to_next_round() -> None:
     assert "禁止以任务宏大、难度大为由选择不做" in content
 
 
+def test_simple_prompt_requires_reading_code_before_conclusions() -> None:
+    """简单模式锁定「必须先读代码再下结论 / 分析 / 计划 / 修复方案」条款。"""
+    content = builder._load_prompt("prompts_export_main_simple")
+
+    # 条款存在，且覆盖结论、分析、计划、修复方案、审查意见全部输出形态。
+    assert "强制读完代码才能下结论" in content
+    assert "禁止未读代码就做出结论、分析、计划、修复方案或审查意见" in content
+    # 必须先 read 全文 + 追全调用链与引用关系，之后才允许输出判断。
+    assert "必须先 `read` 读完相关源码及配置、测试、调用方" in content
+    assert "并用 `grep`/`glob` 追全调用链与全部引用关系" in content
+    assert "之后才允许输出任何判断、分析、计划与修复方案" in content
+    # 禁止凭文件名、注释、印象、猜测或模糊措辞下判断。
+    assert "禁止凭文件名、注释、印象、猜测" in content
+    assert "未读代码即给结论/分析/计划/修复方案一律视为违规" in content
+    # 既有的「先读够再动手」条款不得被新条款顶掉。
+    assert "先读够或者查够代码在动手" in content
+
+
 def test_build_system_prompt_uses_current_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     original = builder.get_mode()
     try:
@@ -474,8 +492,7 @@ def test_empty_prompt_forces_chinese_output() -> None:
     assert "# 输出语言（强制）" in content
     assert "思考与回答都强制中文" in content
     assert "思考（内部推理过程）" in content
-    assert "对用户的全部交付内容" in content
-    assert "禁止用英文作答" in content
+    assert "与回答,都用中文展示" in content
 
     # 代码 / 命令 / 报错原文可原样引用，避免与「强制中文」自相矛盾。
     assert "原样保留项" in content
