@@ -427,7 +427,7 @@ def test_empty_prompt_third_audit_conflicts_removed() -> None:
     # 纯文本只能否决〈安全红线〉类操作，不能替代执行侧选择；拒绝后重问仍走 user_select。
     assert "纯文本只能用于否决，不能替代执行侧选择" in content
     assert "`user_select` 内的 `custom` 自由输入按〈安全红线〉的语义判定" in content
-    assert "重新用 `user_select` 的执行侧选项确认（纯文本不替代）" in content
+    assert "重新用 `user_select` 的执行侧选项确认（纯文本不替代；该确认不占用需求澄清轮次" in content
 
     # git 的多问必须在同一轮并发，不得与「最多一轮」互斥。
     assert "拆成同一轮的独立问题（并发 `user_select`，不增加轮次）" in content
@@ -593,3 +593,126 @@ def test_simple_prompt_asks_user_after_code_analysis() -> None:
     assert "禁止串行逐个问、禁止把同一批决策点拆到多轮" in content
     # 拒绝语义仍以 action / selected 为准，不得被「多给 user_select」放宽。
     assert "只有 `action=cancel` 或 `confirmed` 且 `selected` 为空才是拒绝" in content
+
+
+# ── 第四轮审计：轮次定义、范围外授权、cancel 回显与多选空语义 ──
+
+
+def test_empty_prompt_defines_question_round_and_exemptions() -> None:
+    """轮次必须有唯一计数口径，安全红线确认不得被「最多一轮」锁死。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    assert "**轮次定义（唯一口径）**" in content
+    assert "一轮 = 同一回复内**一次性并发发出的一批**" in content
+    assert "②/④ 的确认类提问**不占用**需求澄清的轮次" in content
+    # push / 破坏性确认在用户明确要求执行时可单独开一轮，不被轮次封顶锁死。
+    assert "安全红线类确认（`push` / 强制推送 / 不可逆远程 / 破坏性操作）不受此限" in content
+    assert "允许单独发起一轮确认（不计入需求澄清轮次）" in content
+    # 收尾立即执行，不再承诺无法兑现的「纯文本否决」。
+    assert "用户可用纯文本否决" not in content
+    assert "用户下一条消息可要求撤销 / 回滚" in content
+
+
+def test_empty_prompt_scope_gap_cannot_bypass_authorization() -> None:
+    """范围外缺陷不得凭默认项改动（安全红线：禁止越权修改未授权文件）。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    assert "**仅限已授权文件内**的非破坏性修复" in content
+    assert "**范围外缺陷不得凭默认项改动**" in content
+    assert "只能列入未完成清单" in content
+    assert "或单独发起 ⑤ 确认" in content
+
+
+def test_empty_prompt_cancel_selected_is_echo_only() -> None:
+    """cancel 的 selected 是 default_options 回显，不得当作选择。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    assert "此时 `selected` 只是 `default_options` 回显" in content
+    assert "**一律忽略**，不得当作选择" in content
+
+
+def test_empty_prompt_multiselect_empty_is_explicit_refusal() -> None:
+    """多选提交空 = 明确「一个都不选」，不得回退默认项。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    assert "**单选**：Submit 页以空默认值回填或用户未选" in content
+    assert "**多选**提交空视为用户明确「一个都不选」" in content
+    assert "不得回退 `default_options`" in content
+
+
+def test_empty_prompt_tool_failure_without_action() -> None:
+    """构造期参数非法返回纯文本错误（无 action），也按调用错误处理。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    assert "工具直接返回 `工具执行失败:` 文本" in content
+    assert "**无 `action` 字段**" in content
+    assert "不得当作未回答、拒绝或授权" in content
+
+
+def test_empty_prompt_graded_delivery_does_not_split_writes() -> None:
+    """分级交付只是计划/报告层面，落盘仍一次性。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    assert "该分批**只指计划与报告层面**" in content
+    assert "仍按〈四条硬红线〉「验证时序」一次性完成" in content
+
+
+def test_empty_prompt_file_changes_take_lightweight_call_chain() -> None:
+    """提词/文档类改动不因文本里的工具名/路径被强制输出全量调用链。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    assert "**提词 / 文档类改动的轻量路径**" in content
+    assert "不单独构成「涉及代码」" in content
+    assert "定义—引用关系 + 受影响测试" in content
+
+
+def test_empty_prompt_delegation_gate_has_tool_layer() -> None:
+    """空模式禁止子代理必须有 schema 层兜底，不能只靠提词。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    assert "从 schema 移除 `subagent` / `subagent_opt`" in content
+    assert "filter_schemas_for_empty_mode" in content
+
+
+#: 提词交叉引用 → 对应章节标题（后缀匹配；防悬空引用）。
+_REFERENCE_TITLES = {
+    "〈正向判据〉": "授权闸门 · 正向判据",
+    "〈不算授权〉": "授权闸门 · 不算授权",
+    "〈提问规则〉": "授权闸门 · 提问规则",
+    "〈授权范围〉": "授权闸门 · 授权范围",
+    "〈自检与违规回滚〉": "授权闸门 · 自检与违规回滚",
+    "〈决策与默认项〉": "协作与安全 · 决策与默认项",
+    "〈安全红线〉": "协作与安全 · 安全红线",
+    "〈运行时元文件〉": "协作与安全 · 运行时元文件",
+    "〈版本控制（Git）〉": "协作与安全 · 版本控制（Git）",
+    "〈四条硬红线〉": "工具与验证 · 四条硬红线",
+    "〈验证时序〉": "工具与验证 · 验证时序",
+    "〈文件与工具〉": "工具与验证 · 文件与工具",
+    "〈实操三查与例外〉": "工具与验证 · 实操三查与例外",
+    "〈测试〉": "工具与验证 · 测试",
+    "〈完成标准〉": "工具与验证 · 完成标准",
+}
+
+
+def test_empty_prompt_cross_references_are_not_dangling() -> None:
+    """每个被引用的章节名都必须有对应标题（规则一致性检查）。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+    titles = [
+        line.lstrip("# ").strip()
+        for line in content.splitlines()
+        if line.startswith("#")
+    ]
+
+    for ref, title in _REFERENCE_TITLES.items():
+        assert ref in content, f"提词未使用该引用：{ref}"
+        assert any(title in heading for heading in titles), f"悬空引用：{ref} → {title}"
+
+
+def test_empty_prompt_section_titles_are_unique() -> None:
+    """章节标题不得重复（重复会让交叉引用指向不明）。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+    titles = [
+        line.strip() for line in content.splitlines()
+        if re.match(r"#{1,3} ", line)
+    ]
+    assert len(titles) == len(set(titles))

@@ -88,6 +88,21 @@ def filter_schemas_for_model(schemas, model=None) -> list:
     return [s for s in items if _schema_tool_name(s) not in IMAGE_TOOLS]
 
 
+#: 空模式（单体执行范式）在 schema 层排除的工具。
+#: 空模式提词明确「默认不派发子代理」，但主 Agent 不设 agent_type、preset
+#: 也未排除这两项——工具层同步移除，避免「提词禁止但工具可见」的摩擦
+#: （模型误调会真实派生子代理，与单体执行范式冲突）。
+EMPTY_MODE_EXCLUDED_TOOLS: frozenset = frozenset({"subagent", "subagent_opt"})
+
+
+def filter_schemas_for_empty_mode(schemas) -> list:
+    """空模式下移除派生子代理的工具（其余工具原样保留）。"""
+    return [
+        s for s in list(schemas or ())
+        if _schema_tool_name(s) not in EMPTY_MODE_EXCLUDED_TOOLS
+    ]
+
+
 # ── 全局禁用工具注册表（声明 + 清单接管 + 扩展） ──────────────
 
 _lock = threading.RLock()
@@ -308,10 +323,12 @@ __all__ = [
     "TOOL_EXCLUSION_MAP",
     "GLOBAL_DISABLED_TOOLS",
     "IMAGE_TOOLS",
+    "EMPTY_MODE_EXCLUDED_TOOLS",
     "is_globally_disabled",
     "get_excluded_tools",
     "model_supports_image_tools",
     "filter_schemas_for_model",
+    "filter_schemas_for_empty_mode",
     "builtin_global_disabled_tool_ids",
     "active_global_disabled_tools",
     "global_disabled_tool_names",

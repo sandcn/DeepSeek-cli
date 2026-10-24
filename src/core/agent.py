@@ -254,15 +254,24 @@ class Agent(BaseAgent):
                 _logger.debug("系统提词重建后刷新上下文使用率失败", exc_info=True)
 
     def _get_active_tools(self) -> list[dict]:
-        """返回当前工具 schemas（按**当前模型**的多模态读图开关动态过滤）。
+        """返回当前工具 schemas（按**当前模型**与**当前运行模式**动态过滤）。
 
         模型可在运行期经 ``/model`` / ``/models`` / Ctrl+N 切换；这里每次
         请求都按 ``self.model`` 对应的模型档案重新判定，``multimodal=false``
-        时 read_image 不会出现在请求的 tool schemas 中（其余工具不变；只做
-        移除，不会恢复被 preset 排除的工具）。
+        时 read_image 不会出现在请求的 tool schemas 中。
+
+        空模式（单体执行范式）下额外移除 ``subagent`` / ``subagent_opt``
+        ——提词禁止派发子代理，工具层同步从 schema 移除，避免「提词禁止但
+        工具可见」的摩擦；Ctrl+B 切换模式后下一次请求即生效（其余工具不变；
+        只做移除，不会恢复被 preset 排除的工具）。
         """
-        from ..tools.tool_policy import filter_schemas_for_model
-        return filter_schemas_for_model(self.tools, self.model)
+        from ..prompt_builder.builder import is_empty_mode
+        from ..tools.tool_policy import filter_schemas_for_empty_mode, filter_schemas_for_model
+
+        items = filter_schemas_for_model(self.tools, self.model)
+        if is_empty_mode():
+            items = filter_schemas_for_empty_mode(items)
+        return items
 
     def get_tool_registry(self):
         """返回工具注册表实例"""
