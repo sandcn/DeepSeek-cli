@@ -89,14 +89,21 @@ def filter_schemas_for_model(schemas, model=None) -> list:
 
 
 #: 空模式（单体执行范式）在 schema 层排除的工具。
-#: 空模式提词明确「默认不派发子代理」，但主 Agent 不设 agent_type、preset
-#: 也未排除这两项——工具层同步移除，避免「提词禁止但工具可见」的摩擦
-#: （模型误调会真实派生子代理，与单体执行范式冲突）。
-EMPTY_MODE_EXCLUDED_TOOLS: frozenset = frozenset({"subagent", "subagent_opt"})
+#: 用户需求（2026-10-25，方案 A）：空模式下 ``subagent`` / ``subagent_opt``
+#: **不再移除**——空模式提词本就允许「用户明确点名要求时派发子代理」，
+#: 且 ``subagent_opt(op="release")`` 是主 Agent 文件沙盒锁的唯一主动释放
+#: 通道，移除会让持锁方无法主动释放。集合保留为空，作为后续按需收紧的
+#: 扩展位：需要恢复门禁时把工具名填回本集合即可，调用方无需改动。
+EMPTY_MODE_EXCLUDED_TOOLS: frozenset = frozenset()
 
 
 def filter_schemas_for_empty_mode(schemas) -> list:
-    """空模式下移除派生子代理的工具（其余工具原样保留）。"""
+    """按空模式排除集合过滤工具 schemas（当前集合为空 → 原样保留）。
+
+    保留该函数作为策略扩展位：空模式需要收紧工具集时，向
+    :data:`EMPTY_MODE_EXCLUDED_TOOLS` 加入工具名即可（例如重新排除
+    ``subagent`` / ``subagent_opt``），调用方不需要改动。
+    """
     return [
         s for s in list(schemas or ())
         if _schema_tool_name(s) not in EMPTY_MODE_EXCLUDED_TOOLS

@@ -260,10 +260,13 @@ class Agent(BaseAgent):
         请求都按 ``self.model`` 对应的模型档案重新判定，``multimodal=false``
         时 read_image 不会出现在请求的 tool schemas 中。
 
-        空模式（单体执行范式）下额外移除 ``subagent`` / ``subagent_opt``
-        ——提词禁止派发子代理，工具层同步从 schema 移除，避免「提词禁止但
-        工具可见」的摩擦；Ctrl+B 切换模式后下一次请求即生效（其余工具不变；
-        只做移除，不会恢复被 preset 排除的工具）。
+        空模式（单体执行范式）下**不再**移除 ``subagent`` / ``subagent_opt``
+        （用户需求 2026-10-25，方案 A）：空模式提词允许「用户明确点名要求时
+        派发子代理」，且 ``subagent_opt(op="release")`` 是主 Agent 文件沙盒锁
+        的唯一主动释放通道，移除会让持锁方无法主动释放。过滤仍经
+        ``filter_schemas_for_empty_mode``（其排除集合当前为空，保留为后续收紧
+        的扩展位）；Ctrl+B 切换模式后下一次请求即生效（只做移除，不会恢复被
+        preset 排除的工具）。
         """
         from ..prompt_builder.builder import is_empty_mode
         from ..tools.tool_policy import filter_schemas_for_empty_mode, filter_schemas_for_model

@@ -669,11 +669,12 @@ def test_empty_prompt_file_changes_take_lightweight_call_chain() -> None:
     assert "定义—引用关系 + 受影响测试" in content
 
 
-def test_empty_prompt_delegation_gate_has_tool_layer() -> None:
-    """空模式禁止子代理必须有 schema 层兜底，不能只靠提词。"""
+def test_empty_prompt_allows_named_subagent_delegation() -> None:
+    """空模式默认不派发子代理，但用户点名时允许（工具层不再移除）。"""
     content = builder._load_prompt("prompts_export_main_empty")
 
-    assert "从 schema 移除 `subagent` / `subagent_opt`" in content
+    assert "单体执行范式，默认不派发子代理" in content
+    assert "用户明确点名要求时视为已授权" in content
     # 提词只描述行为，不绑定实现文件 / 函数名。
     assert "filter_schemas_for_empty_mode" not in content
     assert "src/tools/tool_policy.py" not in content
