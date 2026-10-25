@@ -607,6 +607,35 @@ def test_simple_prompt_asks_user_after_code_analysis() -> None:
     assert "只有 `action=cancel` 或 `confirmed` 且 `selected` 为空才是拒绝" in content
 
 
+def test_simple_prompt_requires_maintainable_design() -> None:
+    """简单模式：改代码 / 新写代码必须保持良好可维护性（一个文件一个类、禁止上帝类）。"""
+    content = builder._load_prompt("prompts_export_main_simple")
+
+    # 条款存在，且把「一个文件一个类 / 禁止上帝类」写成强制口径。
+    assert "强制保持良好可维护性" in content
+    assert "一个文件一个类" in content
+    assert "一个类一个文件，文件名与类名对应" in content
+    assert "禁止上帝类/万能类" in content
+    # 禁止往既有大文件堆功能，新增职责必须拆出独立文件与独立类。
+    assert "禁止往既有大文件继续堆功能" in content
+    assert "新增职责一律拆到独立文件与独立类" in content
+    # 其余可维护性要点不得只剩口号。
+    assert "职责单一" in content
+    assert "避免重复代码" in content
+    assert "避免过长参数列表与深层嵌套" in content
+
+    # 例外口径必须收敛，且不得让「维持现状 / 省事」成为不拆的理由。
+    assert "例外仅两种" in content
+    assert "拆分既有上帝类超出本次任务授权范围" in content
+    assert "禁止静默维持现状" in content
+    assert "禁止擅自大规模重构" in content
+    assert "禁止以「快/省事/改动小」为由把逻辑全塞进一个类或一个文件" in content
+
+    # 既有约束不得被新条款顶掉。
+    assert "如果一个问题修改上层和底层都能解决的强制修改底层" in content
+    assert "修改代码前要强制跟踪所有相关代码在修改" in content
+
+
 # ── 第四轮审计：轮次定义、范围外授权、cancel 回显与多选空语义 ──
 
 
