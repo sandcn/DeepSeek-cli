@@ -309,6 +309,9 @@ def test_empty_prompt_execution_path_conflicts_removed() -> None:
     assert "一律视为未确认，不得执行" in content
     assert "破坏性 / 不可逆项必须拆成独立的单选问题" in content
     assert "默认项取安全侧" in content
+    # 用户明确要求：`git push` 的 user_select 默认项取「推送」，其余安全红线类仍取安全侧。
+    assert "`push` 只问目标远端 / 分支与是否推送（默认项取「推送」）" in content
+    assert "唯 `git push` 按〈版本控制（Git）〉取「推送」为默认项" in content
     assert "`push`（含普通 push）与强制推送 / 其他不可逆远程操作按〈安全红线〉必须显式确认" in content
     # git 写操作与远程命令必须有可执行的 bash 通道。
     assert "`commit` / `push` 经〈版本控制（Git）〉提问流程并按对应条款确认后" in content
@@ -422,7 +425,8 @@ def test_empty_prompt_third_audit_conflicts_removed() -> None:
     assert "**新请求**的授权判定只看「动词 + 对象」" in content
     assert "对既有方案 / 请求的确认按〈正向判据〉第 2–4 项" in content
 
-    # Submit 页会用默认值 + confirmed 回传未回答项，必须靠安全侧默认项兜底。
+    # Submit 页会用默认值 + confirmed 回传未回答项；除 `git push`（默认项取「推送」）外
+    # 必须靠安全侧默认项兜底。
     assert "并发多问题的 Submit 页会把**未回答**项" in content
     assert "无法与「用户显式确认默认项」区分" in content
     assert "每个 label 都必须出现在 `options` 中" in content
