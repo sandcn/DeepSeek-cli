@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import inspect
 import json
+import locale
 import logging
 import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -36,6 +39,7 @@ from ._bash_support import (
 )
 from ._process_output import OutputLineDecoder
 
+from .._unicode_text import sanitize_surrogates
 from ..core.constants import RED, DIM, RESET
 from ..api.interrupt_async import is_interrupted
 from ..prompt_builder.shell_info import SHELL_ENV_MARKER, detect_shell
@@ -466,8 +470,12 @@ _SK_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{8,}")
 
 
 def _redact_command(command: str, limit: int = 120) -> str:
-    """脱敏并截断命令文本（写日志用，避免 token / 密码进日志）。"""
-    text = str(command or "")
+    """脱敏并截断命令文本（写日志用，避免 token / 密码进日志）。
+
+    同时清洗孤立代理项：日志文件以 UTF-8 写入，含代理项的文本会让
+    ``logging`` 的编码步骤抛错、丢掉整条日志。
+    """
+    text = sanitize_surrogates(str(command or ""))
     text = _SENSITIVE_CMD_RE.sub(r"\1***", text)
     text = _BEARER_RE.sub(r"\1***", text)
     text = _SK_KEY_RE.sub("sk-***", text)
@@ -1036,6 +1044,111 @@ def _default_posix_shell() -> str:
     return 'bash' if sys.platform.startswith('linux') else 'sh'
 
 
+# ── 子进程 stdio 统一 UTF-8 ───────────────────────────────
+# ★ 2026-10-26（用户需求「所有命令行输出和返回大模型都转成 UTF-8」）：
+#   bash 工具的输出经三层统一为 UTF-8：
+#     1. **环境层**（本段 + ``_get_subprocess_env``）：给子进程注入 UTF-8
+#        相关变量（``PYTHONIOENCODING`` / ``PYTHONUTF8``）；POSIX / Cygwin
+#        下当前 locale 不是 UTF-8 时提升到系统可用的 UTF-8 locale；Windows
+#        cmd 会话在启动命令前 ``chcp 65001``，PowerShell 由包装脚本设置
+#        Console / 管道编码（见 :func:`_powershell_encoding_line`）。
+#     2. **解码层**（``_read_loop`` → ``OutputLineDecoder``）：非 UTF-8 的
+#        程序输出（GBK / cp932 / UTF-16 等）解码为 Unicode 文本，再清洗
+#        孤立代理项，保证文本可无损按 UTF-8 编码。
+#     3. **返回层**（``_format_result`` / ``_error_result``）：以
+#        ``ensure_ascii=False`` 序列化，返回给大模型的 JSON 文本即 UTF-8
+#        （HTTP 层按 UTF-8 编码请求体）。
+#
+#   ★ 保留解码层的本机代码页回退：它是**输入侧**的兜底（Windows 原生程序
+#     无法在运行期改变其输出代码页），作用是把 GBK 字节正确转成 Unicode，
+#     最终结果仍是 UTF-8 文本；去掉回退会让这些程序输出变成 U+FFFD。
+
+#: 子进程 stdio 统一编码（与 ``_process_output.CHILD_STDIO_ENCODING`` 一致）。
+_CHILD_STDIO_ENCODING = "utf-8"
+
+#: POSIX / Cygwin 下可用于统一输出编码的 UTF-8 locale 候选（按优先级）。
+_UTF8_LOCALE_CANDIDATES = (
+    "C.utf8", "C.UTF-8",
+    "en_US.utf8", "en_US.UTF-8",
+    "zh_CN.utf8", "zh_CN.UTF-8",
+)
+
+
+def _is_utf8_encoding_name(name: str) -> bool:
+    """编码 / locale 名是否属于 UTF-8 族（``UTF-8`` / ``C.utf8`` / ``utf8``）。
+
+    归一化（小写、去掉 ``-`` / ``_``）后按 ``utf8`` 结尾判断：
+    ``zh_CN.utf-8`` → ``zhcn.utf8``（命中）；``cp936`` / ``ANSI_X3.4-1968``
+    不命中。
+    """
+    text = str(name or "").strip().lower().replace("-", "").replace("_", "")
+    return text.endswith("utf8")
+
+
+@functools.lru_cache(maxsize=1)
+def _available_utf8_locale() -> "str | None":
+    """返回系统实际可用的 UTF-8 locale 名（无则 ``None``）。
+
+    ``locale -a`` 的输出在各平台大小写 / 分隔符不一（Cygwin 用 ``C.utf8``、
+    glibc 用 ``C.UTF-8``），先归一化比较、再返回**系统里的真实名字**（
+    避免把不存在的 locale 名写进子进程环境导致程序回退到 C locale）。
+
+    查询失败（命令缺失 / 超时 / 权限）返回 ``None``——调用方保持子进程
+    原有 locale，由解码层把输出转成 UTF-8 文本。结果缓存（进程内 locale
+    列表不会变化）。
+    """
+    try:
+        completed = subprocess.run(
+            ["locale", "-a"],
+            capture_output=True, text=True, timeout=2, check=False,
+        )
+        names = [
+            line.strip() for line in (completed.stdout or "").splitlines()
+            if line.strip()
+        ]
+    except Exception:  # pragma: no cover - locale 命令缺失 / 环境异常
+        logger.debug("查询可用 locale 失败", exc_info=True)
+        return None
+    normalized = {
+        name.lower().replace("-", "").replace("_", ""): name for name in names
+    }
+    for candidate in _UTF8_LOCALE_CANDIDATES:
+        actual = normalized.get(
+            candidate.lower().replace("-", "").replace("_", ""))
+        if actual:
+            return actual
+    for key in sorted(normalized):
+        if key.endswith("utf8"):
+            return normalized[key]
+    return None
+
+
+def _apply_utf8_locale_env(env: dict) -> None:
+    """POSIX / Cygwin：把子进程 locale 提升到 UTF-8（原地修改 ``env``）。
+
+    仅在**当前 locale 不是 UTF-8** 且系统存在可用 UTF-8 locale 时设置，
+    不覆盖用户已配置的 UTF-8 环境（``LC_ALL`` / ``LANG`` / ``LC_CTYPE``
+    保持原样）。Windows 原生由 cmd ``chcp 65001`` / PowerShell 包装脚本
+    负责，这里直接返回。
+    """
+    if os.name == "nt":
+        return
+    try:
+        preferred = locale.getpreferredencoding(False) or ""
+    except Exception:  # pragma: no cover - locale 查询异常（极端环境）
+        preferred = ""
+    if _is_utf8_encoding_name(preferred):
+        return
+    name = _available_utf8_locale()
+    if not name:
+        logger.debug("当前 locale=%r 非 UTF-8，且无可用 UTF-8 locale", preferred)
+        return
+    # LC_ALL 覆盖全部 locale 类别（含 LC_CTYPE——决定程序 stdout 编码）；
+    # 同时写 LANG，兼容只读取 LANG 的程序。
+    env["LC_ALL"] = name
+    env["LANG"] = name
+
+
 def _pty_launch_argv(command: str, shell: str | None = None) -> list:
     """PTY 分支的命令 argv：与 ConPTY 分支共用同一套交互 shell 解析结果。
 
@@ -1055,6 +1168,12 @@ def _conpty_launch_argv(command: str, shell: str | None = None) -> list:
     与 :func:`_pty_launch_argv` 同构，但回退 shell 是 **cmd.exe**（``ComSpec``）
     而不是 POSIX ``sh``——Windows 上没有 ``/bin/sh``，沿用 POSIX 默认会让
     ConPTY 在 cmd 会话里直接「找不到 sh」。
+
+    ★ UTF-8 统一：cmd 回退路径在命令前加 ``chcp 65001 >nul &``，把当前
+    ConPTY 控制台的输出代码页切到 UTF-8（65001）——cmd 内建命令（``dir`` /
+    ``echo`` 等）与按控制台代码页输出的程序随后写 UTF-8 字节；``>nul``
+    丢掉 ``chcp`` 自身的提示行，不污染命令输出。只影响该伪终端会话，
+    不修改系统默认代码页；PowerShell 路径已由包装脚本设置编码，不走这里。
     """
     launch_arg, use_shell, _shell_name = _resolve_shell_launch(command, shell)
     if not use_shell and isinstance(launch_arg, (list, tuple)):
@@ -1063,7 +1182,7 @@ def _conpty_launch_argv(command: str, shell: str | None = None) -> list:
     if not comspec:
         system_root = os.environ.get("SystemRoot") or r"C:\Windows"
         comspec = os.path.join(system_root, "System32", "cmd.exe")
-    return [comspec, "/c", command]
+    return [comspec, "/c", f"chcp 65001 >nul & {command}"]
 
 
 #: 后台任务 read_buffer 的字符上限（bash_opt read 消费）。
@@ -1246,6 +1365,9 @@ def _consume_echo_line(echo_filter: dict | None, line: str) -> bool:
 def _remember_echo_lines(echo_filter: dict | None, text: str) -> None:
     """登记写入终端的文本行（供读取端去重输入回显；见 :func:`_consume_echo_line`）。
 
+    登记前清洗孤立代理项：读取端（``_read_loop``）拿到的是清洗后的输出行，
+    两侧使用同一文本形态才能正确匹配。
+
     Args:
         echo_filter: ``{"lines": [str, ...]}``（与 ``_read_loop`` 共享的可变对象）。
         text: 写入 stdin 的文本（``op=stdin`` 的 text 参数，可含多行）。
@@ -1253,6 +1375,7 @@ def _remember_echo_lines(echo_filter: dict | None, text: str) -> None:
     if not echo_filter:
         return
     lines = echo_filter.setdefault("lines", [])
+    text = sanitize_surrogates(str(text or ""))
     for part in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         candidate = part.rstrip()
         if candidate:
@@ -1377,7 +1500,9 @@ class BashFunc(Func):
 
     @classmethod
     def display_params(cls, arguments: dict, max_len: int = 80) -> str:
-        cmd = arguments.get("command", "")
+        # 命令来自模型参数（JSON 解码后可能带孤立代理项）：展示前清洗，
+        # 避免 TUI 渲染 / 终端写入按 UTF-8 编码时抛错。
+        cmd = sanitize_surrogates(arguments.get("command", ""))
         display_cmd = cls._sanitize_display(cmd)
         if max_len and len(display_cmd) > max_len:
             display_cmd = display_cmd[:max(0, max_len - 3)] + "..."
@@ -1385,13 +1510,27 @@ class BashFunc(Func):
 
     @classmethod
     def _get_subprocess_env(cls, shell: str | None = None) -> dict:
-        """返回子进程环境变量，添加反缓冲设置确保实时输出。
+        """返回子进程环境变量，添加反缓冲设置并把 stdio 统一为 UTF-8。
 
         ★ 同时注入 :data:`SHELL_ENV_MARKER`（真实交互 shell）：子进程的父链
         首项是工具自己的执行外壳（``cmd.exe /c``、``bash -c``、``powershell
         -EncodedCommand`` ...），单看进程名会把 PowerShell 会话误判成 cmd、
         把 bash 会话误判成 sh；本进程知道自己是从哪个交互 shell 启动的，写进
         环境变量后子进程检测可直接命中（见 ``shell_info``）。
+
+        ★ UTF-8 统一（用户需求 2026-10-26）：
+          - ``PYTHONIOENCODING=utf-8`` / ``PYTHONUTF8=1``：Python 子进程的
+            stdio 与 UTF-8 模式（``open()`` 默认 UTF-8），与项目「文本一律
+            UTF-8」的约定一致；缺省时 Windows 上 Python 会按本机代码页
+            （简体中文 cp936）输出。
+          - POSIX / Cygwin：当前 locale 不是 UTF-8 时提升到系统可用的 UTF-8
+            locale（见 :func:`_apply_utf8_locale_env`），让 shell 内建命令与
+            遵循 locale 的程序按 UTF-8 输出；原生 Windows cmd 由
+            :func:`_conpty_launch_argv` 的 ``chcp 65001`` 负责、PowerShell
+            由包装脚本负责。
+          - 无法在运行期改变输出编码的程序（Windows 原生控制台工具等）由
+            ``OutputLineDecoder`` 解码成本机代码页文本，最终仍是 UTF-8 文本
+            （见 ``_process_output``）。
 
         Args:
             shell: 已检测的 shell 名；``None`` 时现场调用 :func:`detect_shell`。
@@ -1401,6 +1540,10 @@ class BashFunc(Func):
         env['PYTHONUNBUFFERED'] = '1'  # Python 脚本强制无缓冲
         env.pop('PAGER', None)         # 禁用分页器（PTY 模拟终端会触发 pager）
         env['GIT_PAGER'] = 'cat'       # git diff 等通过 PTY 运行时不启用分页器
+        # 子进程 stdio / 文本编码统一 UTF-8（见方法 docstring）
+        env['PYTHONIOENCODING'] = _CHILD_STDIO_ENCODING
+        env['PYTHONUTF8'] = '1'
+        _apply_utf8_locale_env(env)
         if shell is None:
             shell = detect_shell()
         if shell:
@@ -1519,6 +1662,12 @@ class BashFunc(Func):
     def _format_result(cls, res: dict) -> str:
         """把结构化执行结果 dict 组装为返回给大模型的三元 JSON 字符串。
 
+        ★ UTF-8 统一（用户需求 2026-10-26）：stdout / stderr 在截断后统一
+        清洗孤立代理项（``_read_loop`` 源头已清洗，这里是返回边界的兜底），
+        再以 ``ensure_ascii=False`` 序列化——返回的 JSON 文本中非 ASCII 字符
+        保持原文，可被上层无损按 UTF-8 编码写进模型请求体（不做 ``\\uXXXX``
+        转义）。
+
         Args:
             res: {"stdout": str, "stderr": str, "returncode": int}
 
@@ -1528,8 +1677,10 @@ class BashFunc(Func):
             语法错误（``&&`` / ``||`` / ``1>&2``）时，在该字段末尾附上
             当前环境可用的改写方式（见 :meth:`_append_shell_syntax_hint`）。
         """
-        stdout = cls._truncate_output(res.get("stdout", "") or "")
-        stderr = cls._truncate_output(res.get("stderr", "") or "")
+        stdout = sanitize_surrogates(
+            cls._truncate_output(res.get("stdout", "") or ""))
+        stderr = sanitize_surrogates(
+            cls._truncate_output(res.get("stderr", "") or ""))
         # ★ PTY 下 stderr 合并到 stdout：语法错误文本可能落在 stdout
         #   （PTY 只有一条输出流）。提示必须贴在错误实际所在的字段，
         #   否则模型看不到「改用 ; 顺序执行」的环境提示。
@@ -1592,12 +1743,16 @@ class BashFunc(Func):
     def _error_result(message: str) -> str:
         """工具级错误的三元 JSON（未真正执行命令时使用）。
 
+        ``message`` 可能来自异常文本（含任意码点）：先清洗孤立代理项，保证
+        返回给大模型的 JSON 文本可无损按 UTF-8 编码。
+
         Args:
             message: 错误说明（如 "(拒绝执行危险命令: ...)"）
 
         Returns:
             {"stdout": "", "stderr": message, "returncode": -1}
         """
+        message = sanitize_surrogates(str(message))
         return json.dumps({
             "stdout": "",
             "stderr": message,
@@ -1632,6 +1787,11 @@ class BashFunc(Func):
         ``_ambiguous_local_decode`` / ``prefer_local_output``）：真 UTF-8 的
         希腊字母（``α``）、西里尔文（``Привет``）不再被改成「伪」「袩褉懈…」，
         GBK 误读行（``ʲô`` / ``ɸѡ``）仍能还原成中文。
+
+        ★ 统一 UTF-8（用户需求 2026-10-26）：解码结果在行处理末尾统一清洗
+        孤立代理项（:func:`sanitize_surrogates`）——``lines``（返回大模型）、
+        ``publish_line_fn``（display）与后台任务 read_buffer 因此都是可无损
+        按 UTF-8 编码的文本。
 
         实现说明（★ 超长行修复）：
         不使用 ``StreamReader.readline()``。readline 内部基于 readuntil，
@@ -1690,6 +1850,14 @@ class BashFunc(Func):
             #   _on_line 同一处理，此处提前到数据源头使
             #   返回给大模型的输出同样生效）
             clean = _simulate_terminal(_strip_ansi(clean))
+            # ★ 统一 UTF-8（用户需求 2026-10-26）：解码器本身用
+            #   ``errors='replace'`` 不会产生孤立代理项，但自定义解码器 /
+            #   终端控制序列 / 上游注入仍可能带出 UTF-16 代理区码点——它们
+            #   无法按 UTF-8 编码（会话保存 / API 请求序列化会抛
+            #   UnicodeEncodeError）。此处是全部输出的交汇点：清洗后
+            #   lines（返回大模型）、publish_line_fn（display）与
+            #   read_buffer（bash_opt read）拿到的都是可无损 UTF-8 编码的文本。
+            clean = sanitize_surrogates(clean)
             # ★ 输入回显去重（PTY）：写入端（bash_opt op=stdin）登记过的行
             #   再次出现在输出里时丢弃一次——终端驱动的本地回显 / 程序自身
             #   回显都会把输入重复输出，返回给模型的内容不应包含这段重复。
