@@ -1289,11 +1289,16 @@ class BashFunc(Func):
                     "returncode 为命令退出码（信号终止为 128+信号号，-1 表示未真正执行）。"
                     "stdout 最多保留 1000 行（超出保留尾部并标注截断）；"
                     f"前台超过 {cls._AUTO_BG_TIMEOUT} 秒未完成自动转后台（不终止进程），"
-                    "返回 task_id（bg-xxx）；转后台后可用 bash_opt 继续操作命令行"
-                    "（read/wait/kill/stdin，如 TUI 程序），也可操作 GUI 窗口"
-                    "（screenshot 截图、click/type 等键鼠输入）；"
-                    "background=true 立即后台执行（任务无限运行）。"
-                    "例：bash({\"command\": \"pytest -q\", \"background\": true})"
+                    "返回 task_id（bg-xxx）；background=true 立即后台执行（任务无限运行）。"
+                    "★ 后台任务（background=true 或自动转后台的 bg-xxx）一定要用 "
+                    "bash_opt 清理：结束用 op=wait 取走结果并移除记录，需要终止用 "
+                    "op=kill 杀整棵进程树并校验；不要用 bash 跑 kill/taskkill 清理"
+                    "（只杀单个 PID，孤儿后代残留，PID 复用还会误杀），也不要弃之不管。"
+                    "bash_opt 也可操作命令行（read/stdin/keys，如 TUI 程序）与 GUI 窗口"
+                    "（screenshot 截图、click/type 等键鼠输入）。"
+                    "例：bash({\"command\": \"pytest -q\", \"background\": true}) 取 task_id 后 "
+                    "bash_opt({\"task_id\": \"bg-1\", \"op\": \"wait\"}) 取结果并清理；"
+                    "中途终止用 op=kill"
                 ),
                 "parameters": {
                     "type": "object",

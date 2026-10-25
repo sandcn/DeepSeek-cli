@@ -7,7 +7,8 @@
 - 关键调用约定（参数集合、必填项、enum、默认值）不因精简丢失；
 - ``user_select`` 的 1 分钟空闲超时与 header 12 字符限制文案保留；
 - ``bash_opt`` 的 op 清单在功能描述中给出；
-- ``bash_opt`` 每个 op 的用法例 / 反例都渲染进模型可见描述（``OP_GUIDE``）。
+- ``bash_opt`` 每个 op 的用法例 / 反例都渲染进模型可见描述（``OP_GUIDE``）；
+- ``bash`` 的「后台任务一定要用 bash_opt 清理」规则与跨工具示例保留。
 """
 
 from __future__ import annotations
@@ -28,12 +29,17 @@ _DESC_LIMIT = 550
 #: ``bash_opt`` 需逐 op 给出「用法例 + 反例」（15 个 op），且 GUI 窗口输入
 #: op 的用法例统一演示「操作完成后按 path 自动截图」，正文自然更长；这是
 #: 模型最容易用错 op 的工具，提词收益高于同等长度的其它描述。
-_DESC_LIMITS = {"bash_opt": 2200}
+#: ``bash`` 需声明「后台任务一定要用 bash_opt 清理」及其跨工具示例（bash 启动
+#: → bash_opt wait/kill 收尾），比原「转后台后可用 bash_opt 操作」多约 220
+#: 字符；这条规则缺失时后台进程会被弃置或用 `kill <pid>` 清理不净。
+_DESC_LIMITS = {"bash": 820, "bash_opt": 2200}
 
 #: 全部工具 function.description 总字符上限（示例化后留余量）。
 #: 2026-10-24（用户需求）：文件 / 目录类工具统一补「不得用 bash 替代」正反例，
 #: 每处约 +40~55 字符，预算相应上调（仍作为防回涨硬上限）。
-_TOTAL_DESC_LIMIT = 7200
+#: 2026-10-25（用户需求）：``bash`` 补「后台任务一定要用 bash_opt 清理」契约
+#: 与示例（+226 字符），总预算同步上调。
+_TOTAL_DESC_LIMIT = 7500
 
 #: 参数 description 字符上限（功能短语 + 默认值/边界/示例值）
 _PARAM_DESC_LIMIT = 80
@@ -88,6 +94,10 @@ def test_every_tool_description_has_example() -> None:
         if name == "bash_opt":
             # GUI 流程示例跨工具：先用 bash(background=true) 启动程序，再操作 GUI。
             allowed |= {"command", "background"}
+        if name == "bash":
+            # 后台任务清理示例跨工具：bash 启动取得 task_id，再用 bash_opt
+            # 的 op=wait / op=kill 收尾（见「一定要用 bash_opt 清理」契约）。
+            allowed |= {"task_id", "op"}
         keys = set(re.findall(r'"([a-z_]+)"\s*:', description))
         assert keys <= allowed, f"{name} 示例含未知参数: {sorted(keys - allowed)}"
 
@@ -242,6 +252,13 @@ def test_tool_selection_guidance_present() -> None:
     bash_opt_desc = schemas["bash_opt"]["function"]["description"]
     assert "增量读取" in bash_opt_desc
     assert "任务继续运行" in bash_opt_desc
+    # 2026-10-25（用户需求）：bash 提词必须要求「后台任务一定要用 bash_opt
+    # 清理」（wait 收尾 / kill 终止），并明确不得用 bash 跑 kill/taskkill。
+    bash_desc = schemas["bash"]["function"]["description"]
+    assert "一定要用" in bash_desc and "bash_opt 清理" in bash_desc
+    assert "op=wait" in bash_desc and "op=kill" in bash_desc
+    assert "kill/taskkill" in bash_desc
+    assert "弃之不管" in bash_desc
     # GUI 流程示例：bash 后台启动程序 → bash_opt 截图 / 键鼠操作 → wait 或 kill
     assert "GUI 流程例" in bash_opt_desc
     assert '"background": true' in bash_opt_desc
