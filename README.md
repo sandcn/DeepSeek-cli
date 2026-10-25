@@ -491,7 +491,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **19 个内�
 | `write` | wr | IO | ✅ | 覆盖写入文件，自动创建父目录，原子写入 |
 | `edit` | ed | IO | ❌ | 精确替换文件中的文本（old_string → new_string），支持 use_regex 正则替换 |
 | `grep` | gp | 搜索 | ✅ | 在项目源码中搜索正则表达式，自动排除非源码目录 |
-| `glob` | gl | 搜索 | ✅ | 按文件名/路径通配符查找文件和目录，支持 `**` 跨目录（如 `**/*.py`、`**/*`） |
+| `glob` | gl | 搜索 | ✅ | 按文件名/路径通配符查找文件和目录，支持 `**` 跨目录（如 `**/*.py`、`**/*`）与 `{a,b}` 大括号展开（如 `**/*.{c,h,cpp,hpp,cc,py,mk}`） |
 | `ls` | ls | IO | ✅ | 列出目录内容，支持详细格式和隐藏文件显示 |
 | `bash` | bs | 执行 | ❌ | 执行 shell 命令（安全沙盒保护，禁止替代专用工具） |
 | `bash_opt` | bo | 执行 | ❌ | 按 task_id 操作后台 bash 任务：read（增量读取当前输出并清空缓冲，立即返回；只读观察、不接管任务）/ wait（等待完成取输出；超时返回结构化 JSON，任务继续运行）/ kill（杀死整个进程树并校验，未死自动补杀）/ stdin（发送文本输入；编码缺省 UTF-8；newline 控制换行）/ close_stdin（发送 EOF/EOT）/ keys（发送光标键盘消息：有 GUI 窗口时注入窗口，否则写入终端 PTY/stdin；支持 ctrl+c、esc/pageup、f1-f20）/ screenshot（窗口或整屏截图存为 PNG，需 path；可选 crop、window、screen=true/primary/序号）/ move（移动到窗口内 x/y）/ hover（移动到目标点停留）/ click（左右中键、双击：button/count）/ drag（拖动：from_x/from_y → to_x/to_y）/ scroll（滚轮 direction/amount）/ key（窗口级按键，如 ctrl+s）/ type（向窗口逐字符输入 Unicode 文本）/ release（释放全部按下的键与鼠标按钮）；坐标以窗口截图左上角为原点，支持 center/50%/center+20 等语义坐标 |

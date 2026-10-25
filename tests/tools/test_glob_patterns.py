@@ -1,4 +1,4 @@
-"""glob 工具路径模式（``**`` / ``/``）回归测试。
+"""glob 工具路径模式（``**`` / ``/``）与大括号展开回归测试。
 
 覆盖：
 - ``**/*`` 匹配搜索根下全部文件与目录（不含根自身）；
@@ -6,6 +6,7 @@
 - 名称模式（``*.py``）保持「任意层级按名匹配」的既有语义；
 - ``**`` 结尾（``src/**``）、尾随 ``/``、``./`` 前缀等规范化；
 - ``type`` 过滤、空格分隔多模式的 OR 语义；
+- 大括号展开（``**/*.{c,h,cpp,hpp,cc,py,mk}``、嵌套、空项、未闭合、上限回退）；
 - 排除目录（node_modules / .git）不返回、不深入；
 - ``execute()`` 端到端输出格式与计数。
 """
@@ -15,7 +16,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from src.tools.glob import GlobFunc
+from src.tools.glob import GlobFunc, _expand_braces, _split_patterns
 
 _ALL_PY = {"a.py", "src/c.py", "src/deep/d.py", "pkg/__init__.py"}
 
@@ -126,3 +127,85 @@ def test_empty_pattern_finds_nothing(tmp_path: Path) -> None:
     _make_tree(tmp_path)
 
     assert _found("   ", tmp_path) == set()
+
+
+# ── 大括号展开 ─────────────────────────────────────────
+
+
+def test_expand_braces_helper() -> None:
+    assert _expand_braces("**/*.{c,h}") == ["**/*.c", "**/*.h"]
+    assert _expand_braces("a{b,c}d{e,f}") == ["abde", "abdf", "acde", "acdf"]
+    assert _expand_braces("{a,}") == ["a", ""]
+    assert _expand_braces("{a}") == ["{a}"]          # 无顶层逗号：按字面量
+    assert _expand_braces("literal") == ["literal"]
+    assert _expand_braces("*.{py") == ["*.{py"]      # 未闭合：按字面量
+    assert _expand_braces("a{b,{c,d}}") == ["ab", "ac", "ad"]
+
+
+def test_split_patterns_respects_braces() -> None:
+    assert _split_patterns("*.{c, h} x.py") == ["*.{c, h}", "x.py"]
+    # 花括号不平衡时退回普通空格拆分（既有语义）
+    assert _split_patterns("*.{c h.py") == ["*.{c", "h.py"]
+
+
+def test_brace_expansion_extension_group(tmp_path: Path) -> None:
+    _make_tree(tmp_path)
+    for name in ("src/a.c", "src/b.h", "src/c.cpp", "src/d.hpp", "src/e.cc", "src/f.mk"):
+        (tmp_path / name).write_text("", encoding="utf-8")
+
+    found = _found("**/*.{c,h,cpp,hpp,cc,py,mk}", tmp_path)
+
+    assert found == _ALL_PY | {
+        "src/a.c", "src/b.h", "src/c.cpp", "src/d.hpp", "src/e.cc", "src/f.mk",
+    }
+
+
+def test_brace_expansion_basename_pattern(tmp_path: Path) -> None:
+    _make_tree(tmp_path)
+
+    # 名称模式同样支持展开（任意层级按名匹配）
+    assert _found("*.{py,txt}", tmp_path) == _ALL_PY | {"b.txt"}
+    # 备选两侧空白被忽略
+    assert _found("*.{py, txt}", tmp_path) == _ALL_PY | {"b.txt"}
+
+
+def test_brace_expansion_nested_and_mixed(tmp_path: Path) -> None:
+    _make_tree(tmp_path)
+    for name in ("src/x.c", "src/x.h", "src/x.hpp", "src/x.md"):
+        (tmp_path / name).write_text("", encoding="utf-8")
+
+    assert _found("src/*.{c,{h,hpp}}", tmp_path) == {
+        "src/x.c", "src/x.h", "src/x.hpp",
+    }
+    # 大括号模式与普通模式空格混用仍为 OR 语义
+    assert _found("**/*.{md,rst} src/deep/*.py", tmp_path) == {
+        "src/x.md", "src/deep/d.py",
+    }
+
+
+def test_brace_expansion_empty_alternative(tmp_path: Path) -> None:
+    _make_tree(tmp_path)
+
+    assert _found("**/*.py{,}", tmp_path) == _ALL_PY
+
+
+def test_brace_expansion_over_limit_falls_back_to_literal(tmp_path: Path) -> None:
+    _make_tree(tmp_path)
+
+    # 12^4 = 20736 个备选，超过展开上限 → 整条按字面量处理，不匹配任何文件
+    oversized = "*." + "{a,b,c,d,e,f,g,h,i,j,k,l}" * 4
+    assert _found(oversized, tmp_path) == set()
+
+
+def test_brace_expansion_execute_output(tmp_path: Path) -> None:
+    _make_tree(tmp_path)
+    (tmp_path / "src" / "main.c").write_text("", encoding="utf-8")
+    (tmp_path / "src" / "main.h").write_text("", encoding="utf-8")
+
+    output = asyncio.run(
+        GlobFunc("**/*.{c,h,py}", path=str(tmp_path)).execute()
+    )
+
+    assert "找到 6 个文件" in output
+    assert "src/main.c" in output
+    assert "src/main.h" in output

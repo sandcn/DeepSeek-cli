@@ -10,6 +10,11 @@ glob — 文件查找工具
   匹配零或多层目录，如 ``**/*.py``（任意层级）、``src/**/*.ts``（仅 src 下）、
   ``**/*``（全部文件与目录）。
 
+另支持 shell 风格的大括号展开：``{a,b}`` 会先展开为多个备选模式再逐个匹配，
+可嵌套（``*.{c,{h,hpp}}``）、可含空项（``*.{py,}``），如
+``**/*.{c,h,cpp,hpp,cc,py,mk}`` 等价于 7 个 ``**/*.ext`` 模式的 OR。
+未闭合或展开结果超过上限的 ``{`` 按字面量处理。
+
 使用纯 Python 实现（pathlib + os.walk），不依赖外部命令。
 安全、跨平台、无 shell 注入风险。
 """
@@ -32,6 +37,115 @@ SMALL_DIR_ENTRY_LIMIT = 200   # 小型目录条目阈值（直接同步遍历）
 
 #: globstar 段标记：作为独立段的 ``**`` 匹配零或多层目录。
 _GLOBSTAR = "**"
+
+#: 大括号展开上限：单个模式最多展开出的备选模式数，超出后整条按字面量处理
+#: （防止病态嵌套模式生成海量正则拖垮遍历）。
+_MAX_BRACE_EXPANSIONS = 256
+#: 大括号递归展开深度上限（同时防御异常深的嵌套）。
+_MAX_BRACE_DEPTH = 32
+
+
+def _split_patterns(text: str) -> list[str]:
+    """按空白拆分多个模式，但花括号内部的空白不拆。
+
+    这样 ``*.{c, h}`` 仍是一个模式（展开后各备选再经 strip 规范化）；
+    花括号数量不平衡时退回普通 ``split()``，保持既有「空格分隔」语义。
+    """
+    if text.count("{") != text.count("}"):
+        return text.split()
+    tokens: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    for char in text:
+        if char == "{":
+            depth += 1
+            buf.append(char)
+        elif char == "}":
+            depth = max(0, depth - 1)
+            buf.append(char)
+        elif char.isspace() and depth == 0:
+            if buf:
+                tokens.append("".join(buf))
+                buf = []
+        else:
+            buf.append(char)
+    if buf:
+        tokens.append("".join(buf))
+    return tokens
+
+
+def _split_brace_alternatives(body: str) -> list[str] | None:
+    """按顶层逗号拆分花括号内容；没有顶层逗号时返回 ``None``（按字面量处理）。"""
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    has_comma = False
+    for index, char in enumerate(body):
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth = max(0, depth - 1)
+        elif char == "," and depth == 0:
+            parts.append(body[start:index])
+            start = index + 1
+            has_comma = True
+    parts.append(body[start:])
+    if not has_comma:
+        return None
+    # 备选两侧空白不参与匹配（"*.{py, txt}" 视作 *.py / *.txt）
+    return [part.strip() for part in parts]
+
+
+def _expand_braces(pattern: str, *, _depth: int = 0) -> list[str]:
+    """展开 shell 风格大括号 ``{a,b}``，返回全部备选模式。
+
+    - 支持嵌套（``a{b,c}d`` → ``abd`` / ``acd``）与空项（``a{,b}`` → ``a`` / ``ab``）；
+    - 花括号内没有顶层逗号、未闭合或超出展开上限时按字面量保留；
+    - 展开结果保持出现顺序，便于稳定输出。
+    """
+    if _depth >= _MAX_BRACE_DEPTH:
+        return [pattern]
+
+    start = pattern.find("{")
+    if start < 0:
+        return [pattern]
+
+    level = 0
+    close = -1
+    for index in range(start, len(pattern)):
+        if pattern[index] == "{":
+            level += 1
+        elif pattern[index] == "}":
+            level -= 1
+            if level == 0:
+                close = index
+                break
+    if close < 0:
+        return [pattern]
+
+    head = pattern[:start]
+    body = pattern[start + 1:close]
+    tail = pattern[close + 1:]
+
+    alternatives = _split_brace_alternatives(body)
+    if alternatives is None:
+        # 无顶层逗号：花括号按字面量保留，但内部仍可嵌套展开（{a{b,c}} → {ab} / {ac}）
+        bodies = ["{" + item + "}" for item in _expand_braces(body, _depth=_depth + 1)]
+    else:
+        # 各备选内部仍可能嵌套花括号（{b,{c,d}}），逐个继续展开
+        bodies = []
+        for alternative in alternatives:
+            bodies.extend(_expand_braces(alternative, _depth=_depth + 1))
+
+    tails = _expand_braces(tail, _depth=_depth + 1)
+
+    results: list[str] = []
+    for middle in bodies:
+        for suffix in tails:
+            results.append(head + middle + suffix)
+            if len(results) > _MAX_BRACE_EXPANSIONS:
+                return [pattern]
+    return results
 
 
 def _translate_segment(segment: str) -> str:
@@ -115,7 +229,8 @@ class GlobFunc(Func):
                 "name": "glob",
                 "description": (
                     "按文件名/路径模式（fnmatch 通配符，空格分隔多个模式）查找文件和目录，"
-                    "支持 ** 跨目录（如 **/*.py 匹配任意层级，**/* 匹配全部条目）；"
+                    "支持 ** 跨目录（如 **/*.py 匹配任意层级，**/* 匹配全部条目）"
+                    "与 {a,b} 大括号展开（如 **/*.{c,h,cpp,hpp,cc,py,mk}）；"
                     "返回相对路径列表；自动跳过 .git/node_modules 等目录，"
                     "无匹配时返回提示文本。type 限定 file/dir。找代码位置优先用它，"
                     "不得用 bash find/ls 替代（✗ bash find src -name '*.py' ↦ ✓ glob）。"
@@ -129,7 +244,7 @@ class GlobFunc(Func):
                             "type": "string",
                             "description": (
                                 "文件名或相对路径模式（fnmatch，空格分隔多个，"
-                                "支持 ** 跨目录，如 *.py / **/*.py / **/*）"
+                                "支持 ** 跨目录与 {a,b} 展开，如 **/*.{c,h,py}）"
                             ),
                         },
                         "path": {
@@ -175,17 +290,29 @@ class GlobFunc(Func):
         # 避免遮蔽 Python builtin type()，内部使用 filter_type
         self.filter_type = type  # "file", "dir", or None
         # 按是否含路径分隔符把模式分为名称模式 / 路径模式（见模块 docstring），
-        # 并预编译为 regex，消除每次匹配时 fnmatch.translate + compile 开销。
+        # 先做大括号展开（**/*.{c,h} → **/*.c / **/*.h），并预编译为 regex，
+        # 消除每次匹配时 fnmatch.translate + compile 开销。
         self._name_patterns_re: list[re.Pattern] = []
         self._path_patterns_re: list[re.Pattern] = []
-        for raw in self.pattern.split():
-            normalized = self._normalize_pattern(raw)
-            if not normalized:
-                continue
-            if "/" in normalized:
-                self._path_patterns_re.append(_translate_path_pattern(normalized))
-            else:
-                self._name_patterns_re.append(re.compile(fnmatch.translate(normalized)))
+        name_seen: set[str] = set()
+        path_seen: set[str] = set()
+        for raw in _split_patterns(self.pattern):
+            for expanded in _expand_braces(raw):
+                normalized = self._normalize_pattern(expanded)
+                if not normalized:
+                    continue
+                if "/" in normalized:
+                    if normalized in path_seen:
+                        continue
+                    path_seen.add(normalized)
+                    self._path_patterns_re.append(_translate_path_pattern(normalized))
+                else:
+                    if normalized in name_seen:
+                        continue
+                    name_seen.add(normalized)
+                    self._name_patterns_re.append(
+                        re.compile(fnmatch.translate(normalized))
+                    )
 
     @staticmethod
     def _normalize_pattern(pattern: str) -> str:
