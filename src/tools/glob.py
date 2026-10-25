@@ -1,7 +1,15 @@
 """
 glob — 文件查找工具
 
-在项目中查找文件和目录，支持 glob 模式匹配、类型(file/dir)过滤、深度控制。
+在项目中查找文件和目录，支持 glob 模式匹配、类型(file/dir)过滤。
+
+模式按是否含路径分隔符分两类（同一 pattern 内可用空格分隔混用，OR 语义）：
+
+- **名称模式**（不含 ``/``）：匹配条目名，如 ``*.py``（任意层级的 .py）；
+- **路径模式**（含 ``/``）：匹配相对搜索根的 POSIX 路径，``**`` 作为独立段
+  匹配零或多层目录，如 ``**/*.py``（任意层级）、``src/**/*.ts``（仅 src 下）、
+  ``**/*``（全部文件与目录）。
+
 使用纯 Python 实现（pathlib + os.walk），不依赖外部命令。
 安全、跨平台、无 shell 注入风险。
 """
@@ -21,7 +29,77 @@ logger = logging.getLogger(__name__)
 
 # ── 魔法数字常量 ──────────────────────────────────────
 SMALL_DIR_ENTRY_LIMIT = 200   # 小型目录条目阈值（直接同步遍历）
-SMALL_DIR_DEPTH_LIMIT = 3     # 小型目录深度阈值
+
+#: globstar 段标记：作为独立段的 ``**`` 匹配零或多层目录。
+_GLOBSTAR = "**"
+
+
+def _translate_segment(segment: str) -> str:
+    """把单个路径段（不含 ``/``）的 fnmatch 通配符翻译为正则片段。
+
+    段内语义与 :func:`fnmatch.translate` 一致（``*`` / ``?`` / ``[seq]`` /
+    ``[!seq]``），但 ``*`` 与 ``?`` 不跨越路径分隔符——路径模式按段拼接，
+    段内不允许吃掉 ``/``（否则 ``a/*/b`` 会误匹配 ``a/x/y/b``）。
+    """
+    res: list[str] = []
+    i, n = 0, len(segment)
+    while i < n:
+        c = segment[i]
+        i += 1
+        if c == "*":
+            res.append("[^/]*")
+        elif c == "?":
+            res.append("[^/]")
+        elif c == "[":
+            j = i
+            if j < n and segment[j] == "!":
+                j += 1
+            if j < n and segment[j] == "]":
+                j += 1
+            while j < n and segment[j] != "]":
+                j += 1
+            if j >= n:
+                # 未闭合的 '[' 按字面量处理（同 fnmatch）
+                res.append(r"\[")
+            else:
+                stuff = segment[i:j]
+                i = j + 1
+                if stuff.startswith("!"):
+                    stuff = "^" + stuff[1:]
+                elif stuff.startswith("^"):
+                    stuff = "\\" + stuff
+                res.append(f"[{stuff}]")
+        else:
+            res.append(re.escape(c))
+    return "".join(res)
+
+
+def _translate_path_pattern(pattern: str) -> re.Pattern:
+    """编译含 ``/`` 的路径模式（支持 ``**`` 跨目录匹配）。
+
+    - ``**`` 作为独立段：结尾时匹配其下任意深度（``src/**``），中间或开头时
+      整段可省略（``**/*.py`` 同时匹配 ``a.py`` 与 ``x/y/a.py``）；
+    - 其余段按 :func:`_translate_segment` 翻译，段内通配符不跨 ``/``；
+    - 匹配对象是相对搜索根的 POSIX 路径（如 ``src/a/b.py``）。
+    """
+    segments = [seg for seg in pattern.split("/") if seg not in ("", ".")]
+    parts: list[str] = []
+    for index, seg in enumerate(segments):
+        is_last = index == len(segments) - 1
+        if seg == _GLOBSTAR:
+            if is_last:
+                # 结尾 globstar：匹配前缀之下的任意深度；单独 ** 匹配任意非空路径
+                parts.append(".*" if parts else ".+")
+            else:
+                parts.append("(?:.*/)?")
+            continue
+        parts.append(_translate_segment(seg))
+        if not is_last:
+            parts.append("/")
+    if not parts:
+        # 规范化后无有效段（如 pattern 仅为 "/"）：永不匹配
+        return re.compile(r"(?!)")
+    return re.compile("(?s:" + "".join(parts) + r")\Z")
 
 
 class GlobFunc(Func):
@@ -36,20 +114,23 @@ class GlobFunc(Func):
             "function": {
                 "name": "glob",
                 "description": (
-                    "按文件名模式（fnmatch 通配符，空格分隔多个模式）查找文件和目录，"
+                    "按文件名/路径模式（fnmatch 通配符，空格分隔多个模式）查找文件和目录，"
+                    "支持 ** 跨目录（如 **/*.py 匹配任意层级，**/* 匹配全部条目）；"
                     "返回相对路径列表；自动跳过 .git/node_modules 等目录，"
-                    "无匹配时返回提示文本。depth=0 不限深度，depth=N 仅查 N 层；"
-                    "type 限定 file/dir。找代码位置优先用它，"
+                    "无匹配时返回提示文本。type 限定 file/dir。找代码位置优先用它，"
                     "不得用 bash find/ls 替代（✗ bash find src -name '*.py' ↦ ✓ glob）。"
-                    "例：glob({\"pattern\": \"*.py\", \"path\": \"src\", "
-                    "\"type\": \"file\", \"depth\": 2})"
+                    "例：glob({\"pattern\": \"**/*.py\", \"path\": \"src\", "
+                    "\"type\": \"file\"})"
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "pattern": {
                             "type": "string",
-                            "description": "文件/目录名通配模式（fnmatch，空格分隔多个，如 *.py）",
+                            "description": (
+                                "文件名或相对路径模式（fnmatch，空格分隔多个，"
+                                "支持 ** 跨目录，如 *.py / **/*.py / **/*）"
+                            ),
                         },
                         "path": {
                             "type": "string",
@@ -59,12 +140,6 @@ class GlobFunc(Func):
                             "type": "string",
                             "description": "过滤类型：file / dir（默认全部）",
                             "enum": ["file", "dir"],
-                        },
-                        "depth": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "description": "最大搜索深度（0 不限，默认 0；如 2）",
-                            "default": 0,
                         },
                     },
                     "required": ["pattern"],
@@ -92,7 +167,6 @@ class GlobFunc(Func):
         pattern: str,
         path: str | None = None,
         type: str | None = None,
-        depth: int = 0,
     ):
         super().__init__()
         self.pattern = pattern
@@ -100,12 +174,42 @@ class GlobFunc(Func):
         self.root_path = os.path.expanduser(path) if path else os.getcwd()
         # 避免遮蔽 Python builtin type()，内部使用 filter_type
         self.filter_type = type  # "file", "dir", or None
-        self.depth = max(0, depth)
-        # 预编译 fnmatch 模式为 regex，消除每次匹配时 fnmatch.translate + compile 开销
-        self._patterns_re: list[re.Pattern] = [
-            re.compile(fnmatch.translate(p))
-            for p in self.pattern.split() if p.strip()
-        ]
+        # 按是否含路径分隔符把模式分为名称模式 / 路径模式（见模块 docstring），
+        # 并预编译为 regex，消除每次匹配时 fnmatch.translate + compile 开销。
+        self._name_patterns_re: list[re.Pattern] = []
+        self._path_patterns_re: list[re.Pattern] = []
+        for raw in self.pattern.split():
+            normalized = self._normalize_pattern(raw)
+            if not normalized:
+                continue
+            if "/" in normalized:
+                self._path_patterns_re.append(_translate_path_pattern(normalized))
+            else:
+                self._name_patterns_re.append(re.compile(fnmatch.translate(normalized)))
+
+    @staticmethod
+    def _normalize_pattern(pattern: str) -> str:
+        """规范化单个模式：统一分隔符、去掉 ``./`` 前缀、首尾 ``/``。"""
+        value = pattern.strip()
+        if os.sep == "\\":
+            # Windows：模型/用户可能写反斜杠分隔的路径模式
+            value = value.replace("\\", "/")
+        while value.startswith("./"):
+            value = value[2:]
+        # 绝对路径按「相对搜索根」处理（工具本身已限定在 path 之下查找）
+        value = value.lstrip("/")
+        # 尾随 / 仅表示目录层级，对匹配结果无影响
+        return value.rstrip("/")
+
+    def _matches_name(self, name: str) -> bool:
+        """名称模式是否命中条目名（路径模式不参与根目录自身匹配）。"""
+        return any(compiled.match(name) for compiled in self._name_patterns_re)
+
+    def _matches(self, rel_posix: str, name: str) -> bool:
+        """条目是否命中任一模式：路径模式匹配相对路径，名称模式匹配条目名。"""
+        if any(compiled.match(rel_posix) for compiled in self._path_patterns_re):
+            return True
+        return self._matches_name(name)
 
     # ── 核心执行 ────────────────────────────────────────
 
@@ -131,85 +235,60 @@ class GlobFunc(Func):
         # 先检查目录规模：一级条目很少时目录树通常不大，同步遍历即可
         try:
             entries = list(root.iterdir())
-            # 小型目录（<200项）且深度不大时直接同步遍历
-            if len(entries) < SMALL_DIR_ENTRY_LIMIT and (self.depth == 0 or self.depth <= SMALL_DIR_DEPTH_LIMIT):
+            # 小型目录（<200项）直接同步遍历
+            if len(entries) < SMALL_DIR_ENTRY_LIMIT:
                 return self._sync_find_files(root)
         except OSError:
             logger.debug("目录遍历跳过（权限或系统错误）: %s", root, exc_info=True)
 
-        # 大目录或深度大的情况走 executor，避免阻塞事件循环
+        # 大目录走 executor，避免阻塞事件循环
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self._sync_find_files, root)
 
     def _sync_find_files(self, root: Path) -> list[Path]:
-        """同步遍历目录树，匹配符合条件的文件/目录"""
+        """同步遍历目录树，按名称/路径模式匹配文件与目录。
+
+        - 名称模式（不含 ``/``）匹配条目名；路径模式匹配相对搜索根的 POSIX
+          路径，``**`` 可跨任意层目录；
+        - 目录在**条目**层面判定（父目录遍历到即匹配）；
+        - 遍历整棵目录树（排除目录除外），不做深度限制。
+        """
         results: list[Path] = []
 
-        # 使用 __init__ 中预编译的 regex 模式列表（OR 逻辑）
-        patterns_re = self._patterns_re
-        if not patterns_re:
+        if not self._name_patterns_re and not self._path_patterns_re:
             return results
 
-        # 根目录自身也参与匹配（避免 depth=1 时漏掉根目录本身）
-        if self.filter_type in (None, "dir"):
-            root_name = root.name
-            for compiled_re in patterns_re:
-                if compiled_re.match(root_name):
-                    results.append(root)
-                    break
+        want_file = self.filter_type in (None, "file")
+        want_dir = self.filter_type in (None, "dir")
 
-        # 根目录层级深度（用于 depth 控制）
-        root_depth = len(root.parts)
+        # 根目录自身参与名称匹配（既有语义：名称模式命中根目录名时返回根）；
+        # 路径模式不匹配根自身——其相对路径为空，``**/*`` 只匹配其下条目。
+        if want_dir and self._matches_name(root.name):
+            results.append(root)
 
         for current, dirs, files in os.walk(root, topdown=True):
             try:
                 current_path = Path(current)
 
-                # ── 深度控制 ──
-                current_depth = len(current_path.parts) - root_depth
-                # depth=0 表示无限制，>0 时 current_depth=0 为根目录本身
-                # ★ 修复（review 方向）：depth=N 只允许 current_depth < N——
-                #   修复前 ``> self.depth`` 多放行一层（depth=1 时一级子目录
-                #   current_depth=1 也被匹配，违背 schema「1 仅当前层」）。
-                if self.depth > 0 and current_depth >= self.depth:
-                    # 修剪子树，不再深入
-                    dirs.clear()
-                    # depth 超过时跳过当前目录的条目（但根目录 depth=0 已处理）
-                    continue
-
                 # ── 排除非源码目录 ──
+                # 排除项自身不返回结果，也不再深入其子树
                 dirs[:] = [d for d in dirs if not _should_exclude_dir(d)]
 
-                # ── 根目录层级处理 ──
-                # 根目录自身的目录名匹配已在 walk 之前提前处理
-                # （os.walk 不将根目录自身作为条目出现在 dirs/files 中，
-                #  因此须在 walk 前单独匹配根目录名）
-                # 因此这里跳过目录名匹配，但根目录层级的文件仍需匹配
-                if current_depth == 0:
-                    # 匹配根目录层级的文件名
-                    if self.filter_type in (None, "file"):
-                        for fname in files:
-                            for compiled_re in patterns_re:
-                                if compiled_re.match(fname):
-                                    results.append(current_path / fname)
-                                    break
-                    continue
+                rel_dir = current_path.relative_to(root)
 
-                # ── 匹配目录名 ──
-                if self.filter_type in (None, "dir"):
-                    dir_name = current_path.name
-                    for compiled_re in patterns_re:
-                        if compiled_re.match(dir_name):
-                            results.append(current_path)
-                            break
+                # ── 匹配目录名 / 相对路径 ──
+                if want_dir:
+                    for dirname in dirs:
+                        rel_posix = (rel_dir / dirname).as_posix()
+                        if self._matches(rel_posix, dirname):
+                            results.append(current_path / dirname)
 
-                # ── 匹配文件名 ──
-                if self.filter_type in (None, "file"):
-                    for fname in files:
-                        for compiled_re in patterns_re:
-                            if compiled_re.match(fname):
-                                results.append(current_path / fname)
-                                break
+                # ── 匹配文件名 / 相对路径 ──
+                if want_file:
+                    for filename in files:
+                        rel_posix = (rel_dir / filename).as_posix()
+                        if self._matches(rel_posix, filename):
+                            results.append(current_path / filename)
 
             except OSError as _perr:
                 # 单文件/目录权限错误不中断整个遍历，记录后继续
@@ -268,8 +347,7 @@ class GlobFunc(Func):
         """终端显示：打印查找摘要和结果"""
         path_info = f" in:{self.root_path}" if self.root_path != os.getcwd() else ""
         type_info = f" type:{self.filter_type}" if self.filter_type else ""
-        depth_info = f" depth:{self.depth}" if self.depth > 0 else ""
         return await self._display_result_template(
             header=f"🔍 查找: {self.pattern}",
-            extra_info=f"模式: {self.pattern}{path_info}{type_info}{depth_info}",
+            extra_info=f"模式: {self.pattern}{path_info}{type_info}",
         )

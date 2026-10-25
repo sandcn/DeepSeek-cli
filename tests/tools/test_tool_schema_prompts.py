@@ -119,7 +119,7 @@ def test_key_parameter_contracts() -> None:
     assert recursive["default"] is False
 
     glob = schemas["glob"]["function"]["parameters"]["properties"]
-    assert glob["depth"]["default"] == 0
+    assert "depth" not in glob
     assert glob["type"]["enum"] == ["file", "dir"]
 
     subagent_type = schemas["subagent"]["function"]["parameters"]["properties"]["type"]
