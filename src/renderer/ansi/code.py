@@ -4,8 +4,8 @@
   - ``renderer._lexer.get_lexer``（pygments lexer 缓存）
   - ``renderer._utils.get_code_style``（monokai 色板，去背景/文本样式）
 
-映射：pygments token → Style（仅前景色）。真彩终端保留主题 hex 的精确
-``(r, g, b)``（24-bit 输出），不支持真彩时经 ``rgb_to_256`` 降级到 256 色。
+映射：pygments token → Style（仅前景色）。主题 hex 颜色保留精确
+``(r, g, b)``（恒 24-bit 真彩输出；2026-10-25 用户需求：删除原 256 色降级）。
 失败时降级为纯文本（dim）。
 
 结构拆分（供流式预览增量复用）：
@@ -22,7 +22,6 @@ from __future__ import annotations
 import logging
 
 from .style import Style
-from .style import detect_truecolor, rgb_to_256
 from .helpers import AnsiLine
 
 _logger = logging.getLogger(__name__)
@@ -70,8 +69,8 @@ def _diff_line(line: str) -> AnsiLine:
 
 _CODE_THEME = "monokai"
 
-#: hex 颜色 → 颜色值缓存（主题颜色集合有限，避免重复解析 hex + 搜色板）；
-#: 键含真彩能力，终端能力切换后不会命中旧编码结果。
+#: hex 颜色 → 真彩三元组缓存（主题颜色集合有限，避免重复解析 hex）；
+#: 恒为 24-bit，无终端能力维度。
 _HEX_COLOR_CACHE: dict = {}
 #: fg 颜色值 → Style 对象缓存（同色 Style 共享，避免每 token 重建 frozen dataclass）
 _FG_STYLE_CACHE: dict = {}
@@ -90,31 +89,29 @@ _LINE_HIGHLIGHT_CACHE: dict[tuple, AnsiLine] = {}
 _LINE_HIGHLIGHT_CACHE_MAX = 4096
 
 
-def _hex_to_color(hex_color: str) -> "int | tuple[int, int, int] | None":
-    """#RRGGBB → 真彩 ``(r, g, b)``（真彩终端）或 256 色号（降级）。
+def _hex_to_color(hex_color: str) -> "tuple[int, int, int] | None":
+    """#RRGGBB → 真彩 ``(r, g, b)``（恒 24-bit，不降级 256 色）。
 
-    None 表示无前景色。带结果缓存（键含真彩能力，避免跨能力命中旧结果）。
+    None 表示无前景色。带结果缓存。
     """
     if not hex_color or not hex_color.startswith("#"):
         return None
-    truecolor = detect_truecolor()
-    key = (hex_color, truecolor)
-    if key in _HEX_COLOR_CACHE:
-        return _HEX_COLOR_CACHE[key]
+    if hex_color in _HEX_COLOR_CACHE:
+        return _HEX_COLOR_CACHE[hex_color]
     try:
         r = int(hex_color[1:3], 16)
         g = int(hex_color[3:5], 16)
         b = int(hex_color[5:7], 16)
     except (ValueError, IndexError):
-        _HEX_COLOR_CACHE[key] = None
+        _HEX_COLOR_CACHE[hex_color] = None
         return None
-    result = (r, g, b) if truecolor else rgb_to_256(r, g, b)
-    _HEX_COLOR_CACHE[key] = result
+    result = (r, g, b)
+    _HEX_COLOR_CACHE[hex_color] = result
     return result
 
 
-def _fg_style(fg: "int | tuple[int, int, int] | None") -> "Style | None":
-    """颜色值（真彩三元组 / 256 色号）→ Style（带缓存；None 表示无前景色）。"""
+def _fg_style(fg: "tuple[int, int, int] | None") -> "Style | None":
+    """真彩三元组 → Style（带缓存；None 表示无前景色）。"""
     if fg is None:
         return None
     style = _FG_STYLE_CACHE.get(fg)
@@ -132,7 +129,7 @@ def _style_for_ttype(theme: str, ttype, pyg_style) -> "Style | None":
     ``(主题, token 类型)`` 缓存：token 类型集合很小，缓存后热路径只做一次
     dict 查找（省去每 token 的链遍历与 ``_hex_to_color``/``_fg_style`` 调用）。
     """
-    key = (theme, ttype, detect_truecolor())
+    key = (theme, ttype)
     hit = _TTYPE_STYLE_CACHE.get(key, _MISSING)
     if hit is not _MISSING:
         return hit
@@ -263,7 +260,7 @@ def highlight_code_lines(
             if not use_cache:
                 aline = _highlight_line(src_line, lexer, pyg_style, theme)
             else:
-                cache_key = (lang, theme, src_line, detect_truecolor())
+                cache_key = (lang, theme, src_line)
                 cached_line = _LINE_HIGHLIGHT_CACHE.get(cache_key)
                 if cached_line is None:
                     aline = _highlight_line(src_line, lexer, pyg_style, theme)

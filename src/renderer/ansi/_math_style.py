@@ -62,7 +62,8 @@ def color_style(name: str) -> Style:
     """颜色名 / ``#rrggbb`` → 前景样式（未知颜色回退近白）。
 
     ``\\textcolor{...}`` / ``\\color{...}`` / ``\\colorbox`` 共用——调用方
-    只需给出名字，色号映射集中在此（新增颜色只改本表）。
+    只需给出名字，色号映射集中在此（新增颜色只改本表）。hex 颜色保留精确
+    24-bit 真彩（不降级 256 色）。
     """
     value = (name or "").strip()
     if value.startswith("#") and len(value) == 7:
@@ -70,23 +71,18 @@ def color_style(name: str) -> Style:
             r = int(value[1:3], 16)
             g = int(value[3:5], 16)
             b = int(value[5:7], 16)
-            from .style import rgb_to_256
-            return Style(fg=rgb_to_256(r, g, b))
+            return Style(fg=(r, g, b))
         except ValueError:
             return _M_SYM
     return Style(fg=_COLOR_256.get(value.lower(), 231))
 
 
-def color_bg(name: str) -> int | None:
-    """颜色名 / ``#rrggbb`` → 背景色号（未知颜色返回 ``None``）。"""
+def color_bg(name: str) -> "tuple[int, int, int] | int | None":
+    """颜色名 / ``#rrggbb`` → 背景色（调色板索引或真彩三元组；未知返回 ``None``）。"""
     value = (name or "").strip()
     if value.startswith("#") and len(value) == 7:
         try:
-            r = int(value[1:3], 16)
-            g = int(value[3:5], 16)
-            b = int(value[5:7], 16)
-            from .style import rgb_to_256
-            return rgb_to_256(r, g, b)
+            return (int(value[1:3], 16), int(value[3:5], 16), int(value[5:7], 16))
         except ValueError:
             return None
     return _COLOR_256.get(value.lower())

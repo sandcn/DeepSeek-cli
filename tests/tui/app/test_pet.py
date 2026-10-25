@@ -342,11 +342,11 @@ def test_render_uses_blue_body_and_pink_accessories() -> None:
         }),
         {"columns": 40},
     )
-    assert "\x1b[38;5;39m" in raw, "亮蓝鱼身"
-    assert "\x1b[38;5;45m" in raw, "亮青蓝描边"
-    assert "\x1b[38;5;211m" in raw, "粉色腮红/爱心"
-    assert "\x1b[38;5;231m" in raw, "白饭/大眼"
-    assert "\x1b[48;5;39m" in raw, "身体底色（避免半填充字形露黑块）"
+    assert "\x1b[38;2;0;175;255m" in raw, "亮蓝鱼身"
+    assert "\x1b[38;2;0;215;255m" in raw, "亮青蓝描边"
+    assert "\x1b[38;2;255;135;175m" in raw, "粉色腮红/爱心"
+    assert "\x1b[38;2;255;255;255m" in raw, "白饭/大眼"
+    assert "\x1b[48;2;0;175;255m" in raw, "身体底色（避免半填充字形露黑块）"
 
 
 def test_narrow_width_is_clamped() -> None:

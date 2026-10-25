@@ -114,7 +114,7 @@ class FloatingWindowSpec:
         offset_x / offset_y: 额外列/行偏移（``bottom`` 锚点 + ``offset_y=-1``
             = 窗口底边位于锚点行上方一行）。
         border: 是否绘制单线边框。
-        border_color: 边框颜色（颜色名或 256 色号；None = 默认深青）。
+        border_color: 边框颜色（颜色名或调色板索引；None = 默认深青）。
         border_style: 边框变体（``single``/``double``/``round``/``bold``/
             ``classic``/``dashed`` 或自定义字符 dict；None = ``single``）——
             透传给 BOX 的 ``borderStyle``（2026-10-21 美化 ``/loop`` 浮窗时

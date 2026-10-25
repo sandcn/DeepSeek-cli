@@ -13,7 +13,6 @@ from .._ansi_sequences import (  # noqa: F401  （显式重导出，见 __all__�
     ANSI_EMERGENCY_RED,
     ANSI_EMERGENCY_RESET,
     ANSI_EMERGENCY_YELLOW,
-    bg_256,
     clear_line,
     clear_screen,
     clear_screen_from_cursor,
@@ -25,7 +24,6 @@ from .._ansi_sequences import (  # noqa: F401  （显式重导出，见 __all__�
     cursor_restore,
     cursor_show,
     cursor_up,
-    fg_256,
     insert_lines,
     move_clear,
     reset_scroll_region,
@@ -60,6 +58,4 @@ __all__ = [
     "insert_lines",
     "sgr",
     "sgr_reset",
-    "fg_256",
-    "bg_256",
 ]

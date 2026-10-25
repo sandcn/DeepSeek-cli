@@ -93,8 +93,10 @@ _CLEAR_PARSE_LINE: int = -1
 # ═══════════════════════════════════════════════════════════
 # 紧急路径 ANSI 转义序列（直写终端，绕过渲染管线）
 # ═══════════════════════════════════════════════════════════
-ANSI_EMERGENCY_RED: str = "\033[31m"
-ANSI_EMERGENCY_YELLOW: str = "\033[33m"
+# 2026-10-25（用户需求：TUI 颜色全部真彩色）：原 31/33 基础色改为 24-bit
+# 真彩（xterm 9/11 亮红/亮黄），保持紧急提示醒目。
+ANSI_EMERGENCY_RED: str = "\033[38;2;255;0;0m"
+ANSI_EMERGENCY_YELLOW: str = "\033[38;2;255;255;0m"
 ANSI_EMERGENCY_RESET: str = "\033[0m"
 ANSI_EMERGENCY_CURSOR_BOTTOM: str = "\033[9999;1H"
 

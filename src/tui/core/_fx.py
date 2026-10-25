@@ -80,11 +80,12 @@ def fade_color(
         elapsed: 自出现/挂载以来的时间（秒）。
         duration: 渐显总时长（秒）；None 时用 TuiConfig.fade_duration_sec
             默认值（0.6）；<=0 时直接返回 end_color。
-        start_color: 起始 256 色号（0-255）。
-        end_color: 结束 256 色号（0-255）。
+        start_color: 起始调色板索引（0-255）。
+        end_color: 结束调色板索引（0-255）。
 
     Returns:
-        插值后的 256 色号：elapsed<=0 → start_color；elapsed>=duration → end_color；
+        插值后的调色板索引（输出时反查精确 RGB 发 24-bit 真彩）：
+        elapsed<=0 → start_color；elapsed>=duration → end_color；
         中间经 ``lerp_color`` 线性插值（RGB 空间）。
     """
     if duration is None:

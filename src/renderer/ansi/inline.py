@@ -31,7 +31,7 @@ from __future__ import annotations
 from contextvars import ContextVar
 from typing import Any, Literal
 
-from .style import Style, detect_truecolor
+from .style import Style
 from .helpers import Run, AnsiLine
 from .._inline_links import normalize_ref_label as _normalize_ref_label
 from src.presentation_data import LiveMapping
@@ -861,8 +861,8 @@ def _emit_color(node, base, ctx, out, depth):
     _emit_children(node, _merge(base, style), ctx, out, depth)
 
 
-def _hex_to_color(value: str) -> "int | tuple[int, int, int] | None":
-    """``#rrggbb`` / ``#rgb`` → 真彩三元组（真彩终端）或 256 色号。
+def _hex_to_color(value: str) -> "tuple[int, int, int] | None":
+    """``#rrggbb`` / ``#rgb`` → 真彩三元组（恒 24-bit，不降级 256 色）。
 
     非该格式或解析失败返回 ``None``。
     """
@@ -879,10 +879,7 @@ def _hex_to_color(value: str) -> "int | tuple[int, int, int] | None":
         b = int(raw[4:6], 16)
     except ValueError:
         return None
-    if detect_truecolor():
-        return (r, g, b)
-    from .style import rgb_to_256
-    return rgb_to_256(r, g, b)
+    return (r, g, b)
 
 
 def _emit_span(node, base, ctx, out, depth):

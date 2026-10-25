@@ -17,7 +17,7 @@
   - 光标行查询（CPR，需读写真实 tty）
   - 剪贴板（OSC 52 + 平台差异）
   - 窗口标题设置（写 stdout 副作用）
-  - 真彩检测（依赖 ``core.color`` 的应用策略）
+  - 颜色输出（调色板反查与真彩序列由 ``core.color`` 统一产出）
 
 约定：所有函数都是 **纯函数**（输入 → 字符串），不写 stdout、不读环境。
 """
@@ -48,15 +48,15 @@ __all__ = [
     "insert_lines",
     "sgr",
     "sgr_reset",
-    "fg_256",
-    "bg_256",
 ]
 
 # ═══════════════════════════════════════════════════════════
 # 紧急路径序列（绕过渲染管线直写终端；崩溃兜底用）
 # ═══════════════════════════════════════════════════════════
-ANSI_EMERGENCY_RED: str = "\033[31m"
-ANSI_EMERGENCY_YELLOW: str = "\033[33m"
+# 2026-10-25（用户需求：TUI 颜色全部真彩色）：原 31/33 基础色改为 24-bit
+# 真彩（xterm 9/11 亮红/亮黄），保持紧急提示醒目。
+ANSI_EMERGENCY_RED: str = "\033[38;2;255;0;0m"
+ANSI_EMERGENCY_YELLOW: str = "\033[38;2;255;255;0m"
 ANSI_EMERGENCY_RESET: str = "\033[0m"
 ANSI_EMERGENCY_CURSOR_BOTTOM: str = "\033[9999;1H"
 
@@ -185,13 +185,3 @@ def sgr(*codes: int) -> str:
 def sgr_reset() -> str:
     """SGR 重置。"""
     return "\033[0m"
-
-
-def fg_256(color: int) -> str:
-    """设置 256 色前景色。"""
-    return f"\033[38;5;{color}m"
-
-
-def bg_256(color: int) -> str:
-    """设置 256 色背景色。"""
-    return f"\033[48;5;{color}m"

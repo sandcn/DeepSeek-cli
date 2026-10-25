@@ -532,7 +532,7 @@ def time_glow(lo: int, hi: int, period: float = 12.0) -> int:
         period: 呼吸周期（秒），默认 12 秒。
 
     Returns:
-        [lo, hi] 区间内的 256 色号整数。
+        [lo, hi] 区间内的调色板索引（输出时反查精确 RGB 发 24-bit 真彩）。
     """
     bucket = int(time.monotonic() / 0.1)
     return _glow_bucket(lo, hi, period, bucket)

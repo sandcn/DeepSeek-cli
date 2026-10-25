@@ -866,7 +866,7 @@ def test_text_input_empty_value_renders_cursor_block() -> None:
         h(TextInput, {"value": "", "placeholder": "输入自定义答案", "focus": True}),
         {"columns": 40},
     )
-    assert "\x1b[48;5;6m" in raw
+    assert "\x1b[48;2;0;128;128m" in raw
     assert "输入自定义答案" in raw
 
     # 未聚焦时不显示光标（保持原有语义）。
@@ -874,7 +874,7 @@ def test_text_input_empty_value_renders_cursor_block() -> None:
         h(TextInput, {"value": "", "placeholder": "输入自定义答案", "focus": False}),
         {"columns": 40},
     )
-    assert "\x1b[48;5;6m" not in raw_off
+    assert "\x1b[48;2;0;128;128m" not in raw_off
 
 
 def test_shift_enter_inserts_newline_and_enter_submits() -> None:
@@ -1059,7 +1059,7 @@ def test_multiline_editor_renders_all_lines() -> None:
     assert "B" in plain
     assert "C" in plain
     assert "\u23ce" not in plain
-    assert "\x1b[48;5;6m" in raw  # 光标块仍在最后一行
+    assert "\x1b[48;2;0;128;128m" in raw  # 光标块仍在最后一行
 
 
 def test_submit_page_renders_multiline_answer() -> None:

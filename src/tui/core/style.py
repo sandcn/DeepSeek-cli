@@ -68,8 +68,8 @@ class Style:
     合并操作时 non-None/True 字段覆盖当前值。
 
     Args:
-        fg: 前景色 256 色号（0-255），None 为不设置。
-        bg: 背景色 256 色号（0-255），None 为不设置。
+        fg: 前景色（xterm-256 调色板索引 0-255，或 TrueColor），None 为不设置。
+        bg: 背景色（xterm-256 调色板索引 0-255，或 TrueColor），None 为不设置。
         bold: 是否加粗。
         italic: 是否斜体。
         dim: 是否暗淡（减弱亮度）。
@@ -88,25 +88,25 @@ class Style:
     inverse: bool = False
 
     def __post_init__(self) -> None:
-        """校验 fg/bg 为 int（256 色号）时的范围 [0, 255]。
+        """校验 fg/bg 为 int（调色板索引）时的范围 [0, 255]。
 
-        ★ P2-1：int 分支无范围校验时，负值/超界会生成非法 ANSI 序列
-        （``\\033[38;5;{value}m`` 越界）——显式校验抛 ValueError，
-        与 Color256 构造校验语义一致。TrueColor 值对象内部自带分量校验，
-        不在此重复。
+        ★ P2-1：int 分支无范围校验时，负值/超界会在输出侧查 xterm 调色板
+        时越界——显式校验抛 ValueError，与 Color256 构造校验语义一致。
+        TrueColor 值对象内部自带分量校验，不在此重复。
         """
         for _name, _value in (("fg", self.fg), ("bg", self.bg)):
             # ★ 修复（P3）：bool 是 int 子类——``Style(fg=True)`` 经
-            #   isinstance(_value, int) 通过且 True∈[0,255]，to_ansi 生成
-            #   ``\033[38;5;1m``（语义错误）。显式排除 bool（抛 ValueError，
+            #   isinstance(_value, int) 通过且 True∈[0,255]，输出为调色板
+            #   索引 1（红）——语义错误。显式排除 bool（抛 ValueError，
             #   与 int 越界校验同一异常类型/风格）。
             if _value is not None and isinstance(_value, bool):
                 raise ValueError(
                     f"Style.{_name} 不接受 bool 色号（bool 是 int 子类），收到: {_value!r}"
                 )
             # ★ P2（review 2026-08-22）：非 bool 非 int 非 TrueColor 数值
-            #   （如 float 45.5）原通过校验——to_ansi 生成非法 ``\033[38;5;45.5m``
-            #   损坏终端渲染。显式拒绝，与 to_ansi_fg（非 int 返回空串）语义对齐。
+            #   （如 float 45.5）原通过校验——输出侧生成非法真彩色序列
+            #   （非整数分量）损坏终端渲染。显式拒绝，与 to_ansi_fg（非 int
+            #   返回空串）语义对齐。
             if _value is not None and not isinstance(_value, (int, TrueColor)):
                 raise ValueError(
                     f"Style.{_name} 色号须为 int(0-255) 或 TrueColor, 收到: {_value!r}"
@@ -128,10 +128,9 @@ class Style:
         顺序组装，RESET 由调用方（apply）统一追加。
 
         fg/bg 为 TrueColor 时使用 24-bit ANSI 序列（38;2 / 48;2）；
-        为 int（256 色号）时经 ``ansi_fg``/``ansi_bg`` 按终端能力输出：
-        真彩终端按 xterm-256 调色板反查精确 RGB 输出 24-bit 序列，
-        不支持真彩（或 ``NO_COLOR``）时降级为 256 色序列（38;5 / 48;5），
-        保证旧终端不乱码。
+        为 int（xterm-256 调色板索引）时经 ``ansi_fg``/``ansi_bg`` 反查
+        精确 RGB，**恒输出 24-bit 真彩序列**；``NO_COLOR`` 存在时不输出
+        颜色（空串）。
 
         ★ 性能（PERF-7）：frozen dataclass 确定性输出 → lru_cache 缓存。
         Style 为不可变值对象（fg/bg 为 int/TrueColor/None + 6 布尔），

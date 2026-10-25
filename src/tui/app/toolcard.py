@@ -101,7 +101,7 @@ _GUIDE_WIDTH = 2
 _TOOL_MD_MIN_WIDTH = 20
 #: 未知终端宽度时的默认卡片宽度（``model.width`` 未就绪时回退）。
 _TOOL_MD_DEFAULT_WIDTH = 80
-#: 工具卡满宽背景色（256 色号；默认深灰 236）。
+#: 工具卡满宽背景色（调色板索引，输出 24-bit 真彩；默认深灰 236）。
 #: 「工具卡整行占满终端宽度」（2026-10-05 用户需求）：标题行/内容行/省略行
 #: 右侧以背景色空格填充至终端宽度，视觉上撑满终端（对齐 Claude Code 工具卡
 #: 满宽背景）——即使内容较短也延伸到终端右边缘，终端宽度变化时随新宽度重排。
@@ -239,7 +239,7 @@ def _category_breath_fg(tool_name: str) -> int:
         tool_name: 工具名（TOOL_CATEGORY_MAP 键；未知名回退暗灰→亮白）。
 
     Returns:
-        [lo, hi] 区间内的 256 色号（与 detail 呼吸同周期，视觉联动）。
+        [lo, hi] 区间内的调色板索引（输出 24-bit 真彩；与 detail 呼吸同周期，视觉联动）。
     """
     from src.tui.app._theme import time_glow
     from src.tui._tool_styles import tool_category

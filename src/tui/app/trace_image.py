@@ -10,8 +10,8 @@
   检查器渲染时进行，且按 ``sha256(base64)`` + 尺寸缓存——同图跨帧零重复解码。
 - **降级安全**：Pillow 缺失 / 解码失败 / 非图片 → 返回占位行或空，不中断
   台账/检查器构建。
-- **终端能力自适应**：真彩或 256 色按 ``detect_truecolor()`` 自动选择
-  （Style.fg/bg 仅接受 int|TrueColor，不传 Color256 值对象）。
+- **真彩色**：像素直接以 ``TrueColor`` 输出（恒 24-bit；Style.fg/bg 接受
+  调色板索引 int 或 TrueColor 值对象，不传 Color256 值对象）。
 """
 
 from __future__ import annotations
@@ -190,11 +190,9 @@ def _placeholder() -> list:
 
 
 def _color(r: int, g: int, b: int):
-    """按终端能力返回 TrueColor 或 256 色 int（Style.fg/bg 兼容）。"""
-    from src.tui.core.color import TrueColor, detect_truecolor, rgb_to_256
-    if detect_truecolor():
-        return TrueColor(r, g, b)
-    return rgb_to_256(r, g, b)
+    """返回 TrueColor（TUI 颜色恒为 24-bit 真彩，Style.fg/bg 直接可用）。"""
+    from src.tui.core.color import TrueColor
+    return TrueColor(r, g, b)
 
 
 def _render(b64: str, w_cells: int, h_cells: int) -> list:

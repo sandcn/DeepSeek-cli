@@ -328,26 +328,6 @@ def query_cursor_row(
 
 
 # ═══════════════════════════════════════════════════════════
-# 终端能力协商
-# ═══════════════════════════════════════════════════════════
-
-def detect_truecolor() -> bool:
-    """检测终端是否支持 truecolor（24-bit 颜色）。
-
-    方向3（单一真源收敛）：复用 ``core.color`` 的判定逻辑（含 NO_COLOR 强制
-    降级 + TERM direct 判定）——修复前本模块独立实现（仅查 ``COLORTERM``，
-    不尊重 ``NO_COLOR`` 规范），与 ``core/color`` 双实现语义漂移。此处调用
-    ``_detect_truecolor_uncached``（无进程级缓存），保持本模块既有「每次
-    独立检测」语义（test_screen 锁定，避免 core/color 缓存跨测试污染）。
-
-    Returns:
-        True — 终端宣称支持 truecolor；False — 默认 256 色降级。
-    """
-    from src.tui.core.color import _detect_truecolor_uncached
-    return _detect_truecolor_uncached()
-
-
-# ═══════════════════════════════════════════════════════════
 # ANSI 序列原语 — 真源已下沉 ``_ansi_sequences.py``（2026-10 架构演进）
 # ═══════════════════════════════════════════════════════════
 # 框架（InkRenderer / InkSession / render()）与终端工具都需要这些纯字符串
@@ -359,7 +339,6 @@ from ._ansi_sequences import (  # noqa: F401  （显式重导出，见 __all__�
     ANSI_EMERGENCY_RED,
     ANSI_EMERGENCY_RESET,
     ANSI_EMERGENCY_YELLOW,
-    bg_256,
     clear_line,
     clear_screen,
     clear_screen_from_cursor,
@@ -371,7 +350,6 @@ from ._ansi_sequences import (  # noqa: F401  （显式重导出，见 __all__�
     cursor_restore,
     cursor_show,
     cursor_up,
-    fg_256,
     insert_lines,
     move_clear,
     reset_scroll_region,
@@ -401,9 +379,9 @@ __all__ = [
     "cursor_forward", "cursor_hide", "cursor_show",
     "clear_line", "clear_screen_from_cursor", "clear_screen", "move_clear",
     "scroll_up", "scroll_down", "insert_lines",
-    "sgr", "sgr_reset", "fg_256", "bg_256",
+    "sgr", "sgr_reset",
     # 本模块（终端 I/O 与有状态设施）
-    "_get_terminal_size", "query_cursor_row", "detect_truecolor",
+    "_get_terminal_size", "query_cursor_row",
     "set_window_title", "set_clipboard", "take_startup_input",
     "register_sigwinch_callback", "unregister_sigwinch_callback",
     "process_sigwinch", "TerminalWidthCache", "narrow_sep_width",
@@ -893,7 +871,6 @@ __all__ = [
     # 终端尺寸 / 光标查询
     "query_cursor_row",
     "take_startup_input",
-    "detect_truecolor",
     # 光标与屏幕控制序列
     "set_scroll_region",
     "reset_scroll_region",
@@ -915,8 +892,6 @@ __all__ = [
     # 样式 / 颜色
     "sgr",
     "sgr_reset",
-    "fg_256",
-    "bg_256",
     "set_window_title",
     # 剪贴板
     "set_clipboard",
