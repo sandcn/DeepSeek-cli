@@ -48,6 +48,7 @@ from __future__ import annotations
 import ctypes
 import dataclasses
 import logging
+import threading
 import time
 
 from . import grid as grid_module
@@ -90,6 +91,63 @@ SHELL_WINDOW_CLASSES = frozenset({
 
 #: WINDOW 后代展开深度上限
 _MAX_TREE_DEPTH = 32
+
+#: Toolhelp32 进程表快照的存活时间（秒）。窗口定位一次要「展开后代」与
+#: 「读进程名」两处进程表（单次枚举约 10ms），合并为一份 TTL 快照后只枚举一次。
+_PROC_SNAPSHOT_TTL: float = 0.5
+#: ``pid → 窗口归属 WINPID 集合`` 的缓存存活时间（秒）。Cygwin 下解析一次
+#: 要走 ``ps`` 子进程（25~60ms），而 probe / 注入 / 前台确认在一次 bash_opt
+#: 调用里会重复 2~4 次；TTL 小于窗口重试间隔（1s），新窗口不会长期不可见。
+_RESOLVE_TTL: float = 0.5
+#: 缓存条数上限（防御长跑进程累积大量历史 task pid）
+_CACHE_MAX_ENTRIES = 256
+
+_snapshot_lock = threading.Lock()
+_snapshot_cache: tuple[float, list, dict, dict] | None = None
+_resolve_lock = threading.Lock()
+_resolve_cache: dict[int, tuple[float, frozenset[int]]] = {}
+
+
+def clear_window_cache() -> None:
+    """清空窗口定位缓存（进程快照 / PID→WINPID 归属）。
+
+    需要「绝对新鲜」的进程树时调用（例如窗口刚创建、缓存里还没有它），
+    下一次 :func:`resolve_window_pids` 会重新解析系统进程表。
+    """
+    global _snapshot_cache
+    with _snapshot_lock:
+        _snapshot_cache = None
+    with _resolve_lock:
+        _resolve_cache.clear()
+
+
+def _process_snapshot() -> tuple[list, dict, dict]:
+    """返回 ``(进程表, 父→子映射, pid→exe 名)``，TTL 内复用同一份快照。
+
+    Toolhelp32 枚举一次约 10ms；窗口定位路径里「展开 Windows 后代」与
+    「填充窗口进程名」原本各枚举一次，合并后单次定位只付一次成本。
+
+    Returns:
+        ``(processes, children, names)``；``processes`` 为
+        ``[(pid, ppid, exe), ...]``。返回共享只读对象，调用方不得原地修改。
+    """
+    global _snapshot_cache
+    with _snapshot_lock:
+        cached = _snapshot_cache
+        if cached is not None and time.monotonic() - cached[0] <= _PROC_SNAPSHOT_TTL:
+            return cached[1], cached[2], cached[3]
+    processes = winapi.list_processes()
+    children: dict[int, list[int]] = {}
+    names: dict[int, str] = {}
+    for proc_pid, ppid, name in processes:
+        children.setdefault(ppid, []).append(proc_pid)
+        names[proc_pid] = name
+    # 空表不缓存：Toolhelp32 偶发失败时下次调用必须重新枚举，
+    # 否则 0.5s 内的窗口定位都拿不到后代 / 进程名。
+    if processes:
+        with _snapshot_lock:
+            _snapshot_cache = (time.monotonic(), processes, children, names)
+    return processes, children, names
 
 #: 前置窗口后等待重绘的时间（秒）——BitBlt 回退前让画面刷新
 _RAISE_SETTLE_SECONDS = 0.25
@@ -244,6 +302,31 @@ class WindowsBackend:
 def resolve_window_pids(pid: int) -> set[int]:
     """把目标 PID 解析为「窗口归属的 Windows PID 集合」（含全部子进程）。
 
+    结果在 :data:`_RESOLVE_TTL` 内复用：一次 bash_opt 调用（probe → 注入 →
+    前台确认）会重复解析同一进程树，Cygwin 下每次解析都要 fork ``ps``
+    （25~60ms）。TTL 小于窗口重试间隔（1s），新出现的窗口不会长期不可见。
+
+    ★ 空结果**不缓存**：窗口可能刚创建，「这次没找到」必须让下一次调用
+    重新解析，否则 probe 会连续 5 秒判定「没有 GUI 窗口」而错误回退到终端。
+    """
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return set()
+    with _resolve_lock:
+        cached = _resolve_cache.get(pid)
+        if cached is not None and time.monotonic() - cached[0] <= _RESOLVE_TTL:
+            return set(cached[1])
+    result = _resolve_window_pids_uncached(pid)
+    if result:
+        with _resolve_lock:
+            if len(_resolve_cache) >= _CACHE_MAX_ENTRIES:
+                _resolve_cache.clear()
+            _resolve_cache[pid] = (time.monotonic(), frozenset(result))
+    return result
+
+
+def _resolve_window_pids_uncached(pid: int) -> set[int]:
+    """（无缓存）把目标 PID 解析为窗口归属的 Windows PID 集合。
+
     Cygwin/MSYS2 下 pid 是 POSIX PID，需经 ``/proc/<pid>/winpid`` 映射到
     Windows PID。后台任务在 ``_on_ready`` 时还会把启动时的 Windows PID、
     Job 句柄、exe 名提示登记到 ``_task_winpid``——即使 POSIX 进程在 exec
@@ -327,7 +410,7 @@ def resolve_window_pids(pid: int) -> set[int]:
         # PID 处理（两套编号可能撞车，会命中无关窗口）。
         # 原生 Windows 不会走到这里（base 此时至少含 pid）。
         try:
-            if any(item[0] == pid for item in winapi.list_processes()):
+            if any(item[0] == pid for item in _process_snapshot()[0]):
                 base = {pid}
         except OSError:  # pragma: no cover - 依赖系统调用
             pass
@@ -343,13 +426,10 @@ def resolve_window_pids(pid: int) -> set[int]:
 def _expand_windows_descendants(root_pids: set[int]) -> set[int]:
     """用 Toolhelp32 进程表把根集合扩展为「根 + 全部 Windows 后代」。"""
     try:
-        processes = winapi.list_processes()
+        children = _process_snapshot()[1]
     except OSError as exc:  # pragma: no cover - 依赖系统调用
         logger.debug("Windows 进程表读取失败: %s", exc)
         return set(root_pids)
-    children: dict[int, list[int]] = {}
-    for proc_pid, ppid, _name in processes:
-        children.setdefault(ppid, []).append(proc_pid)
     result = set(root_pids)
     stack = [(root, 0) for root in root_pids]
     while stack:
@@ -423,13 +503,16 @@ def _window_extension_fields(hwnd) -> dict:
 
 
 def _process_name_map() -> dict[int, str]:
-    """读取 ``{pid: exe 名}`` 映射（供 ``process:`` 选择器与展示；失败返回空表）。"""
+    """读取 ``{pid: exe 名}`` 映射（供 ``process:`` 选择器与展示；失败返回空表）。
+
+    与 :func:`_expand_windows_descendants` 共用 :func:`_process_snapshot`
+    的 Toolhelp32 快照，一次窗口定位只枚举一次进程表。
+    """
     try:
-        processes = winapi.list_processes()
+        return dict(_process_snapshot()[2])
     except OSError as exc:  # pragma: no cover - 依赖系统调用
         logger.debug("读取进程名失败: %s", exc)
         return {}
-    return {pid: name for pid, _ppid, name in processes}
 
 
 def enumerate_candidates(window_pids: set[int]) -> list[WindowInfo]:

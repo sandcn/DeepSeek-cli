@@ -16,6 +16,7 @@ import re as _re
 import signal as _signal
 import subprocess
 import sys
+import threading
 import time
 
 from .._compat import dataclass
@@ -473,17 +474,54 @@ def _parse_ps_output(output: str) -> dict[int, list[int]]:
     return mapping
 
 
-def _children_map_from_ps() -> dict[int, list[int]]:
+#: ``ps`` 进程树缓存的存活时间（秒）。
+#: Cygwin / MSYS2 下每次取进程树都要 fork ``ps``（实测 25~60ms），而窗口
+#: 定位（``probe_window`` → ``send_window_input`` → ``foreground_in_tree``）
+#: 在一次 bash_opt 调用里会重复解析 2~4 次。用短 TTL 去重后，同一轮 GUI
+#: 操作只付一次 ``ps`` 成本。TTL 取 0.5s——小于窗口重试间隔（1s），
+#: 新出现的子进程窗口不会因缓存而长期不可见。
+_PROC_TREE_CACHE_TTL: float = 0.5
+#: (取到时间 monotonic, 父 PID → [子 PID])；调用方只读，不得原地修改。
+_proc_tree_cache: tuple[float, dict[int, list[int]]] | None = None
+_proc_tree_cache_lock = threading.Lock()
+
+
+def clear_process_tree_cache() -> None:
+    """清空 ``ps`` 进程树缓存（需要最新进程树时调用；测试亦用之）。"""
+    global _proc_tree_cache
+    with _proc_tree_cache_lock:
+        _proc_tree_cache = None
+
+
+def _children_map_from_ps(*, use_cache: bool = True) -> dict[int, list[int]]:
     """用 ``ps`` 构建 ``PPid → [child_pid]``（无 /proc 平台的兜底通道）。
 
     依次尝试多套命令形态——GNU/BSD 的 ``ps -eo pid=,ppid=``（无表头）、
     通用性最好的 ``ps -ef`` / ``ps ax``（带 ``PID``/``PPID`` 表头，
     Cygwin 的 procps 只支持这类）；首个解析出结果的形态即采用，全部
     不可用时返回空表（调用方自然退化为「无后代可收集」）。
+
+    Args:
+        use_cache: 是否复用 :data:`_PROC_TREE_CACHE_TTL` 内的进程树快照
+            （默认开；需要绝对新鲜的进程树时传 False）。空结果**不缓存**
+            ——``ps`` 暂时不可用时下次调用仍会重试，不会把「读不到」固化成
+            0.5s 的「没有子进程」。
+
+    Returns:
+        ``父 PID → [子 PID]``（只读共享快照，调用方不得原地修改）。
     """
+    global _proc_tree_cache
+    if use_cache:
+        with _proc_tree_cache_lock:
+            cached = _proc_tree_cache
+        if cached is not None and time.monotonic() - cached[0] <= _PROC_TREE_CACHE_TTL:
+            return cached[1]
     for argv in (['ps', '-eo', 'pid=,ppid='], ['ps', '-ef'], ['ps', 'ax']):
         mapping = _parse_ps_output(_run_quiet(argv))
         if mapping:
+            if use_cache:
+                with _proc_tree_cache_lock:
+                    _proc_tree_cache = (time.monotonic(), mapping)
             return mapping
     return {}
 

@@ -95,37 +95,60 @@ import logging
 import math
 import os
 import time
+from collections import deque
+from typing import TYPE_CHECKING
 
 from .base import Func
-from .bash import READ_BUFFER_DROPPED_KEY, _remember_echo_lines, kill_process_tree
+from .bash import (
+    READ_BUFFER_DROPPED_KEY,
+    READ_BUFFER_LEN_KEY,
+    _remember_echo_lines,
+    kill_process_tree,
+)
 from ._bash_opt_schema import build_bash_opt_schema
 from ._process_output import CHILD_STDIO_ENCODING
 from .file_ops import normalize_user_path, validate_path_security
-from ._screenshot import (
-    CropError,
-    CropRegion,
-    MonitorError,
-    NoWindowError,
-    ScreenshotError,
-    SelectorError,
-    capture_process_window,
-    capture_screen,
-    list_monitors,
-    resolve_monitor,
-)
-from ._window_input import (
-    INPUT_OPS,
-    ActionError,
-    InputError,
-    NoWindowError as InputNoWindowError,
-    build_action,
-    probe_window,
-    send_window_input,
-)
-from ._terminal_keys import SUPPORTED_TERMINAL_KEYS, parse_terminal_key
-from ..core.base_agent import _parse_bash_result_fields
+
+if TYPE_CHECKING:  # 仅类型检查；运行时经 _screenshot_api() 惰性导入
+    from ._screenshot import CropRegion
 
 logger = logging.getLogger(__name__)
+
+#: 窗口输入 op 名（与 ``_window_input.INPUT_OPS`` 必须一致，测试断言同步）。
+#: ★ 用字面量而非顶层导入：``INPUT_OPS`` 来自 GUI 模块，导入它会拖慢
+#: ``bash_opt`` 的工具加载；而 op 分派（read / wait 等纯文本 op）每次调用
+#: 都要判断是否属于输入类。GUI 能力在真正执行 screenshot / 输入 op 时才导入。
+_INPUT_OPS_LITERAL: tuple[str, ...] = (
+    "click", "move", "hover", "drag", "scroll", "key", "type", "release",
+)
+
+
+def _screenshot_api():
+    """惰性导入截图能力（仅 screenshot / 输入后复核截图使用）。"""
+    from . import _screenshot
+    return _screenshot
+
+
+def _window_input_api():
+    """惰性导入窗口输入能力（仅 GUI 输入 op 使用）。"""
+    from . import _window_input
+    return _window_input
+
+
+def _terminal_keys_api():
+    """惰性导入终端按键映射（仅 op=keys 的终端回退使用）。"""
+    from . import _terminal_keys
+    return _terminal_keys
+
+
+def _parse_bash_fields(text: str):
+    """惰性导入 bash 三元结果解析（仅 ``op=wait`` 的回退路径使用）。
+
+    顶层导入 ``..core.base_agent`` 会给工具加载多付约 46ms（独立导入时）；
+    该模块只在 wait 回退解析时需要。
+    """
+    from ..core.base_agent import _parse_bash_result_fields
+    return _parse_bash_result_fields(text)
 
 def default_stdin_encoding() -> str:
     """``op=stdin`` 的默认文本编码：跟随 bash 工具的 stdio 约定（``utf-8``）。
@@ -290,7 +313,7 @@ class BashOptFunc(Func):
     #: 不再自动回灌（静默丢失）。
     _MANAGED_OPS: tuple[str, ...] = (
         "stdin", "close_stdin", "keys", "kill",
-        *(op for op in INPUT_OPS if op != "release"),
+        *(_op for _op in _INPUT_OPS_LITERAL if _op != "release"),
     )
     #: 与具体进程 / 窗口无关、**无需 task_id** 即可执行的 op（其余 op 仍需要
     #: 后台任务的进程句柄 / 窗口）。screenshot 的整屏形态见
@@ -335,7 +358,7 @@ class BashOptFunc(Func):
             screen = arguments.get("screen")
             if screen:
                 extra = f"{extra} screen={screen}" if extra else f"screen={screen}"
-        elif op in INPUT_OPS:
+        elif op in _INPUT_OPS_LITERAL:
             extra = cls._input_display(op, arguments)
             window = arguments.get("window")
             if window:
@@ -507,7 +530,7 @@ class BashOptFunc(Func):
             background_tasks = {}
 
         supported_ops = ("read", "wait", "kill", "stdin", "close_stdin",
-                         "keys", "screenshot", *INPUT_OPS)
+                         "keys", "screenshot", *_INPUT_OPS_LITERAL)
         if self.op not in supported_ops:
             return f"(未知操作: {self.op}。支持: {'/'.join(supported_ops)})"
 
@@ -563,7 +586,7 @@ class BashOptFunc(Func):
             return await self._op_keys(rec)
         if self.op == "screenshot":
             return await self._op_screenshot(rec)
-        if self.op in INPUT_OPS:
+        if self.op in _INPUT_OPS_LITERAL:
             return await self._op_input(rec)
         return f"(未知操作: {self.op}。支持: {'/'.join(supported_ops)})"
 
@@ -613,6 +636,27 @@ class BashOptFunc(Func):
 
     # ── op=read ──────────────────────────────────────────
 
+    @staticmethod
+    def _take_read_buffer(rec: dict) -> tuple[str, int]:
+        """取走并清空 read_buffer，返回 ``(文本, 因上限丢弃的字符数)``。
+
+        缓冲是**块队列**（``collections.deque[str]``，见
+        ``bash.READ_BUFFER_LEN_KEY``）：后台任务每行输出只 append 一块，
+        read 时一次性 join，避免「每行拼接字符串」在满缓冲时反复复制整个
+        200KB。兼容旧记录里的字符串 / list 形态。
+        """
+        chunks = rec.get("read_buffer")
+        if isinstance(chunks, str):
+            output = chunks
+        elif chunks:
+            output = "".join(chunks)  # list / deque[str]
+        else:
+            output = ""
+        rec["read_buffer"] = deque()
+        rec[READ_BUFFER_LEN_KEY] = 0
+        dropped = int(rec.pop(READ_BUFFER_DROPPED_KEY, 0) or 0)
+        return output, dropped
+
     async def _op_read(self, rec: dict) -> str:
         """读取后台任务当前已产生的全部输出并清空缓冲，立即返回。
 
@@ -637,24 +681,21 @@ class BashOptFunc(Func):
         lock = rec.get("io_lock")
         if lock is not None:
             async with lock:
-                output = rec.get("read_buffer", "")
-                rec["read_buffer"] = ""
-                buffer_dropped = int(
-                    rec.pop(READ_BUFFER_DROPPED_KEY, 0) or 0)
+                output, buffer_dropped = self._take_read_buffer(rec)
         else:
-            output = rec.get("read_buffer", "")
-            rec["read_buffer"] = ""
-            buffer_dropped = int(rec.pop(READ_BUFFER_DROPPED_KEY, 0) or 0)
+            output, buffer_dropped = self._take_read_buffer(rec)
         done = bool(rec.get("done"))
         status = rec.get("status") or ("completed" if done else "running")
         # ★ 行数截断（默认 1000 行，保留尾部最新行）：read 是增量读取，
         #   长时任务一次积压几万行时会整段灌进模型上下文；这里与 bash 工具的
         #   MAX_LINES 对齐，max_lines=0 关闭该限制（只受字符上限约束）。
+        #   ★ 只切一次 splitlines(keepends=True)：行数与尾部内容一次拿到，
+        #   不再先 splitlines() 统计行数、再 splitlines(True) 取尾部（两遍）。
         max_lines = self.max_lines if self.max_lines > 0 else 0
-        total_lines = len(output.splitlines())
+        lines = output.splitlines(keepends=True)
+        total_lines = len(lines)
         dropped_lines = 0
         if max_lines and total_lines > max_lines:
-            lines = output.splitlines(keepends=True)
             dropped_lines = total_lines - max_lines
             output = "".join(lines[-max_lines:])
         payload = {
@@ -737,7 +778,7 @@ class BashOptFunc(Func):
             stderr = rec.get("stderr", "")
             returncode = rec.get("returncode")
         else:
-            stdout, stderr, returncode = _parse_bash_result_fields(
+            stdout, stderr, returncode = _parse_bash_fields(
                 rec.get("result", ""))
         status = rec.get("status", "completed")
         payload = {
@@ -1046,9 +1087,10 @@ class BashOptFunc(Func):
                       and pid > 0 else None)
         window_failure: str | None = None
         if window_pid is not None and await self._probe_window_async(window_pid):
+            winput = _window_input_api()
             try:
                 return await self._send_keys_to_window(window_pid, key_text)
-            except (InputNoWindowError, InputError) as exc:
+            except (winput.NoWindowError, winput.InputError) as exc:
                 # 探测到窗口但注入失败（窗口已关闭 / 无法置前等）：尝试终端回退
                 window_failure = str(exc)
         ok, message = await self._send_keys_to_terminal(rec, key_text)
@@ -1074,7 +1116,7 @@ class BashOptFunc(Func):
         """
         try:
             found = await asyncio.wait_for(
-                asyncio.to_thread(probe_window, pid),
+                asyncio.to_thread(_window_input_api().probe_window, pid),
                 timeout=self._INPUT_TIMEOUT,
             )
         except asyncio.TimeoutError:
@@ -1101,7 +1143,7 @@ class BashOptFunc(Func):
             InputNoWindowError: 注入时窗口已消失。
             InputError: 平台不支持或注入失败。
         """
-        action = build_action("key", {"key": key_text})
+        action = _window_input_api().build_action("key", {"key": key_text})
         result = await self._send_input_with_retry(pid, action)
         payload = {
             "task_id": self.task_id,
@@ -1126,12 +1168,15 @@ class BashOptFunc(Func):
             ``(成功, 消息)``——成功时为提示文本，失败时为错误文本（解析失败
             或通道不可用）。
         """
+        winput = _window_input_api()
+        keys_api = _terminal_keys_api()
         try:
-            sequence = parse_terminal_key(key_text)
-        except ActionError as exc:
+            sequence = keys_api.parse_terminal_key(key_text)
+        except winput.ActionError as exc:
             return False, (
                 f"(按键解析失败: {exc}。终端按键支持: "
-                f"{', '.join(SUPPORTED_TERMINAL_KEYS)}、ctrl_a..ctrl_z、"
+                f"{', '.join(keys_api.SUPPORTED_TERMINAL_KEYS)}、"
+                f"ctrl_a..ctrl_z、"
                 f"alt+<字符>、shift+tab、单个字符；亦接受 esc/del/pageup/"
                 f"return/ins/pgdn 等别名)"
             )
@@ -1276,9 +1321,10 @@ class BashOptFunc(Func):
             ended = self._ended_task_reply(rec, "截图")
             if ended:
                 return ended
+        shot = _screenshot_api()
         try:
             crop = self._resolve_crop()
-        except CropError as exc:
+        except shot.CropError as exc:
             return f"(截图裁剪参数非法: {exc})"
         try:
             target_path = self._prepare_screenshot_path(str(self.path))
@@ -1288,9 +1334,10 @@ class BashOptFunc(Func):
             info = await self._screenshot_target(
                 rec, target_path=target_path, crop=crop,
                 window=self.window, screen=self.screen)
-        except MonitorError as exc:
+        except shot.MonitorError as exc:
             return f"(截图失败: {exc})"
-        except (SelectorError, ScreenshotError, CropError, ValueError) as exc:
+        except (shot.SelectorError, shot.ScreenshotError,
+                shot.CropError, ValueError) as exc:
             scope = f"（window 选择器 {self.window!r}）" if self.window else ""
             return f"(截图失败{scope}: {exc})"
         result = info["result"]
@@ -1349,7 +1396,7 @@ class BashOptFunc(Func):
                            "，可用 read_image 工具读取该文件查看画面")
         return json.dumps(payload, ensure_ascii=False)
 
-    def _resolve_crop(self) -> CropRegion | None:
+    def _resolve_crop(self) -> "CropRegion | None":
         """解析 crop 参数为裁剪区域（省略 / 空白 → None，输出整窗）。
 
         Raises:
@@ -1358,10 +1405,10 @@ class BashOptFunc(Func):
         raw = self.crop
         if raw is None or not str(raw).strip():
             return None
-        return CropRegion.parse(str(raw))
+        return _screenshot_api().CropRegion.parse(str(raw))
 
     async def _capture_with_retry(self, pid: int, path: str,
-                                  crop: CropRegion | None = None,
+                                  crop: "CropRegion | None" = None,
                                   *, window: str | None = None):
         """截图（GUI 程序窗口创建有延迟时轮询重试）。
 
@@ -1387,21 +1434,22 @@ class BashOptFunc(Func):
             kwargs["crop"] = crop
         if window:
             kwargs["window"] = window
+        shot = _screenshot_api()
         deadline = time.monotonic() + self._SCREENSHOT_WAIT_SECONDS
         while True:
             try:
                 return await asyncio.wait_for(
                     asyncio.to_thread(
-                        lambda: capture_process_window(pid, path, **kwargs)),
+                        lambda: shot.capture_process_window(pid, path, **kwargs)),
                     timeout=self._SCREENSHOT_TIMEOUT,
                 )
-            except NoWindowError as exc:
+            except shot.NoWindowError as exc:
                 if time.monotonic() >= deadline:
                     raise
                 logger.debug("截图重试（暂无窗口）: %s", exc)
                 await asyncio.sleep(self._SCREENSHOT_RETRY_INTERVAL)
             except asyncio.TimeoutError:
-                raise ScreenshotError(
+                raise shot.ScreenshotError(
                     f"截图超时（超过 {self._SCREENSHOT_TIMEOUT:g} 秒）："
                     f"窗口无响应或截图命令卡死"
                 ) from None
@@ -1435,15 +1483,16 @@ class BashOptFunc(Func):
         Raises:
             MonitorError: 平台枚举不到显示器或选择越界。
         """
+        shot = _screenshot_api()
         try:
             monitors = await asyncio.wait_for(
-                asyncio.to_thread(list_monitors), timeout=self._INPUT_TIMEOUT)
+                asyncio.to_thread(shot.list_monitors), timeout=self._INPUT_TIMEOUT)
         except asyncio.TimeoutError:
-            raise MonitorError(
+            raise shot.MonitorError(
                 f"枚举显示器超时（超过 {self._INPUT_TIMEOUT:g} 秒）：系统无响应"
             ) from None
         value = self.screen if spec is None else spec
-        monitor = resolve_monitor(
+        monitor = shot.resolve_monitor(
             monitors, value if not isinstance(value, bool) else None)
         index = 0
         for position, item in enumerate(monitors, start=1):
@@ -1457,14 +1506,15 @@ class BashOptFunc(Func):
         kwargs: dict = {}
         if crop is not None:
             kwargs["crop"] = crop
+        shot = _screenshot_api()
         try:
             return await asyncio.wait_for(
                 asyncio.to_thread(
-                    lambda: capture_screen(monitor, path, **kwargs)),
+                    lambda: shot.capture_screen(monitor, path, **kwargs)),
                 timeout=self._SCREENSHOT_TIMEOUT,
             )
         except asyncio.TimeoutError:
-            raise ScreenshotError(
+            raise shot.ScreenshotError(
                 f"全屏截图超时（超过 {self._SCREENSHOT_TIMEOUT:g} 秒）"
             ) from None
 
@@ -1489,7 +1539,7 @@ class BashOptFunc(Func):
             }
         pid = rec.get("pid")
         if pid is None:
-            raise ScreenshotError(
+            raise _screenshot_api().ScreenshotError(
                 f"后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
                 f"无法截图；需要整屏截图可传 screen=true"
             )
@@ -1544,13 +1594,14 @@ class BashOptFunc(Func):
                         f"鼠标按钮）)")
             return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
                     f"无法注入输入。可用 op=wait 查看任务状态)")
+        winput = _window_input_api()
         try:
             action = self._build_input_action()
-        except (ActionError, ValueError) as exc:
+        except (winput.ActionError, ValueError) as exc:
             return f"(输入参数非法: {exc})"
         try:
             result = await self._send_input_with_retry(pid, action)
-        except (InputNoWindowError, InputError) as exc:
+        except (winput.NoWindowError, winput.InputError) as exc:
             message = str(exc)
             if "客户区" in message:
                 return (f"(输入失败: {message}。该窗口没有可换算的客户区，无法投递"
@@ -1597,9 +1648,10 @@ class BashOptFunc(Func):
                 "该操作没有可截图的窗口（release 可在无 task_id 时执行），"
                 "未自动截图；需要截图请用 op=screenshot 指定 task_id 或 "
                 "screen=true")}
+        shot_api = _screenshot_api()
         try:
             crop = self._resolve_crop()
-        except CropError as exc:
+        except shot_api.CropError as exc:
             return {"screenshot_error": f"截图裁剪参数非法: {exc}"}
         try:
             target_path = self._prepare_screenshot_path(str(self.path))
@@ -1609,8 +1661,8 @@ class BashOptFunc(Func):
             info = await self._screenshot_target(
                 rec, target_path=target_path, crop=crop,
                 window=self.window, screen=None)
-        except (MonitorError, SelectorError, ScreenshotError,
-                CropError, ValueError) as exc:
+        except (shot_api.MonitorError, shot_api.SelectorError,
+                shot_api.ScreenshotError, shot_api.CropError, ValueError) as exc:
             scope = f"（window 选择器 {self.window!r}）" if self.window else ""
             return {"screenshot_error": f"截图失败{scope}: {exc}"}
         result = info["result"]
@@ -1638,7 +1690,7 @@ class BashOptFunc(Func):
             "direction": self.direction, "amount": self.amount,
             "window": self.window,
         }
-        return build_action(self.op, params)
+        return _window_input_api().build_action(self.op, params)
 
     async def _send_input_with_retry(self, pid: int, action):
         """注入输入（GUI 程序窗口创建有延迟时轮询重试）。
@@ -1650,20 +1702,21 @@ class BashOptFunc(Func):
         Raises:
             ActionError / InputError: 参数非法、平台不支持、注入失败或超时。
         """
+        winput = _window_input_api()
         deadline = time.monotonic() + self._INPUT_WAIT_SECONDS
         while True:
             try:
                 return await asyncio.wait_for(
-                    asyncio.to_thread(send_window_input, pid, action),
+                    asyncio.to_thread(winput.send_window_input, pid, action),
                     timeout=self._INPUT_TIMEOUT,
                 )
-            except InputNoWindowError as exc:
+            except winput.NoWindowError as exc:
                 if time.monotonic() >= deadline:
                     raise
                 logger.debug("输入注入重试（暂无窗口）: %s", exc)
                 await asyncio.sleep(self._INPUT_RETRY_INTERVAL)
             except asyncio.TimeoutError:
-                raise InputError(
+                raise winput.InputError(
                     f"输入注入超时（超过 {self._INPUT_TIMEOUT:g} 秒）：注入调用无响应"
                 ) from None
 
