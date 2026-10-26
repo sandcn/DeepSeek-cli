@@ -19,14 +19,22 @@
 并锁定空模式章节命名口径：标题不带数字编号（不用「2.1」式命名），
 交叉引用一律按章节名称闭环，避免编号随改稿漂移。
 
-并锁定空模式第三轮审计的修复项：跨层阶梯、`push` 显式确认、安全侧选项与
-`custom` 语义、新建文件写前检查、破坏性修复项拆分、测试框架完成口径、
+并锁定空模式第三轮审计的修复项：跨层阶梯、`push` 默认项取「推送」（push 是默认推送的）
+与不可逆远程操作的安全侧、`custom` 语义、新建文件写前检查、破坏性修复项拆分、
+测试框架完成口径、
 悬空章节引用与 `.bak` 快照提交边界。
 
 并锁定空模式第七章「正例 / 反例对照」与正文判据的一致性（示例不得顶掉条款）。
 
 并锁定空模式「输出语言」条款：思考与回答都强制中文，同时保留代码 / 命令 /
 报错原文与安全红线脱敏要求的例外。
+
+并锁定空模式「遇错重试无次数上限」条款：先分析错误根因，再选择重试或换方法，
+次数不设上限，直到错误真正解决并复验通过；仅根因客观不可达时如实报告。
+
+并锁定空模式「完成计划项才一次性输出总结」的交付时序：计划项全部落地并验证
+通过后一次性输出总结；未完成或仍有未验证项时只给进度说明与未完成清单，
+不得输出结论性总结，分次进度汇报不构成总结。
 """
 
 from __future__ import annotations
@@ -201,13 +209,13 @@ def test_empty_prompt_invariants_after_conflict_fix() -> None:
     """
     content = builder._load_prompt("prompts_export_main_empty")
 
-    # 计划延后口径统一：允许本轮分批，禁止跨轮延后。
+    # 计划延后口径统一：报告层面可分阶段说明，落盘与验证仍一次性，禁止跨轮延后。
     assert "不得跨轮延后" in content
-    assert "本轮内分批不视为延后" in content
+    assert "本轮内分阶段汇报不视为延后" in content
 
     # 回滚与基线可执行：写前快照、误改恢复、改动前基线。
     assert "写前快照" in content
-    assert "git restore --source=HEAD --staged --worktree -- <path>" in content
+    assert "git restore --source=HEAD --worktree -- <path>" in content
     assert "基线例外" in content
 
     # 提问口子覆盖版本控制写操作；扩权「申请与执行」不得两缺。
@@ -309,10 +317,12 @@ def test_empty_prompt_execution_path_conflicts_removed() -> None:
     assert "一律视为未确认，不得执行" in content
     assert "破坏性 / 不可逆项必须拆成独立的单选问题" in content
     assert "默认项取安全侧" in content
-    # 用户明确要求：`git push` 的 user_select 默认项取「推送」，其余安全红线类仍取安全侧。
+    # 用户明确要求：`git push` 的默认项取「推送」（push 是默认推送的），
+    # 但显式确认门槛不变（超时 / 无响应 / 非交互仍不推送）。
+    assert "`commit` / `push` 前必须用 `user_select` 确认（属〈提问规则〉④）" in content
     assert "`push` 只问目标远端 / 分支与是否推送（默认项取「推送」）" in content
-    assert "唯 `git push` 按〈版本控制（Git）〉取「推送」为默认项" in content
-    assert "`push`（含普通 push）与强制推送 / 其他不可逆远程操作按〈安全红线〉必须显式确认" in content
+    assert "**push 是默认推送的**" in content
+    assert "`push` 的 `user_select` 默认项取「推送」" in content
     # git 写操作与远程命令必须有可执行的 bash 通道。
     assert "`commit` / `push` 经〈版本控制（Git）〉提问流程并按对应条款确认后" in content
     assert "远程命令经〈安全红线〉确认后" in content
@@ -330,6 +340,34 @@ def test_empty_prompt_execution_path_conflicts_removed() -> None:
     assert "`action=cancel`、`action=empty`" in content
     assert "`action=empty` 先按〈提问规则〉修正参数重发" in content
     assert "仍失败则保留工作区改动并如实告知" in content
+
+
+def test_empty_prompt_allows_push_by_default() -> None:
+    """空模式：`git push` 的默认项取「推送」（push 是默认推送的）。
+
+    用户明确要求：push 默认就是推送——`user_select` 默认项取「推送」，
+    Submit 页未回答项被回填为「推送」即视为确认推送；显式确认门槛不取消
+    （超时 / 无响应 / 非交互仍不推送，强推等不可逆操作仍走安全红线）。
+    """
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    # 默认项是「推送」，并给出「push 是默认推送的」明确口径。
+    assert "**push 是默认推送的**" in content
+    assert "`push` 只问目标远端 / 分支与是否推送（默认项取「推送」）" in content
+    assert "`push` 的 `user_select` 默认项取「推送」" in content
+    assert "唯 `git push` 例外：其 `user_select` 默认项按〈版本控制（Git）〉取「推送」" in content
+    assert "Submit 页未回答项被回传为 `action=confirmed` + 「推送」即视为确认推送" in content
+
+    # 显式确认门槛不得被「默认推送」取消。
+    assert "`push`（含普通 push）与强制推送 / 其他不可逆远程操作按〈安全红线〉必须显式确认" in content
+    assert "超时 / 无响应 / 非交互仍按〈安全红线〉视为未确认、不推送" in content
+    # 旧口径（默认项取「不推送」）不得回来。
+    assert "`push` 只问目标远端 / 分支与是否推送（默认项取「不推送」）" not in content
+    assert "`git push` 同样取安全侧「不推送」" not in content
+
+    # 示例锁定默认项口径。
+    assert "例 20｜push 默认项取「推送」" in content
+    assert "把 `push` 的默认项取成「不推送」" in content
 
 
 def test_empty_prompt_references_and_meta_files_are_stable() -> None:
@@ -425,8 +463,8 @@ def test_empty_prompt_third_audit_conflicts_removed() -> None:
     assert "**新请求**的授权判定只看「动词 + 对象」" in content
     assert "对既有方案 / 请求的确认按〈正向判据〉第 2–4 项" in content
 
-    # Submit 页会用默认值 + confirmed 回传未回答项；除 `git push`（默认项取「推送」）外
-    # 必须靠安全侧默认项兜底。
+    # Submit 页会用默认值 + confirmed 回传未回答项；安全红线类问题（含 `git push`）
+    # 必须靠默认项兜底——`git push` 是唯一默认项取「推送」的例外。
     assert "并发多问题的 Submit 页会把**未回答**项" in content
     assert "无法与「用户显式确认默认项」区分" in content
     assert "每个 label 都必须出现在 `options` 中" in content
@@ -438,7 +476,7 @@ def test_empty_prompt_third_audit_conflicts_removed() -> None:
 
     # git 的多问必须在同一轮并发，不得与「最多一轮」互斥。
     assert "拆成同一轮的独立问题（并发 `user_select`，不增加轮次）" in content
-    # 用户明确说「不用确认，直接提交」时可按开篇口径覆盖〈版本控制（Git）〉；push 仍受〈安全红线〉约束。
+    # 用户明确说「不用确认，直接提交」时可按开篇口径覆盖〈版本控制（Git）〉；强制推送仍受〈安全红线〉约束。
     assert "按开篇口径覆盖本条的提问并记录" in content
     assert "`push` 与破坏性操作仍按〈安全红线〉显式确认" in content
 
@@ -650,7 +688,7 @@ def test_empty_prompt_defines_question_round_and_exemptions() -> None:
     assert "**轮次定义（唯一口径）**" in content
     assert "一轮 = 同一回复内**一次性并发发出的一批**" in content
     assert "②/④ 的确认类提问与 ⑤ 的扩权确认**不占用**需求澄清的轮次" in content
-    # push / 破坏性确认在用户明确要求执行时可单独开一轮，不被轮次封顶锁死。
+    # 不可逆远程 / 破坏性确认在用户明确要求执行时可单独开一轮，不被轮次封顶锁死。
     assert "安全红线类确认（`push` / 强制推送 / 不可逆远程 / 破坏性操作）不受此限" in content
     assert "允许单独发起一轮确认（不计入需求澄清轮次）" in content
     # 收尾立即执行，不再承诺无法兑现的「纯文本否决」。
@@ -698,7 +736,7 @@ def test_empty_prompt_graded_delivery_does_not_split_writes() -> None:
     """分级交付只是计划/报告层面，落盘仍一次性。"""
     content = builder._load_prompt("prompts_export_main_empty")
 
-    assert "该分批**只指计划与报告层面**" in content
+    assert "允许在**计划与报告层面**分阶段说明" in content
     assert "仍按〈四条硬红线〉「验证时序」一次性完成" in content
 
 
@@ -724,6 +762,7 @@ def test_empty_prompt_allows_named_subagent_delegation() -> None:
 
 #: 提词交叉引用 → 对应章节标题（后缀匹配；防悬空引用）。
 _REFERENCE_TITLES = {
+    "〈唯一阶梯〉": "优先级与冲突裁决（唯一阶梯）",
     "〈正向判据〉": "授权闸门 · 正向判据",
     "〈不算授权〉": "授权闸门 · 不算授权",
     "〈提问规则〉": "授权闸门 · 提问规则",
@@ -764,3 +803,56 @@ def test_empty_prompt_section_titles_are_unique() -> None:
         if re.match(r"#{1,3} ", line)
     ]
     assert len(titles) == len(set(titles))
+
+
+def test_empty_prompt_error_retries_are_unbounded_until_fixed() -> None:
+    """遇错必须先分析根因，再重试或换方法，次数无上限直到错误解决。
+
+    用户明确要求：错误不能以「试过几次」为由放弃——先分析错误原因，再选择
+    重试或换个方法，无上限次数直到错误真的好了。
+    """
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    # 条款存在：分析根因 → 重试 / 换方法 → 无次数上限 → 直到解决并复验。
+    assert "修复不设次数上限（遇错不放弃，直到错误解决）" in content
+    assert "先**分析错误原因**" in content
+    assert "禁止原样机械重试" in content
+    assert "**换方法**" in content
+    assert "**重试与换方法的次数均无上限，直到错误真正解决并复验通过**" in content
+
+    # 不得以尝试次数或耗时为借口中止、跳过、降级或宣称完成。
+    assert "不得以「已经试过几次」「耗时太长」「先跳过」为由中止、跳过、降级或宣称完成" in content
+
+    # 客观不可达时仍须如实报告，不得伪造结果；如实报告不等于放弃尝试。
+    assert "根因客观不可达" in content
+    assert "不得伪造结果" in content
+
+    # 交付口径同步为「无上限」，且空模式提词不得残留有界重试写法。
+    assert "**次数无上限、直到错误真正解决**" in content
+    assert "最多重试 2 次" not in content
+    assert "连续 3 次失败停止" not in content
+
+    # 正例 / 反例锁定该条款。
+    assert "例 19｜遇错：分析根因后重试或换方法，不设次数上限" in content
+
+
+# ── 交付时序：计划项全量完成才一次性输出总结 ──
+
+
+def test_empty_prompt_summary_only_after_all_plan_items_done() -> None:
+    """计划项全部落地并验证后，才一次性输出总结；未完成时只报告未完成清单。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    # 时序：全量完成 + 验证通过 → 一次性输出总结，且总结须逐项对照计划。
+    assert "**完成计划项才一次性输出总结（强制）**" in content
+    assert "全部落地并验证通过后，才**一次性**输出交付总结" in content
+    assert "逐项对照编号计划给出落地位置与证据" in content
+
+    # 未完成 / 未验证时不得出总结，也不得宣称完成，只能给进度与未完成清单。
+    assert "**不得输出总结**" in content
+    assert "不得使用「已完成 / 全部完成 / 交付完成」等结论性表述" in content
+    assert "不得分次拼凑总结" in content
+    assert "照常给出变更说明与未完成清单" in content
+
+    # 与分级交付的边界：进度汇报不等于总结。
+    assert "分级交付允许中途的**进度汇报**，但进度汇报不构成总结" in content
