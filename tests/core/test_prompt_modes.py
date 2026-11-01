@@ -35,6 +35,9 @@
 并锁定空模式「完成计划项才一次性输出总结」的交付时序：计划项全部落地并验证
 通过后一次性输出总结；未完成或仍有未验证项时只给进度说明与未完成清单，
 不得输出结论性总结，分次进度汇报不构成总结。
+
+并锁定空模式未完成清单的长上下文全量口径：未完成清单汇总从会话开始到本次
+回复结束的全部未结清项，不得只列本轮新增的增量未完成项。
 """
 
 from __future__ import annotations
@@ -856,3 +859,24 @@ def test_empty_prompt_summary_only_after_all_plan_items_done() -> None:
 
     # 与分级交付的边界：进度汇报不等于总结。
     assert "分级交付允许中途的**进度汇报**，但进度汇报不构成总结" in content
+
+
+def test_empty_prompt_incomplete_list_is_long_context_full() -> None:
+    """未完成清单按长上下文全量登记，不得只列本轮增量未完成项。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    # 术语给出「长上下文」定义：从会话开始到本次回复结束的全部历史。
+    assert "**「长上下文」= 从会话开始到本次回复结束的全部历史消息**" in content
+    assert "**不得只列本轮增量**" in content
+
+    # 两个清单的未完成项按长上下文累计：旧项不得以「本轮没碰」为由略过。
+    assert "**② 的「全量」按长上下文口径**" in content
+    assert "**不得只列本轮新增的增量未完成项**" in content
+    assert "也不得以「本轮没碰」为由略过旧项" in content
+    assert "旧项已在本轮结清的，从清单移除并在①中写明结清位置与证据" in content
+
+    # 计划项承诺、完成标准与示例 14 回引同一口径。
+    assert "按〈交付输出〉「两个清单」的长上下文全量口径" in content
+    assert "必须在未完成清单中按长上下文全量口径登记" in content
+    assert "未完成项按长上下文全量口径汇总" in content
+    assert "把此前已登记、至今仍未结清的旧项漏掉" in content
