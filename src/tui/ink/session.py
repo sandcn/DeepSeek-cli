@@ -402,9 +402,15 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         # ★ 增量渲染屏幕高度（方向1）：上次传播给 InkRenderer 的高度（初始 0 →
         #   首帧必触发 set_height 同步，与 renderer 创建时已用当前高度幂等）。
         self._last_render_height: int = 0
-        # ★ 方向3（resize 全量刷新）：终端尺寸变化（width/height 任一）置位，
-        #   _render_frame 消费后重置渲染器 prev——resize 后全量重写而非增量 diff。
+        # ★ 方向3（resize 全量刷新）：终端**宽度**变化置位，_render_frame 消费
+        #   后重置渲染器 prev——宽度变化终端会按新宽度重排旧行，必须整篇全量
+        #   重写而非增量 diff（清屏消息 CLEAR_MSGS 同样置位）。
         self._resize_pending: bool = False
+        # ★ 2026-11-02（终端行数变化、宽度不变时不整篇全量刷新）：高度
+        #   **单独**变化置位，_render_frame 消费后只重绘可见视口（文档末
+        #   height 行）；宽度未变无需按新宽度重排历史，整篇重写只会把全部
+        #   历史再写一遍（长会话 scrollback 重复副本 + O(文档) 写入）。
+        self._viewport_repaint_pending: bool = False
         # ★ 2026-10-23（game_loop 单次调用）：清屏请求标志——外部线程/渲染
         #   线程内的 clear_screen/request_clear 只置位，由**帧内**统一执行
         #   ``model.reset_display()`` + ``InkRenderer.full_clear()``（终端写入

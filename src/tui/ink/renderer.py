@@ -44,8 +44,10 @@ PERF-4 / 增量细化：
 不切换备用屏幕、不用 DECSTBM——内容自然流入 scrollback。
 
 **非 resize 均增量（需求）**：全量写入（``_write_full``）**仅**出现在首帧
-（``_prev is None``，无前一帧可 diff）与 ``reset(full=True)``（resize 后
-``_render_frame`` 消费 ``_resize_pending`` 置位）；
+（``_prev is None``，无前一帧可 diff）、``reset(full=True)``（**宽度**变化
+resize 后 ``_render_frame`` 消费 ``_resize_pending`` 置位）与
+``reset(viewport_only=True)``（终端**行数单独变化**、宽度不变——只重绘可见
+视口，即文档末 ``height`` 行，不重写整篇历史，见 ``_write_full``）；
 **其余所有帧一律走行级 diff 增量路径**——包括 Ctrl+L 清屏后、suspend/resume
 （交互工具独占终端）后、文档高于屏幕的缩短/增长/等高
 （``_rewrite_drifted``/``_grow_drifted`` 物理映射）与缩短/增长/等高**进入屏幕内**
@@ -185,6 +187,9 @@ class InkRenderer(_RendererContentMixin):
         # ★ 物理缓冲行数（用户需求「除 resize 外均增量」）：
         #   - ``_write_full``（首帧/reset(full=True) 后） = doc_h（无末尾空行，
         #     最后一行不写 \n）；★ 无末尾空行模型（2026-08-15）；
+        #   - ``reset(viewport_only=True)``（行数单独变化）后 = ``max(height,
+        #     写入行数)``——只写了文档末 height 行，物理缓冲即一屏（更早的
+        #     历史行在终端 scrollback，渲染器按「文档底部对齐屏幕」换算）；
         #   - 增量增长按实际滚动扩展（``grow_rows = max(0, new_h-_buf_h)``）
         #     增加——``_buf_h`` 精确跟踪终端缓冲（清行不删行，缩短后缓冲保持
         #     旧值，偏移漂移由本字段表达）；
@@ -255,6 +260,14 @@ class InkRenderer(_RendererContentMixin):
         #   首帧（``_prev is None`` 且未经 reset）不置位——不得清掉用户
         #   终端里已有的历史输出。
         self._clear_before_full: bool = False
+        # ★ 2026-11-02（终端行数变化、宽度不变时不整篇全量刷新）：下一次
+        #   全量写入只重绘**可见视口**（文档末尾 ``height`` 行），不重写整篇
+        #   文档（含全部已提交历史）。由会话 ``reset(viewport_only=True)``
+        #   在「高度单独变化」时置位、``_write_full`` 消费；宽度变化仍走整篇
+        #   全量重写（终端按新宽度重排旧行，必须整篇覆盖，见
+        #   ``_clear_before_full``）。重绘范围之外的历史行仍在终端
+        #   scrollback 里原样保留，不重复写入。
+        self._viewport_only_full: bool = False
         #: 上次「单帧重写行数超告警阈值」告警时刻（monotonic）——流式大输出
         #: 可能连续多帧超阈值，按 ``_LARGE_REWRITE_WARN_INTERVAL`` 限频，
         #: 避免日志刷屏（仅观测用途，不改变渲染路径）。
@@ -671,6 +684,9 @@ class InkRenderer(_RendererContentMixin):
         self._painted_top = 0
         self._placed_cursor = None
         self._clear_before_full = True
+        # ★ 2026-11-02：损坏恢复必须整篇重绘（可见区外内容不可信），
+        #   不得沿用「只重绘可见视口」标志。
+        self._viewport_only_full = False
 
     def mark_corrupted(self) -> None:
         """标记渲染器状态不可信（外部错误帧路径调用）。
@@ -2084,6 +2100,12 @@ class InkRenderer(_RendererContentMixin):
         self._clear_before_full = False
         return clear
 
+    def _take_viewport_only_full(self) -> bool:
+        """消费「下一次全量写入只重绘可见视口」标志（一次性）。"""
+        viewport_only = self._viewport_only_full
+        self._viewport_only_full = False
+        return viewport_only
+
     def _write_full(self, frame: Frame) -> None:
         """首帧/重置后：全量写入文档。
 
@@ -2098,10 +2120,19 @@ class InkRenderer(_RendererContentMixin):
         出现两份 UI / 行内左右两段来自不同帧。首帧（未经 reset）不清屏，
         不会破坏用户终端里已有的历史输出。
 
+        ★ 2026-11-02（终端行数变化、宽度不变时不整篇全量刷新）：
+        ``reset(viewport_only=True)`` 后的全量写入只重绘**可见视口**——取文档
+        末尾 ``height`` 行写入整屏，而不是把整篇文档（含全部已提交历史）重新
+        吐给终端。高度变化不改变行宽（无需按新宽度重排），文档末 height 行
+        正好填满屏幕，屏幕内容与底部锚定语义都正确；更早的历史行仍原样留在
+        终端 scrollback，不重复写入（修复前每次改终端行数都把整篇历史再写
+        一遍，scrollback 出现重复副本且长会话下写入量 O(文档)）。
+
         Args:
             frame: 目标帧。
         """
         clear_first = self._take_clear_before_full()
+        viewport_only = self._take_viewport_only_full()
         if not frame.lines:
             # 方向1 步骤3（首帧空帧光标）：空帧也更新 _cursor_row（=1）
             # ——修复前空帧不置位，下一帧 ``n_move`` 产生多余光标移动。
@@ -2133,16 +2164,27 @@ class InkRenderer(_RendererContentMixin):
             self._cursor_row = 1
             self._start_row = None
             self._start_anchor_pending = False
-        n = len(frame.lines)
+        # ★ 视口重绘（高度单独变化）：只写文档末尾 ``height`` 行——清屏后
+        #   整屏内容即为这 height 行，更早的历史行保留在终端 scrollback。
+        lines = frame.lines
+        if (
+            viewport_only
+            and self._height > 0
+            and len(lines) > self._height
+        ):
+            lines = lines[-self._height:]
+        n = len(lines)
         # ★ 2026-10-06（用户需求：启动锚定「当前光标行 + 1」）：首个全量帧
         #   消费注入的光标行查询——有效时起始行 = 光标行 + 1（文档从光标
         #   下方开始追加，不跳到屏幕底部）；查询失败/未注入时回退「文档
         #   底部贴屏幕底部」（保证坐标模型与实际落位一致）。定位行钳制到
         #   屏幕内（起始行 > 屏幕高度时由写入换行触发终端滚动）。
+        #   视口重绘时 ``_start_row`` 已在 reset 里清空 → 走底部锚定
+        #   （n == height 时起始行恒为 1）。
         start_row = self._resolve_start_row(n)
         if self._height > 0:
             buf.write(cursor_goto(min(start_row, self._height), 1))
-        for idx, line in enumerate(frame.lines):
+        for idx, line in enumerate(lines):
             buf.write("\r")
             # ★ P2（review）：全量写行补 ``_CLEAR_EOL``——修复前仅写
             #   「\r + 内容 + \r」，与增量路径（``_diff_runs``/``_grow_drifted``/
@@ -2181,7 +2223,11 @@ class InkRenderer(_RendererContentMixin):
             self._top_aligned = True
             # height=0（文档坐标模型）：无屏幕约束，整个文档都属会话区域。
             self._painted_top = 0
-        self._cursor_row = self._bottom_row(n)
+        # ★ 光标收口用**文档总高**（``frame.height``）而非本次写入行数 n：
+        #   视口重绘只写末尾 height 行，文档行号空间仍是完整文档——用 n 会
+        #   把光标按「文档只有 height 行」定位（文档高于屏幕时偏移算错）。
+        #   整篇全量写入时 n == frame.height，与修复前完全等价。
+        self._cursor_row = self._bottom_row(frame.height)
         self._flush_frame_buf(buf)
 
     # ── 光标 ─────────────────────────────────────────
@@ -2361,6 +2407,8 @@ class InkRenderer(_RendererContentMixin):
         #   锚定失效（下一帧文档自屏幕第 1 行重建，既有「顶部对齐 + buf_h=0」
         #   软重置语义即此）。
         self._start_row = None
+        # ★ 2026-11-02：清屏是软重置——清掉可能残留的「只重绘可见视口」标志。
+        self._viewport_only_full = False
 
     def emit_exit_note(self, text: str) -> None:
         """在文档最后一行下方输出一行退出提示（保留 TUI、不清屏）。
@@ -2437,7 +2485,7 @@ class InkRenderer(_RendererContentMixin):
             # ★ P3 修复（review 方向）：裸吞异常补日志（exc_info 保留栈）。
             _logger.debug("suspend 刷出异常", exc_info=True)
 
-    def reset(self, full: bool = False) -> None:
+    def reset(self, full: bool = False, *, viewport_only: bool = False) -> None:
         """重置渲染状态。
 
         Args:
@@ -2445,8 +2493,14 @@ class InkRenderer(_RendererContentMixin):
                   **仅 resize 使用**；下一次全量写入前先清屏（清掉旧帧残留，
                   见 ``_write_full``）；False = 软重置（``_prev=空帧``，下次
                   render 走增量 diff），用于 Ctrl+L 等非 resize 场景。
+            viewport_only: True = 完全重置，但下次全量写入**只重绘可见视口**
+                   （文档末尾 ``height`` 行，不重写整篇文档）。★ 2026-11-02：
+                   终端**行数变化、宽度不变**时由会话使用——行宽未变、无需按
+                   新宽度重排历史，整篇重写只会把全部历史重复写进 scrollback；
+                   屏幕内容（末 height 行 + 底部锚定）与整篇全量重写等价。
+                   与 ``full=True`` 同时传时以本参数为准（视口重绘）。
         """
-        if full:
+        if full or viewport_only:
             self._prev = None
             self._cursor_row = 0
             self._buf_h = 0
@@ -2457,8 +2511,12 @@ class InkRenderer(_RendererContentMixin):
             # ★ 2026-10-06：起始行锚定仅服务「会话启动首帧」——resize 全量
             #   重写退回底部锚定（屏幕布局已变，旧起始行不再适用）。
             self._start_row = None
+            self._start_anchor_pending = False
             # ★ 2026-10-20：resize 全量重写前清屏（旧帧残留修复）。
             self._clear_before_full = True
+            # ★ 2026-11-02：高度单独变化 → 只重绘可见视口（不整篇重写）；
+            #   宽度变化/清屏消息仍整篇全量重写。
+            self._viewport_only_full = bool(viewport_only)
         else:
             # 空帧 → 增量 diff（与空帧比较 = 所有行都变化 → 逐行写入，不清屏）
             self._prev = Frame([])
@@ -2466,6 +2524,9 @@ class InkRenderer(_RendererContentMixin):
             # ★ 无末尾空行模型（2026-08-15）：软重置后物理缓冲 = 0（无虚拟空行）。
             self._buf_h = 0
             self._top_aligned = True
+            # ★ 2026-11-02：软重置不是 resize——清掉可能残留的视口重绘标志
+            #   （否则下一次全量写入会被意外裁剪成只写末尾 height 行）。
+            self._viewport_only_full = False
             # ★ 2026-10-22：软重置**不清屏**，保留会话写入范围（保守：不把
             #   首屏之前用户历史纳入可清理区域）。
             # ★ 2026-10-06：软重置（resume/清屏复用）退回既有锚定语义——

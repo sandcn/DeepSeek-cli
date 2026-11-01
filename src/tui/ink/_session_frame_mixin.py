@@ -21,7 +21,8 @@ session 保留渲染循环调度（_render/_drain_queue/_should_render）与生�
   - ``_reconciler`` / ``_root_fiber`` — React Ink 调和器与根 fiber；
   - ``_ink_renderer`` / ``_width_cache`` / ``_config`` — 渲染器与尺寸缓存；
   - ``_input_fiber`` / ``_last_render_width`` / ``_last_render_height`` /
-    ``_resize_pending`` / ``_dirty`` / ``_frame_active`` — 帧状态（缓存/全量
+    ``_resize_pending`` / ``_viewport_repaint_pending`` / ``_dirty`` /
+    ``_frame_active`` — 帧状态（缓存/全量
     刷新/脏标记/帧执行标记——标记由本 mixin ``_render_frame`` 包装器维护，
     session 侧等待方读取）；
   - ``_advance_frame_seq``（经 getattr 调用的 session 方法，宿主类提供）—
@@ -119,6 +120,8 @@ class _SessionFrameMixin:
     _last_render_height: int
     _last_size_poll: float
     _resize_pending: bool
+    #: 终端**行数单独变化**（宽度不变）待消费：只重绘可见视口（2026-11-02）
+    _viewport_repaint_pending: bool
     #: 首帧尺寸基准同步标志（InkSession.__init__ 置 True，首帧渲染后置 False）
     _first_frame_pending: bool
     _dirty: bool
@@ -307,7 +310,9 @@ class _SessionFrameMixin:
         布局不随窗口变化。渲染帧每帧调用本方法（内部按
         ``_SIZE_POLL_INTERVAL`` 节流）：陈旧即重探；宽度变化由调用方
         （``_render_frame_impl``）的 ``width != _last_render_width`` 分支
-        感知 → reflow 已提交行 + 全量重绘 + 向开放通道传播新宽度。
+        感知 → reflow 已提交行 + 全量重绘 + 向开放通道传播新宽度；
+        **高度单独变化**（宽度不变）走 ``_viewport_repaint_pending`` →
+        只重绘可见视口（2026-11-02，不整篇重写）。
 
         ``_override``（``render()`` 显式尺寸）时 ``poll`` 不探测（尺寸固定）。
         """
@@ -390,7 +395,11 @@ class _SessionFrameMixin:
         # 本拍有变更（输入/命令/请求重绘，由 ``_should_render`` 落位）→ 重建
         if not getattr(self, "_idle_ok", False):
             return False
-        if getattr(self, "_dirty", False) or getattr(self, "_resize_pending", False):
+        if (
+            getattr(self, "_dirty", False)
+            or getattr(self, "_resize_pending", False)
+            or getattr(self, "_viewport_repaint_pending", False)
+        ):
             return False
         try:
             if self._cmd_queue is not None and not self._cmd_queue.empty():
@@ -617,6 +626,13 @@ class _SessionFrameMixin:
                 width_changed = True
             # ★ 增量渲染屏幕高度传播（方向1）：高度变化（resize）时更新
             #   InkRenderer.set_height——渲染器按新屏幕高度钳制光标/跳过不可达行。
+            # ★ 2026-11-02（终端行数变化、宽度不变时不整篇全量刷新）：高度
+            #   单独变化时**不**置 ``_resize_pending``（那是整篇文档全量重写），
+            #   改置 ``_viewport_repaint_pending``——只重绘可见视口（文档末
+            #   height 行）。理由：行宽未变，终端不会按新宽度重排旧行，只需把
+            #   可见区的底部锚定内容重新落到新视口；整篇重写在长会话下会把全部
+            #   历史再写一遍（scrollback 重复副本 + O(文档) 写入）。宽高同时变化
+            #   时仍走宽度分支的整篇全量重写（宽度变化必须整篇覆盖）。
             height = self._width_cache.get_height()
             height_changed = False
             if height != self._last_render_height:
@@ -625,12 +641,10 @@ class _SessionFrameMixin:
                 except Exception:
                     _logger.debug("set_height 传播异常", exc_info=True)
                 self._last_render_height = height
-                # 高度变化与宽度变化共用同一次重置（全量刷新标志由宽度/高度
-                # 分支任一置位，下方消费）。
                 # ★ 2026-10-20：首帧不视为 resize（同上，见
                 #   ``InkSession._first_frame_pending``）。
-                if not getattr(self, "_first_frame_pending", False):
-                    self._resize_pending = True
+                if not getattr(self, "_first_frame_pending", False) and not width_changed:
+                    self._viewport_repaint_pending = True
                 height_changed = True
             size_changed = width_changed or height_changed
             if width_changed or height_changed:
@@ -647,10 +661,13 @@ class _SessionFrameMixin:
                     _logger.debug("notify_window_size 异常", exc_info=True)
         # ★ 方向3（resize 全量刷新消费）：尺寸变化后本帧即全量重建（不等待
         #   下一帧 diff）——重置渲染器 prev（full=True），使 render() 走全量
-        #   写入路径（并在写入前清屏，清掉旧尺寸帧的残留）。仅 resize 使用
-        #   full=True；其余路径均走增量 diff。
+        #   写入路径（并在写入前清屏，清掉旧尺寸帧的残留）。宽度变化/清屏
+        #   消息走整篇 full=True；高度单独变化走视口重绘（2026-11-02，见下）。
+        #   其余路径均走增量 diff。
         if getattr(self, "_resize_pending", False):
             self._resize_pending = False
+            # 宽度变化 / 清屏消息优先：整篇全量重写（同帧的高度变化被覆盖）。
+            self._viewport_repaint_pending = False
             # ★ 2026-10-23（流式高度锁定）：resize/清屏重建文档坐标系——
             #   重置高水位，避免按旧高度补出错误空白。
             lock_reset = True
@@ -663,9 +680,19 @@ class _SessionFrameMixin:
             #   脏事件（系统统计 ≤2s）才重建。置 ``_idle_ok=False`` 强制本帧
             #   按新尺寸重建组件树。
             self._idle_ok = False
+        elif getattr(self, "_viewport_repaint_pending", False):
+            # ★ 2026-11-02（高度单独变化）：只重绘可见视口——清屏后写入文档
+            #   末尾 height 行，屏幕内容/底部锚定与整篇全量重写等价，但不把
+            #   整篇历史重复写进终端（scrollback 保留原副本）。
+            self._viewport_repaint_pending = False
+            lock_reset = True
+            self._ink_renderer.reset(viewport_only=True)
+            # 同 resize：本帧禁止空闲帧复用（上一帧是旧视口布局）。
+            self._idle_ok = False
         # ★ 2026-10-20：首帧尺寸基准同步完成——本帧是首次渲染，尺寸已记录为
         #   基准（见上方 width/height 分支），此后尺寸变化按真实 resize 处理
-        #   （``reset(full=True)`` + 清屏重写，resize 残留修复契约不变）。
+        #   （宽度：``reset(full=True)`` 整篇清屏重写；高度单独变化：
+        #   ``reset(viewport_only=True)`` 只重绘可见视口——2026-11-02）。
         if getattr(self, "_first_frame_pending", False):
             self._first_frame_pending = False
         # ★ 空闲帧复用（2026-10-07 性能优化，用户需求）：宿主声明的「静态
