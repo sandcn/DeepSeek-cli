@@ -43,6 +43,10 @@
 边界清晰、复用既有实现与抽象、接口向后可扩展但不过度设计，需求逐条对齐且禁止降级实现，
 实现完整性覆盖需求、计划项与同一根因下的全部调用方与边界，且不得借可维护性 / 实现完整性
 扩大重构范围。
+
+并锁定空模式的修复层级口径：上层与底层都能修同一缺陷时一律改底层（根因层），
+仅在底层不可改或会破坏既有对外契约时改上层并写明理由；改底层须核对全部调用方与边界，
+授权范围外先申请扩权。
 """
 
 from __future__ import annotations
@@ -939,3 +943,34 @@ def test_empty_prompt_requires_maintainable_improvable_complete_and_aligned_code
     assert "复用优先" in content
     assert "不做无关重构" in content
     assert "禁止最小化方案" in content
+
+
+def test_empty_prompt_fixes_bottom_layer_when_both_possible() -> None:
+    """修 bug 时上层与底层都能修，一律改底层（根因层），不在上层打补丁。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    # 条款存在：上层 / 底层定义、强制改底层、禁止上层打补丁。
+    assert "**修 bug 的修复层级（强制）**" in content
+    assert "**都能**修好同一缺陷" in content
+    assert "一律**改底层**" in content
+    assert "根因所在层" in content
+    assert "禁止在上层打补丁" in content
+
+    # 判定看根因能否一处覆盖，不看改动量大小与改动位置远近。
+    assert "不看哪一层改动量更小" in content
+    assert "「上层更好改 / 改动更小」不构成改上层的理由" in content
+
+    # 例外收敛为两种，且必须写明理由、影响面、剩余风险与后续路径。
+    assert "底层是不可改的外部依赖 / 第三方库" in content
+    assert "改底层会破坏既有对外契约" in content
+    assert "为何不能改底层、影响面、剩余风险与后续修复路径" in content
+
+    # 改底层的影响面核对与授权边界。
+    assert "核对其全部调用方与边界" in content
+    assert "按〈授权范围〉申请扩权" in content
+    assert "未获授权只报告不动手" in content
+
+    # 与既有红线同向，不得互斥；示例锁定该口径。
+    assert "本款是〈工作方式〉「禁止最小化方案（红线）」" in content
+    assert "例 21｜上层与底层都能修时改底层" in content
+    assert "上层与底层都能修同一缺陷的，按下一款强制改底层" in content
