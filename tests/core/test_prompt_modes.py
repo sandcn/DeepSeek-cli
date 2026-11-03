@@ -53,6 +53,9 @@
 
 并锁定空模式「需求方向选择必须弹 `user_select`」的提问形态：⑥ 类决策点与并发问齐
 条款都禁止只用纯文本提问；「纯文本答复同样有效」只约束用户答复形态，不约束模型提问形态。
+
+并锁定空模式的「强制前置闸门」：只要任务涉及代码，必须先一次性输出从程序入口起的
+全量调用链，之后才允许开始分析或做修复 / 修改；未出链先分析或先落盘一律按流程违规处理。
 """
 
 from __future__ import annotations
@@ -667,6 +670,39 @@ def test_empty_prompt_forces_full_call_chain_from_program_entry() -> None:
     assert "此项不受「本轮未改动」豁免" in content
     assert "唯一例外是不含代码的纯文本" in content
     assert "例 18｜涉及代码的任务强制全量调用链（先链后事）" in content
+
+
+def test_empty_prompt_call_chain_gate_precedes_analysis_and_fix() -> None:
+    """全量调用链是分析与修复的前置闸门：未出链不得分析、不得落盘修改。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    # 闸门章节存在，且位于文件前部（开篇口径之后、输出语言之前），不是埋在工作方式里的细节。
+    assert "# 强制前置闸门（全量调用链先于分析与修复）" in content
+    assert content.index("# 强制前置闸门（全量调用链先于分析与修复）") < content.index("# 输出语言（强制）")
+
+    # 分析与修复都必须排在调用链之后，且不给「先分析、链稍后补」留口子。
+    assert "必须先「从程序入口起、一次性输出」全量调用链，之后才允许开始任何分析或任何修复 / 修改" in content
+    assert "未输出全量调用链之前一律禁止" in content
+    assert "落盘修改（改 / 修 / 新增 / 删除 / 补引用）" in content
+    assert "不存在「先分析、链稍后补」的中间态" in content
+
+    # 覆盖范围：一切涉及代码的任务，与承载文件是否为可执行文本无关。
+    assert "分析、诊断、排查、审查、评估、复现、测试、修改、修复、新增、补引用" in content
+    assert "同样触发本闸门" in content
+    assert "不得以目标函数为唯一锚点" in content
+
+    # 违反后果：流程违规、补齐后重做，不得先分析后补链。
+    assert "流程违规，本轮按未完成处理" in content
+    assert "再重做分析 / 重新实施" in content
+    assert "先给出分析结论或修复方案、再回头补调用链" in content
+    # 与既有轻量路径闭环：规则文本自身不算代码，但代码引用仍触发闸门。
+    assert "提词 / 文档类改动若只涉及规则文本自身的工具名、路径、示例命令" in content
+    assert "仍须先输出全量调用链" in content
+
+    # 与〈工作方式〉同一效力，且在交付侧明确「前置条件」而非交付阶段补充材料。
+    assert "本条款是〈工作方式〉「全量调用链与计划（强制 · 涉及代码的一切任务）」前置要求的顶层声明" in content
+    assert "分析与修复一律以该链为前置条件" in content
+    assert "不是交付阶段的补充材料" in content
 
 
 def test_simple_prompt_allows_push_by_default() -> None:
