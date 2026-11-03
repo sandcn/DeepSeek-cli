@@ -416,13 +416,17 @@ class Input:
         """单次非阻塞 stdin 读取 + 直接分发（委托 InputDispatcher）。"""
         return self._dispatcher.read_stdin_once()
 
-    def process_events(self, budget: float | None = None) -> None:
+    def process_events(self, budget: float | None = None) -> bool:
         """处理输入事件（委托 InputDispatcher）。
 
         Args:
             budget: 单帧处理预算（秒）；None=排空全部输入（兼容旧行为）。
+
+        Returns:
+            True — 本次至少处理了一个输入单元（渲染会话据此置脏，
+            禁止空闲帧复用——保证按键后界面立即重建）。
         """
-        self._dispatcher.process_events(budget=budget)
+        return bool(self._dispatcher.process_events(budget=budget))
 
     def _dispatch_key_event(self, event: KeyEvent) -> None:
         """根据 KeyEvent.kind 分发到对应的输入处理器（委托 InputDispatcher）。"""

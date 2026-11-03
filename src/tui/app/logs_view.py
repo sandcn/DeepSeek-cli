@@ -31,7 +31,7 @@ from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from src.tui.ink import TEXT, Column, Row, StyledRun, h, use_input
 from src.tui.ink.helpers import truncate_runs, wrap_runs_by_width
-from src.tui.ink.hooks import use_effect, use_memo
+from src.tui.ink.hooks import use_memo
 from src.tui.ink.widgets.listview import ListView
 
 from ._inspector_pane import PaneState, handle_nav, resolve
@@ -48,6 +48,7 @@ from ._view_common import (
     run_search,
     split_panes,
     status_runs,
+    use_data_refresher,
     viewport_rows,
 )
 
@@ -596,11 +597,10 @@ def LogsView(props) -> object:
     # 签名未变则零成本；deps=None → 每帧执行（60Hz，签名检查 O(事件数)）。
     # 视图层不依赖 core 层（刷新逻辑经注入的 callable 承担），因此 F12 在
     # AI 流式输出期间打开同样自动跟进。
+    # 刷新器直接写视图状态（不经 use_state）——经 use_data_refresher 在
+    # 数据重建时请求重绘，空闲复用下也不会停在旧日志。
     _refresher = getattr(model, "logs_refresher", None)
-    use_effect(
-        (lambda: _refresher()) if (callable(_refresher) and visible) else None,
-        None,
-    )
+    use_data_refresher(_refresher, visible)
     use_input(_handle, visible)
     use_modal_scope(visible)
 

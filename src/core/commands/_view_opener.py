@@ -37,6 +37,45 @@ DEFAULT_TIMEOUT = 600.0
 #: 轮询间隔（秒）。
 _POLL_INTERVAL = 0.05
 
+#: 标量指纹类型（状态字段浅比较用）。
+_SCALAR_TYPES = (str, int, float, bool, bytes, type(None))
+
+
+def _state_fingerprint(state) -> dict | None:
+    """视图状态的浅指纹（用于检测 on_tick 是否修改了状态）。
+
+    ★ 2026-11-03（其他界面同类不刷新修复）：``on_tick`` 在命令线程直接
+    修改视图状态（刷新/重连/改键/导出结果/沙盒动作后的 entries 等），这些
+    写入不经过渲染层的 ``use_state``，不会置脏；全屏视图空闲复用时会一直
+    显示旧内容，直到系统统计等偶发脏事件。这里在 tick 前后取浅指纹，变化
+    即请求重绘（无需每个 tick 回调手工调用 refresh）。
+
+    指纹只做浅层比较：标量取原值，容器记录 ``(id, len)``（列表重赋值或
+    长度变化可检测），其他对象记录 id（锁/连接等稳定对象不误报）。
+    状态类不支持 ``vars`` 时返回 None（调用方跳过自动重绘）。
+    """
+    try:
+        namespace = vars(state)
+    except TypeError:
+        return None
+    fingerprint: dict = {}
+    for key, value in namespace.items():
+        if isinstance(value, _SCALAR_TYPES):
+            fingerprint[key] = value
+        elif isinstance(value, (list, tuple, dict, set, frozenset)):
+            fingerprint[key] = (id(value), len(value))
+        else:
+            fingerprint[key] = id(value)
+    return fingerprint
+
+
+def _request_redraw(chat_ui) -> None:
+    """请求渲染线程重绘（best-effort；异常仅记 debug）。"""
+    try:
+        chat_ui.request_bottom_redraw()
+    except Exception:
+        _logger.debug("视图重绘请求失败", exc_info=True)
+
 
 def open_fullscreen_view(
     ctx,
@@ -65,6 +104,9 @@ def open_fullscreen_view(
             显示加载占位，完成后调用 ``refresh()`` 请求重绘（动态更新界面）。
         on_tick: ``on_tick(state) -> bool`` 回调——每轮轮询调用；返回 True 请求
             关闭视图（置终态后 break）。用于处理组件回传（如应用选中项）。
+            ★ 回调直接修改 state 时，本函数在 tick 前后做浅指纹比较并自动
+            请求重绘（视图默认 ``idle_static=True``，否则命令线程写入的
+            状态要等偶发脏事件才上屏）。
         on_timeout: ``on_timeout(state)`` 回调——deadline 超时终态写入后、
             清理前调用（best-effort）。用于撤销组件的临时预览，如 /theme
             超时关闭时恢复打开前主题；回调异常仅记日志，不影响关闭流程。
@@ -102,10 +144,7 @@ def open_fullscreen_view(
 
     setattr(model, state_attr, state)
     model.fullscreen = view_id
-    try:
-        chat_ui.request_bottom_redraw()
-    except Exception:
-        _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
+    _request_redraw(chat_ui)
 
     # ★ 2026-10-10（初始化性能异步加载）：视图数据（会话列表 / 预览）在
     #   后台线程构建，界面先显示加载占位，完成后请求重绘动态更新。
@@ -115,12 +154,21 @@ def open_fullscreen_view(
     try:
         while not state.done:
             if on_tick is not None:
+                before = _state_fingerprint(state)
+                close = False
                 try:
-                    if on_tick(state):
-                        state.try_set_final("done")
-                        break
+                    close = bool(on_tick(state))
                 except Exception:
                     _logger.debug("open_fullscreen_view on_tick 异常", exc_info=True)
+                if close:
+                    state.try_set_final("done")
+                else:
+                    # tick 直接改视图状态（未经 use_state）→ 主动请求重绘，
+                    # 否则空闲帧复用会一直显示旧内容。
+                    if before is not None and _state_fingerprint(state) != before:
+                        _request_redraw(chat_ui)
+                if close:
+                    break
             if _time.monotonic() >= state.deadline:
                 state.try_set_final("timeout")
                 break
@@ -150,10 +198,7 @@ def _start_bg_setup(bg_setup, state, chat_ui, view_id: str) -> None:
     """
 
     def _refresh() -> None:
-        try:
-            chat_ui.request_bottom_redraw()
-        except Exception:
-            _logger.debug("bg_setup 重绘请求失败", exc_info=True)
+        _request_redraw(chat_ui)
 
     def _work() -> None:
         try:
@@ -177,10 +222,7 @@ def _cleanup(model, state_attr, state, view_id, state_cls, chat_ui) -> None:
             setattr(model, state_attr, state_cls(seq=cur_seq))
         if getattr(model, "fullscreen", "") == view_id:
             model.fullscreen = ""
-        try:
-            chat_ui.request_bottom_redraw()
-        except Exception:
-            _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
+        _request_redraw(chat_ui)
         try:
             chat_ui.flush_input_router(2.0)
         except Exception:

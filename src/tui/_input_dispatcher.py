@@ -840,7 +840,7 @@ class InputDispatcher:
     # 事件处理（render 线程调用）
     # ═══════════════════════════════════════════════════════
 
-    def process_events(self, budget: float | None = None) -> None:
+    def process_events(self, budget: float | None = None) -> bool:
         """处理输入事件（render 线程调用）。
 
         ★ 2026-10-23（输入时间盒）：``budget`` 非 None 时按**时间预算**处理
@@ -852,18 +852,31 @@ class InputDispatcher:
 
         顺序与完整性：pending 优先、逐字节消费，跨帧继续不改变按键顺序；
         粘贴内容按字节流继续解析（解析器状态跨帧保留在 ``_parser``）。
+
+        ★ 2026-11-03（/models 编辑不刷新修复）：返回值表示**本帧是否处理过
+        输入**——渲染会话据此置脏（``_dirty``），禁止空闲帧复用。此前输入
+        消费无任何变更标记：组件直接修改外部状态（不经过 ``use_state``，
+        如 ``ModelView`` 的字段编辑）时，``_should_reuse_idle_frame`` 会复用
+        旧帧 → 按键后界面不刷新，直到系统统计等偶发脏事件（≤2s）才补渲。
+
+        Returns:
+            True — 本次调用至少处理了一个输入单元（含部分解析/时间预算截断
+            前已处理的输入）；False — 无输入可读或 I/O 未激活。
         """
+        processed = False
         try:
             if budget is None:
                 while self.read_stdin_once():
-                    pass
-                return
+                    processed = True
+                return processed
             start = time.monotonic()
             while self.read_stdin_once():
+                processed = True
                 if time.monotonic() - start >= budget:
                     break
         except Exception:
             _logger.warning("process_events 异常", exc_info=True)
+        return processed
 
     def _router_consume(self, event: KeyEvent) -> bool:
         """router 优先分发统一入口（策略收敛，方向1 步骤1）。

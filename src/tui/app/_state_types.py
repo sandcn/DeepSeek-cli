@@ -1067,6 +1067,8 @@ class ExportViewState(ListViewState):
         path: 输出路径（空 = 默认时间戳命名）。
         message: 操作反馈消息。
         error: 错误提示。
+        applied_seq: 导出请求计数（组件递增，命令线程比对执行）。
+        applied: 待执行导出请求（组件写：format/scope/path）。
     """
 
     format: str = "md"
@@ -1075,6 +1077,11 @@ class ExportViewState(ListViewState):
     message: str = ""
     error: str = ""
     editing: bool = False
+    # ★ 2026-11-03（/export 导出无反应修复）：缺失 applied_seq/applied 导致
+    #   组件 ``_apply()`` 抛 AttributeError（被 input router 当作未消费并
+    #   放行）——按 Enter/e 无法导出且无任何提示。补齐跨线程协议字段。
+    applied_seq: int = 0
+    applied: Any = None
 
 
 @dataclass

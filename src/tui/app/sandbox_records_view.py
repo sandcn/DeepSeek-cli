@@ -27,7 +27,7 @@ from __future__ import annotations
 from src.tui.core.style import Style
 from src.tui.ink import TEXT, Column, Row, StyledRun, h, use_input
 from src.tui.ink.helpers import truncate_runs, wrap_runs_by_width
-from src.tui.ink.hooks import use_effect, use_memo
+from src.tui.ink.hooks import use_memo
 from src.tui.ink.widgets.listview import ListView
 
 from ._inspector_pane import PaneState, handle_nav, resolve
@@ -48,6 +48,7 @@ from ._view_common import (
     run_search,
     split_panes,
     status_runs,
+    use_data_refresher,
     viewport_rows,
 )
 from .sandbox_common import (
@@ -350,11 +351,10 @@ def SandboxRecordsView(props) -> object:
             return True
         return False
 
+    # 刷新器直接写视图状态（不经 use_state）——经 use_data_refresher 在
+    # 数据重建时请求重绘，空闲复用下也不会停在旧数据。
     _refresher = getattr(model, "sandbox_refresher", None)
-    use_effect(
-        (lambda: _refresher()) if (callable(_refresher) and visible) else None,
-        None,
-    )
+    use_data_refresher(_refresher, visible)
     use_input(_handle, visible)
     use_modal_scope(visible)
 

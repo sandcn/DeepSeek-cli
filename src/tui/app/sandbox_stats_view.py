@@ -26,7 +26,6 @@ from __future__ import annotations
 import logging
 
 from src.tui.ink import TEXT, Column, StyledRun, h, use_input
-from src.tui.ink.hooks import use_effect
 
 from ._modal_view import (
     close_fullscreen_view,
@@ -39,6 +38,7 @@ from ._view_common import (
     char_of,
     help_panel_rows,
     status_runs,
+    use_data_refresher,
     viewport_rows,
 )
 from .sandbox_common import (
@@ -196,12 +196,10 @@ def SandboxStatsView(props) -> object:
             return True
         return False
 
-    # 实时刷新（沙盒数据签名未变时零成本）。
+    # 实时刷新（沙盒数据签名未变时零成本）；数据重建时请求重绘，
+    # 空闲复用下也不会停在旧统计。
     _refresher = getattr(model, "sandbox_refresher", None)
-    use_effect(
-        (lambda: _refresher()) if (callable(_refresher) and visible) else None,
-        None,
-    )
+    use_data_refresher(_refresher, visible)
     use_input(_handle, visible)
     use_modal_scope(visible)
 

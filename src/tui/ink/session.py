@@ -2104,25 +2104,40 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         ★ 2026-10-23（game_loop 单次调用）：``process_events`` 已改为
         **单次调用排空全部输入**（无 4096 事件 / 20ms 预算），本阶段一次性
         处理完本帧所有待处理输入再进入后续阶段。
+
+        ★ 2026-11-03（/models 编辑不刷新修复）：本帧处理过任何输入即置
+        ``_dirty``——禁止空闲帧复用（``_should_reuse_idle_frame`` 读
+        ``_idle_ok``）。组件输入处理器可能直接修改外部状态而**不**经过
+        ``use_state``（如 ModelView 的字段编辑只写 ``ModelViewState``）；
+        此前无脏标记 → 全屏视图声明 ``idle_static`` 时复用旧帧，按键后
+        界面最长要等系统统计（≤2s）或其它偶发脏事件才刷新（用户反馈
+        「编辑时刷新很慢 / 不刷新」）。输入是明确的「界面可能已变」信号，
+        置脏后本帧正常重建，空闲无输入时仍照常复用（不影响性能优化）。
         """
         if self._input is not None:
+            processed = False
             try:
                 # ★ 2026-10-23（输入时间盒）：单帧最多 8ms 处理输入，剩余
                 #   字节留给下一帧——大段粘贴/高速输入不再把单帧拉长到
                 #   几十~几百 ms（会推迟下一次按键处理）。
-                self._input.process_events(budget=_INPUT_FRAME_BUDGET)
+                processed = bool(
+                    self._input.process_events(budget=_INPUT_FRAME_BUDGET)
+                )
             except TypeError as exc:
                 # 仅当 TypeError 明确来自「不接受 budget 参数」时才回退无参
                 # 调用（内部逻辑 TypeError 不能重复执行一次）。
                 if "budget" in str(exc):
                     try:
-                        self._input.process_events()
+                        processed = bool(self._input.process_events())
                     except Exception:
                         _logger.warning("_phase_process_input 兼容调用异常", exc_info=True)
                 else:
                     _logger.warning("_phase_process_input 异常", exc_info=True)
             except Exception:
                 _logger.warning("_phase_process_input 异常", exc_info=True)
+            if processed:
+                # 输入已改变（或可能改变）界面：本拍必须重建，不能复用旧帧。
+                self._dirty = True
 
     def _phase_run_frame_ticks(self) -> None:
         """FRAME_TICKS 阶段：本帧单次驱动全部 60Hz 周期工作。

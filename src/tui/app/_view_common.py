@@ -27,6 +27,7 @@ from typing import Callable, Iterable, Optional
 from src.tui._width import truncate_width, wcswidth_simple
 from src.tui.ink import TEXT, StyledRun, h
 from src.tui.ink.helpers import truncate_runs, truncate_runs_ellipsis
+from src.tui.ink.hooks import use_effect, use_state
 
 # ListViewState 是 Layer 0 纯状态容器（_state_types.py）；本模块 re-export 供
 # 各视图统一从 _view_common 引入（渲染工具与状态基类同源）。
@@ -49,6 +50,7 @@ __all__ = [
     "pane_divider",
     "pad_to_width",
     "memo_key",
+    "use_data_refresher",
     "SEARCH_QUERY_MAX",
     # 兼容面：ink 侧截断辅助 re-export
     "truncate_runs",
@@ -73,6 +75,35 @@ def viewport_rows(reserved: int = VIEWPORT_RESERVED, minimum: int = VIEWPORT_MIN
         return max(int(minimum), int(h_) - int(reserved))
     except Exception:
         return 16
+
+
+def use_data_refresher(refresher, visible: bool) -> None:
+    """渲染期运行数据刷新器；刷新器报告「数据已重建」时请求重绘。
+
+    ★ 2026-11-03（其他界面同类不刷新修复）：全屏视图默认声明
+    ``idle_static=True``（空闲帧复用）。logs / changes / sandbox 等视图经
+    ``model.<x>_refresher`` 在**渲染期**重建数据并直接写视图状态——这些写入
+    不经过 ``use_state``，空闲复用下没有脏标记，数据变化不会上屏（只能等
+    系统统计等偶发事件）。本 hook 在刷新器返回 True 时递增内部 state 计数：
+    ``set_state`` 走框架的 schedule → 会话置脏 + 请求重绘，下一次调和即按新
+    数据渲染（同帧内的 pre-paint pass 会立即反映，见 ``renderToString`` /
+    ``reconciler`` 语义）。
+
+    Args:
+        refresher: ``() -> bool`` 刷新器（返回 True = 本次重建了数据）；
+            非 callable 时 hook 不执行任何动作。
+        visible: 视图是否可见（不可见时跳过刷新，避免后台写状态）。
+
+    Returns:
+        None。
+    """
+    _tick, bump = use_state(0)
+
+    def _run() -> None:
+        if callable(refresher) and refresher():
+            bump(lambda v: v + 1)
+
+    use_effect(_run if visible else None, None)
 
 
 def split_panes(
