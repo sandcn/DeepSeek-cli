@@ -98,7 +98,7 @@ BUILTIN_TOOL_METADATA: Dict[str, dict] = {
     "subagent_opt": {
         "parallel_safe": False, "requires_network": False, "requires_terminal": False,
         "timeout_estimate": 0, "category": "general", "priority": 50,
-        "tool_category": "general", "description": "操作后台subagent任务",
+        "tool_category": "general", "description": "操作后台subagent任务/列出活跃agent",
     },
     "edit": {
         "parallel_safe": False, "requires_network": False, "requires_terminal": False,

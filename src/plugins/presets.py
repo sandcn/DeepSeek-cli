@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any, List, Optional
 
+from ..core.agent_types import DELEGATION_TOOLS, is_main_agent_type
 from ..core.presets import (
     Preset,
     active_presets,
@@ -101,13 +102,22 @@ class PresetsService(Service):
     def allows(self, name: str, tool_name: str) -> bool:
         return self.get(name).allows(tool_name)
 
-    def filter_schemas(self, name: str, schemas) -> List[dict]:
+    def filter_schemas(self, name: str, schemas, keep=()) -> List[dict]:
+        """按 preset 过滤工具 schemas。
+
+        ``keep`` 中的工具名**无视 preset 规则强制保留**（含 ``tool_includes``
+        白名单与 ``tool_excludes`` 排除项）：主 Agent 的委派工具
+        （:data:`src.core.agent_types.DELEGATION_TOOLS`，即 ``subagent`` /
+        ``subagent_opt``）必须在所有 preset 下可用（用户需求 2026-11-04）。
+        该参数只由 :meth:`apply_to_agent` 对主 Agent 传入；SubAgent 边界不变。
+        """
         preset = self.get(name)
+        kept = frozenset(keep or ())
         result = []
         for schema in schemas:
             function = schema.get("function", {}) if isinstance(schema, dict) else {}
             tool_name = function.get("name", "")
-            if preset.allows(tool_name):
+            if tool_name in kept or preset.allows(tool_name):
                 result.append(schema)
         return result
 
@@ -121,7 +131,16 @@ class PresetsService(Service):
             logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
         tools = getattr(agent, "tools", None)
         if tools:
-            agent.tools = tuple(self.filter_schemas(name, tools))
+            # 主 Agent（``agent_type`` 为 ``"main"`` / None）的委派工具不受
+            # preset 约束：subagent / subagent_opt 在全部 preset 下都必须
+            # 可用（用户需求 2026-11-04）；SubAgent（map/review/plan/execute）
+            # 保持既有边界，不豁免。
+            keep = (
+                DELEGATION_TOOLS
+                if is_main_agent_type(getattr(agent, "agent_type", None))
+                else ()
+            )
+            agent.tools = tuple(self.filter_schemas(name, tools, keep=keep))
         if preset.model:
             try:
                 agent.model = preset.model

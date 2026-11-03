@@ -10,8 +10,9 @@ core.subagent`` 循环依赖而提取为独立零依赖模块。
 - plan: 计划生成，保留 write/edit（另有 ~/.chat/plan/ 路径白名单）
 - execute: 默认执行型，保留读写 + bash，排除 web_search + subagent + user_select
 
-主 Agent 不设 agent_type（None）——它不是任何一种子代理类型，排除表不适用，
-工具集中包含 user_select / web_search / subagent 等全部工具。
+主 Agent 的 ``agent_type`` 为 ``None`` / 空串（旧调用约定）或 ``"main"``
+（``BaseAgent.agent_type`` 的实例自身类型标识）——它不是任何一种子代理类型，
+排除表不适用，工具集中包含 user_select / web_search / subagent 等全部工具。
 
 旧模块 ``tools._tool_policy`` 仅 re-export 兼容；新代码从此模块导入。
 """
@@ -21,7 +22,9 @@ from __future__ import annotations
 import threading
 from typing import Callable
 
+from ..core.agent_types import DELEGATION_TOOLS
 from ..core.agent_types import exclusion_map as _exclusion_map
+from ..core.agent_types import is_main_agent_type
 from ..core.cordis_tools import CORDIS_TOOLS
 
 #: agent_type → 排除工具集合。真源下沉到 ``src.core.agent_types`` 的 Agent 类型
@@ -100,13 +103,16 @@ EMPTY_MODE_EXCLUDED_TOOLS: frozenset = frozenset()
 def filter_schemas_for_empty_mode(schemas) -> list:
     """按空模式排除集合过滤工具 schemas（当前集合为空 → 原样保留）。
 
-    保留该函数作为策略扩展位：空模式需要收紧工具集时，向
-    :data:`EMPTY_MODE_EXCLUDED_TOOLS` 加入工具名即可（例如重新排除
-    ``subagent`` / ``subagent_opt``），调用方不需要改动。
+    ★ 委派工具**永不屏蔽**（用户需求 2026-11-04）：``subagent`` /
+    ``subagent_opt``（:data:`DELEGATION_TOOLS`）即便被填回
+    :data:`EMPTY_MODE_EXCLUDED_TOOLS` 也强制保留——它们必须在主 Agent 的
+    所有运行模式（空/简单/标准）下可用；其余工具仍按集合收紧，调用方
+    不需要改动。
     """
+    excluded = EMPTY_MODE_EXCLUDED_TOOLS - DELEGATION_TOOLS
     return [
         s for s in list(schemas or ())
-        if _schema_tool_name(s) not in EMPTY_MODE_EXCLUDED_TOOLS
+        if _schema_tool_name(s) not in excluded
     ]
 
 
@@ -298,19 +304,21 @@ def is_globally_disabled(tool_name: str) -> bool:
 
 
 def get_excluded_tools(agent_type: str) -> set:
-    """根据 agent_type 返回应排除的工具名集合。未知类型回退 execute 策略。
+    """根据 agent_type 返回应排除的工具名集合。未知子代理类型回退 execute 策略。
 
-    ★ ``agent_type`` 为 None/空（主 Agent / 未标注类型）时返回**空集**：
-    排除表是 **SubAgent 类型**（map/review/plan/execute）的能力边界，主 Agent
-    不属于任何一种子代理类型，不受其约束（修复前主 Agent 因 agent_type=None
-    被策略当作 execute → user_select/web_search/subagent 等被误拒）。
+    ★ ``agent_type`` 为 None/空（旧调用约定）或 ``"main"``（``BaseAgent.
+    agent_type`` 的实例自身类型标识）时返回**空集**：排除表是 **SubAgent
+    类型**（map/review/plan/execute）的能力边界，主 Agent 不属于任何一种
+    子代理类型，不受其约束（修复前主 Agent 的 ``"main"`` 被当作未知类型
+    回退 execute → user_select/web_search/subagent 等被误拒）。
 
     「一切皆插件」：内核挂载策略插件后经 ``ctx.policy`` 解析（策略是独立插件，
     可整体替换）；内核缺失或插件尚在构造中时回退本模块的静态真源。
     策略服务的 ``excluded_tools`` 直接读取 ``TOOL_EXCLUSION_MAP``，不会回调
     本函数，故无递归。
     """
-    if not agent_type:
+    # 主 Agent（None / 空 / "main"）不受子代理排除表约束
+    if is_main_agent_type(agent_type):
         return set()
     try:
         from ..kernel.runtime import active_service

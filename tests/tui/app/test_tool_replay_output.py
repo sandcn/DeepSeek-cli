@@ -118,6 +118,32 @@ def test_subagent_opt_uses_output_and_formats_wait_all() -> None:
     assert "{" not in text
 
 
+def test_subagent_opt_list_formats_agents() -> None:
+    """op=list 的 agents 数组按缩进键值显示（不出现原始 JSON 花括号）。"""
+    content = json.dumps({
+        "count": 2,
+        "agents": [
+            {
+                "task_id": "main",
+                "agent_type": "main",
+                "description": "",
+                "status": "running",
+            },
+            {
+                "task_id": "sa-1",
+                "agent_type": "execute",
+                "description": "分析代码",
+                "status": "running",
+            },
+        ],
+    }, ensure_ascii=False)
+    text = format_tool_message_content("subagent_opt", content)
+    assert "agents:" in text
+    assert "task_id: main" in text
+    assert "agent_type: execute" in text
+    assert "{" not in text
+
+
 def test_user_select_summary_matches_live_path() -> None:
     one = json.dumps({"selected": ["唯一项"], "action": "confirmed"})
     assert format_tool_message_content("user_select", one) == "已选择: 唯一项"

@@ -81,7 +81,10 @@ class Func(abc.ABC):
 
     def __init__(self):
         self.agent = None  # 调用工具的Agent实例
-        self.agent_type: str | None = None  # 调用方Agent类型，None表示未知
+        #: 调用方 Agent 类型：子代理类型（map/review/plan/execute）或主 Agent
+        #: 标识 ``"main"``（``BaseAgent.agent_type``）；None 表示未知（旧调用
+        #: 约定，按主 Agent 处理）。工具白名单校验见 :meth:`can_use`。
+        self.agent_type: str | None = None
         self.execution_time: float = 0.0
         self.execution_count: int = 0
         self.execution_success: int = 0
@@ -101,8 +104,9 @@ class Func(abc.ABC):
         Args:
             tool_name: 工具名称
             agent_type: Agent 类型（map/review/plan/execute），默认 execute。
-                None/空表示主 Agent（无子代理类型）——排除表不适用，直接放行
-                排除项校验（主 Agent 工具集含 user_select/web_search/subagent）。
+                ``None`` / 空 / ``"main"`` 表示主 Agent（无子代理类型）——排除表
+                不适用，直接放行排除项校验（主 Agent 工具集含
+                user_select/web_search/subagent/subagent_opt）。
             path: 目标文件路径（可选），用于 plan agent 写入文件时的路径白名单校验
 
         Returns:

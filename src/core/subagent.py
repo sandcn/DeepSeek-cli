@@ -10,6 +10,7 @@ SubAgent 共享 MainAgent 的文件沙盒（SandboxManager），
 
 import asyncio
 import logging
+import sys
 import threading
 from typing import Optional, Tuple, Callable
 
@@ -156,6 +157,28 @@ class SubAgent(BaseAgent):
         except Exception:
             _logger.debug("SubAgent 注销活跃注册表失败", exc_info=True)
 
+    def _record_finished_snapshot(self) -> None:
+        """登记本 SubAgent 的完成快照（``subagent_opt(op=list)`` 展示用）。
+
+        用户需求 2026-11-04：已完成的 subagent 不能从 list 消失。活跃注册表
+        是弱引用（实例结束后随时被 GC），因此这里把展示字段写入
+        ``base_agent`` 的有界历史；实例被回收后仍能列出。
+
+        状态判定优先级：取消（``CancelledError`` 正在传播——在 ``run`` 的
+        ``finally`` 中经 ``sys.exc_info()`` 读取）> 失败（``self.error``
+        非空）> 完成。
+        """
+        from .base_agent import record_finished_agent
+
+        exc_type = sys.exc_info()[0]
+        if exc_type is not None and issubclass(exc_type, asyncio.CancelledError):
+            status = "cancelled"
+        elif getattr(self, "error", ""):
+            status = "failed"
+        else:
+            status = "completed"
+        record_finished_agent(self, status=status)
+
     def get_config_port(self):
         """返回 ConfigPort 实例（委托给 parent Agent）"""
         return self.parent.get_config_port()
@@ -181,6 +204,17 @@ class SubAgent(BaseAgent):
         try:
             return await self._run_impl()
         finally:
+            # ★ 「当前所有 agent」快照（subagent_opt op=list）：run 进入收尾
+            #   流程即视为结束——list_active_agents 不再把本实例当作运行中的
+            #   agent（实例本身仍存活，直到被 GC）。
+            self._agent_finished = True
+            # ★ 用户需求（2026-11-04）：已完成的 subagent 仍需出现在
+            #   subagent_opt(op=list) 中。实例在结束后随时可能被 GC（活跃
+            #   注册表是弱引用），因此在此登记一份有界快照（只含展示字段）。
+            try:
+                self._record_finished_snapshot()
+            except Exception:
+                _logger.debug("登记已完成 agent 快照失败", exc_info=True)
             # ★ SubAgent 结束时清理未完成的后台 bash 任务（防资源泄漏）：
             #   SubAgent 内部自动转后台 / background=True 的 bash 任务若未完成，
             #   父 Agent 无法访问其任务记录（挂在 SubAgent 的 _background_tasks

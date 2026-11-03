@@ -101,9 +101,9 @@ class PolicyService(Service):
     def excluded_tools(self, agent_type: str = "execute") -> set:
         from ..core.agent_types import excluded_tools
 
-        # 主 Agent / 未标注类型（agent_type 为 None/空）不受子代理排除表约束
-        if not agent_type:
-            return set()
+        # 主 Agent（None / 空 / "main"）与子代理类型走同一真源：agent_types.
+        # excluded_tools 对主 Agent 返回空集，只有明确的子代理类型
+        # （map/review/plan/execute）才按排除表返回工具集合。
         return excluded_tools(agent_type)
 
     def exclusion_map(self) -> dict:
@@ -114,10 +114,11 @@ class PolicyService(Service):
     def check(self, tool_name: str, agent_type: str = "execute", path: str | None = None):
         """裁决某次工具调用是否允许（不经过全局函数，避免解析递归）。
 
-        ``agent_type`` 为 None/空表示主 Agent（无子代理类型）——排除表不适用，
-        仅放行；只有明确的子代理类型（map/review/plan/execute）才按表排除。
-        写入路径白名单标识（如 ``plan``）来自 Agent 类型注册表（类型是清单中
-        的独立插件条目）。
+        ``agent_type`` 为 None/空（旧调用约定）或 ``"main"``
+        （``BaseAgent.agent_type`` 的实例自身类型标识）时表示主 Agent
+        （无子代理类型）——排除表不适用，仅放行；只有明确的子代理类型
+        （map/review/plan/execute）才按表排除。写入路径白名单标识（如
+        ``plan``）来自 Agent 类型注册表（类型是清单中的独立插件条目）。
         """
         from ..core.agent_types import path_whitelist
 
@@ -154,9 +155,11 @@ class PolicyService(Service):
     # ── 工具执行管线钩子 ─────────────────────────────────
 
     async def _on_pre_execute(self, call, next_):
-        # ★ 主 Agent 不设 agent_type（None）——不得回退为 "execute"：那会把主
-        #   Agent 当成 execute 型 SubAgent，user_select/web_search/subagent 等
-        #   被误拒（修复前 bug）。None 交给 check() 按「主 Agent」放行。
+        # ★ 主 Agent 的 agent_type 为 None（旧调用约定）或 "main"
+        #   （BaseAgent.agent_type 的实例自身类型标识）——不得回退为
+        #   "execute"：那会把主 Agent 当成 execute 型 SubAgent，
+        #   user_select/web_search/subagent/subagent_opt 等被误拒（修复前
+        #   bug）。两者交给 check() 按「主 Agent」放行。
         agent_type = call.get("agent_type")
         arguments = call.get("arguments") or {}
         # 文件工具（write/edit）的路径字段为 file_path；mkdir 等仍用 path。

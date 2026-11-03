@@ -689,7 +689,9 @@ class ToolScheduler:
             func = self._registry.dispatch(
                 tc["name"], tc["arguments"], agent=effective_agent,
             )
-            # 注入 agent_type（SubAgent 通过此属性限制 plan 的写入路径）
+            # 注入 agent_type（SubAgent 通过此属性限制 plan 的写入路径）；
+            # 主 Agent 的实例自身类型为 "main"（BaseAgent.agent_type），策略层
+            # 按主 Agent 放行排除表（见 tools/tool_policy.get_excluded_tools）。
             if (hasattr(effective_agent, 'agent_type')
                     and effective_agent.agent_type is not None):
                 func.agent_type = effective_agent.agent_type

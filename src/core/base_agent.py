@@ -12,6 +12,7 @@ import logging
 import threading
 import time
 import weakref
+from collections import deque
 from typing import Any, Callable
 
 from .sandbox_manager import get_sandbox_manager, set_current_message_index
@@ -27,6 +28,16 @@ _logger = logging.getLogger(__name__)
 # （bash + subagent，含 managed_by_tool 的）。
 _active_agents: "weakref.WeakSet[BaseAgent]" = weakref.WeakSet()
 _active_agents_lock = threading.Lock()
+
+# ── 已完成 Agent 快照（subagent_opt op=list 展示用） ──────
+# _active_agents 是弱引用：SubAgent 结束后实例随时可能被 GC，仅靠它无法让
+# 「已完成的 agent」继续出现在 subagent_opt(op=list) 里（用户需求 2026-11-04：
+# 完成的 subagent 也必须能列出）。SubAgent.run() 收尾时调用
+# record_finished_agent() 写入本有界历史（强引用快照，只含展示字段，不含
+# 消息与结果，避免上下文/内存膨胀）；超过上限的最旧快照自动淘汰。
+_FINISHED_AGENTS_LIMIT: int = 50
+_finished_agents: "deque[dict]" = deque(maxlen=_FINISHED_AGENTS_LIMIT)
+_finished_agents_lock = threading.Lock()
 
 # ── 后台 bash 任务自动等待超时（防无限卡死） ──────────────
 # 前台 bash 超过 _AUTO_BG_TIMEOUT 秒会自动转后台（命令不终止），
@@ -123,6 +134,15 @@ class BaseAgent:
         # （后台 subagent 为 task_id "sa-xxx"）。resolve_agent_id 优先读取
         # 本属性，缺失时才回退 label。
         self.agent_id: str = "main"
+        # ── Agent 类型（subagent_opt op=list 对外展示）────────────
+        # 主 Agent 恒为 "main"；SubAgent 在 __init__ 中覆盖为派发类型
+        # （map/review/plan/execute）。注意与工具层 ``Func.agent_type``
+        # （调用方类型）无关，语义是「本 Agent 实例自身是什么类型」。
+        self.agent_type: str = "main"
+        # ── 实例是否已结束 ──────────────────────────────────────
+        # SubAgent.run() 的 finally 置位（收尾即视为结束）；list_active_agents
+        # 据此不把「已结束但尚未被 GC」的 SubAgent 当作当前 agent 列出。
+        self._agent_finished: bool = False
         # ── 后台任务列表（task_id → 任务记录） ──
         # ★ 两类后台任务使用**独立**列表（2026-08-18）：
         #   - _background_tasks：bash 后台任务（bash background=True /
@@ -1366,6 +1386,100 @@ async def _cancel_tasks_and_kill_pids(tasks_to_cancel: list, pids_to_kill: list)
             )
         except Exception:
             _logger.debug("后台任务取消等待异常", exc_info=True)
+
+
+def record_finished_agent(agent: "BaseAgent", status: str = "completed") -> None:
+    """记录一个已结束 Agent 的快照，供 ``subagent_opt(op=list)`` 展示。
+
+    快照只含展示字段（task_id / agent_type / description / status），
+    不持有 Agent 实例、消息或结果——已完成 agent 因此不会因实例被 GC 而
+    从 ``list_active_agents`` 消失，也不会随历史增长占用大量内存。
+
+    同一 task_id 重复登记（同一 label 重新派发）时覆盖旧快照并移到末尾；
+    历史超过 ``_FINISHED_AGENTS_LIMIT`` 条时淘汰最旧记录。
+
+    Args:
+        agent: 已结束的 Agent 实例（``SubAgent.run`` 收尾时调用）。
+        status: 结束状态：``completed`` / ``failed`` / ``cancelled``。
+    """
+    from .sandbox_manager import resolve_agent_id
+
+    entry = {
+        "task_id": resolve_agent_id(agent),
+        "agent_type": str(getattr(agent, "agent_type", "") or "main"),
+        "description": str(getattr(agent, "description", "") or ""),
+        "status": str(status or "completed"),
+    }
+    with _finished_agents_lock:
+        # 同 id 旧快照先移除：保留最新状态并让它排到末尾（最近结束优先）
+        for index in range(len(_finished_agents) - 1, -1, -1):
+            if _finished_agents[index].get("task_id") == entry["task_id"]:
+                del _finished_agents[index]
+        _finished_agents.append(entry)
+
+
+def list_active_agents() -> list[dict]:
+    """列出进程内运行中的 Agent + 最近完成的 Agent 快照（主 Agent 在前）。
+
+    供 ``subagent_opt(op="list")`` 使用，两个数据源合并后按 task_id 去重：
+
+    1. 全局活跃注册表 ``_active_agents``（``BaseAgent.__init__`` 登记、弱引用
+       自动清理）——主 Agent 与全部运行中的 SubAgent 实例；``_agent_finished``
+       为 True 的实例（``SubAgent.run`` 已进入收尾流程）不在此列；
+    2. 已完成历史 ``_finished_agents``（``record_finished_agent`` 写入的
+       有界快照）——``SubAgent.run`` 收尾即登记，因此**已完成的 subagent
+       仍会列出**（``status`` 为 completed / failed / cancelled），即使其实例
+       已被 GC。
+
+    Returns:
+        list[dict]：每项 ``{"task_id", "agent_type", "description", "status"}``。
+        ``task_id`` 为 Agent **自有标识**（``agent_id``，缺失时回退 ``label``）：
+        主 Agent 恒为 ``"main"``，SubAgent 为其 label（后台 ``"sa-xxx"`` /
+        并行前台 ``"agent-N"``）——即 ``subagent_opt`` 的 read/wait/kill 可用
+        句柄，不是内核 ``ctx.agents`` 注册表的记录 id（``"main-1"`` /
+        ``"execute-2"``，见 ``AgentsService.register`` 的 ``agent_kernel_id``）；
+        ``agent_type`` 为主 Agent ``"main"`` 或 SubAgent 的派发类型。
+        主 Agent 条目排在最前，其次为运行中的 Agent（按 task_id 升序），
+        最后为已完成 Agent（按 task_id 升序）。
+    """
+    from .sandbox_manager import resolve_agent_id
+
+    with _active_agents_lock:
+        agents = list(_active_agents)
+    with _finished_agents_lock:
+        finished = [dict(item) for item in _finished_agents]
+
+    entries: list[dict] = []
+    seen: set[str] = set()
+    for agent in agents:
+        if not isinstance(agent, BaseAgent):
+            continue
+        if getattr(agent, "_agent_finished", False):
+            continue
+        task_id = resolve_agent_id(agent)
+        if task_id in seen:
+            # 同 id 多个实例（测试桩 / 重新创建的 main）只保留第一个
+            continue
+        entries.append({
+            "task_id": task_id,
+            "agent_type": str(getattr(agent, "agent_type", "") or "main"),
+            "description": str(getattr(agent, "description", "") or ""),
+            "status": "running",
+        })
+        seen.add(task_id)
+    for item in finished:
+        if item.get("task_id") in seen:
+            continue
+        entries.append(item)
+        seen.add(item.get("task_id"))
+    entries.sort(
+        key=lambda item: (
+            item["agent_type"] != "main",
+            item["status"] != "running",
+            item["task_id"],
+        ),
+    )
+    return entries
 
 
 # ── 全局杀后台任务去重标志 ─────────────────────────────

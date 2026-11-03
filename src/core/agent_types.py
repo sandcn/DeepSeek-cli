@@ -208,6 +208,39 @@ def get_spec(name: str, default: Optional[AgentTypeSpec] = None) -> AgentTypeSpe
 
 # ── 排除集合 ───────────────────────────────────────────────
 
+#: 主 Agent 的 agent_type 标识。
+#:
+#: ``BaseAgent.__init__`` 把它作为「实例自身类型」写入（主 Agent 恒为
+#: ``"main"``，SubAgent 覆盖为 map/review/plan/execute），用于 ``subagent_opt
+#: (op="list")`` 等「当前 agent 快照」场景。它**不是** SubAgent 类型——
+#: 排除表只约束子代理类型，主 Agent 不属于任何一种，故必须按主 Agent 放行
+#: （否则会命中「未知类型回退 execute」策略，把 subagent / subagent_opt /
+#: user_select / web_search 全部误拒）。
+MAIN_AGENT_TYPE = "main"
+
+#: 主 Agent 的**委派工具**：``subagent`` / ``subagent_opt``。
+#:
+#: 用户需求（2026-11-04）：这两项在主 Agent 的**所有运行模式**
+#: （``empty`` / ``simple`` / ``standard``，Ctrl+B 循环）与**所有 preset**
+#: （``standard`` / ``minimal`` / ``code``）下都必须可用——模式过滤与 preset
+#: 过滤都不得屏蔽它们。本常量是名单的单一真源，供
+#: ``src.tools.tool_policy``（空模式过滤）与 ``src.core.presets`` /
+#: ``src.plugins.presets``（preset 过滤）共用，避免多处各写一份。
+#:
+#: 仅约束**主 Agent**：SubAgent 类型的排除表（map/review/plan/execute）本就
+#: 排除这两项，边界不变。
+DELEGATION_TOOLS: frozenset = frozenset({"subagent", "subagent_opt"})
+
+
+def is_main_agent_type(agent_type: Optional[str]) -> bool:
+    """``agent_type`` 是否表示「主 Agent」（None / 空串 / ``"main"``）。
+
+    ``None`` / 空串是旧调用约定（主 Agent 不设 agent_type），``"main"`` 是
+    ``BaseAgent.agent_type`` 的实例自身类型标识；两种写法语义相同：不受
+    SubAgent 排除表约束。
+    """
+    return not agent_type or str(agent_type) == MAIN_AGENT_TYPE
+
 
 def exclusion_map() -> Dict[str, set]:
     """返回 ``agent_type → 排除工具集合`` 的可变映射（与注册表同源）。"""
@@ -215,11 +248,13 @@ def exclusion_map() -> Dict[str, set]:
 
 
 def excluded_tools(agent_type: str, default: Optional[set] = None) -> set:
-    """返回该类型的排除工具集合副本（未知类型回退 ``execute``）。
+    """返回该类型的排除工具集合副本（未知子代理类型回退 ``execute``）。
 
-    ``agent_type`` 为空（主 Agent）时返回空集。
+    主 Agent（``None`` / 空串 / ``"main"``，见 :func:`is_main_agent_type`）
+    返回空集——排除表是 SubAgent 类型（map/review/plan/execute）的能力边界，
+    主 Agent 不受其约束。
     """
-    if not agent_type:
+    if is_main_agent_type(agent_type):
         return set()
     with _lock:
         entry = _exclusion_map.get(agent_type)
@@ -387,6 +422,9 @@ def build_prompt_parts(port: Any, agent_type: str, cwd: Optional[str] = None) ->
 
 __all__ = [
     "AgentTypeSpec",
+    "MAIN_AGENT_TYPE",
+    "DELEGATION_TOOLS",
+    "is_main_agent_type",
     "exclusion_map",
     "excluded_tools",
     "uses_low_model",

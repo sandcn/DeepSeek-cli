@@ -48,20 +48,27 @@ class Preset:
 
 
 #: 内置 preset 声明（id → 默认规格）——每项由清单中的独立插件条目注册。
+#:
+#: ★ 委派工具（``subagent`` / ``subagent_opt``，名单见
+#: ``src.core.agent_types.DELEGATION_TOOLS``）不出现在任何内置 preset 的
+#: ``tool_excludes`` 中：用户需求（2026-11-04）要求
+#: 它们在主 Agent 的所有运行模式与所有 preset 下都可用。外部 Patch/Overlay
+#: 即便把这两项写回某个 preset 的 ``tool_excludes`` 或 ``tool_includes``，
+#: ``src.plugins.presets`` 也会在主 Agent 上强制保留（名单单一真源）。
 _BUILTIN_PRESET_SPECS: Dict[str, Preset] = {
     "standard": Preset("standard", "标准模式：全部工具可用（默认）"),
     "minimal": Preset(
         "minimal",
-        "最小模式：只读 + 基础交互工具",
+        "最小模式：只读 + 基础交互工具（含委派工具）",
         tool_excludes=(
-            "bash", "bash_opt", "subagent", "subagent_opt", "user_select",
+            "bash", "bash_opt", "user_select",
             "web_search", "write", "edit", "rm", "mv", "cp", "mkdir",
         ),
     ),
     "code": Preset(
         "code",
-        "编码模式：读写 + shell，无网络与委派",
-        tool_excludes=("web_search", "subagent", "subagent_opt", "user_select"),
+        "编码模式：读写 + shell + 委派，无网络",
+        tool_excludes=("web_search", "user_select"),
     ),
 }
 

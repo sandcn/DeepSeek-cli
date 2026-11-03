@@ -86,13 +86,31 @@ class AgentsService(Service):
         if session_id:
             self._by_session.setdefault(session_id, []).append(agent_id)
 
-        # 反向绑定：Agent 可从自身读取登记信息
-        for attr, value in (
-            ("agent_id", record.id),
+        # 反向绑定：Agent 可从自身读取登记信息。
+        # ★ agent_id 是 Agent 的**自有身份**，不是注册表编号：
+        #   主 Agent 为 "main"，SubAgent 为其 label（后台 "sa-xxx" /
+        #   并行前台 "agent-N"）——文件沙盒锁、读审计与 subagent 任务句柄
+        #   都经 resolve_agent_id 读取它。内核记录 id（"main-1" /
+        #   "execute-2"）只是本注册表的内部编号，**不得覆盖**自有身份，
+        #   否则（修复前）：
+        #     1) subagent_opt(op=list) 为 SubAgent 列出 "execute-2"，与
+        #        subagent 工具返回的 "sa-xxx" 不一致，模型拿它调
+        #        read/wait/kill 会被 task_id 前缀校验拒绝；
+        #     2) 同一子代理同时以 "execute-2"（注册表）与 "sa-xxx"
+        #        （_subagent_tasks）出现两条，按 task_id 去重失效；
+        #     3) 沙盒锁 / 读审计的 agent 标识与文档契约
+        #        （SubAgent 标识 = label）不符。
+        #   记录 id 另经 agent_kernel_id 暴露；Agent 自身没有身份时才用
+        #   记录 id 回填（测试桩 / 第三方 Agent 兼容）。
+        bindings = [
             ("agent_kind", record.kind),
             ("agent_record", record),
             ("agent_scope", scope),
-        ):
+            ("agent_kernel_id", record.id),
+        ]
+        if not str(getattr(agent, "agent_id", "") or "").strip():
+            bindings.insert(0, ("agent_id", record.id))
+        for attr, value in bindings:
             try:
                 setattr(agent, attr, value)
             except Exception:

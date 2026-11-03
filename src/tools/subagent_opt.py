@@ -1,5 +1,5 @@
 """
-subagent_opt — 按 task_id 操作后台 subagent 任务
+subagent_opt — 按 task_id 操作后台 subagent 任务 / 列出活跃 agent
 
 配合 subagent 工具（直接后台执行）使用。subagent 后台启动后返回
 {"task_id": "sa-xxx", "status": "running", "description": "...", "type": "..."}，
@@ -10,6 +10,9 @@ subagent_opt — 按 task_id 操作后台 subagent 任务
 - op=kill     取消后台 subagent 任务（级联取消其内部 SubAgent）
 - op=wait_all 等待**所有**后台 subagent 任务完成，返回每个任务结果的 JSON 数组
              （无需 task_id；timeout 秒，默认 300/0 无限）
+- op=list     列出当前所有 agent 的 agent 类型与 task_id（无需 task_id，
+             含主 Agent）——数据源为进程内活跃 Agent 注册表 + 调用方主
+             Agent 的 subagent 后台任务表
 - op=release  释放**调用方自己持有**的文件沙盒锁（参数只有 file）；
              调用方不是锁持有者时拒绝，主 Agent 也没有特权
 
@@ -45,11 +48,14 @@ class SubagentOptFunc(Func):
                 "description": (
                     "按 task_id 操作后台 subagent 任务；op：read（读当前状态/结果，"
                     "立即返回）/ wait（等待完成）/ kill（取消，级联取消其内部子 Agent）/ "
-                    "wait_all（等待全部，无需 task_id）/ release（释放文件沙盒锁："
-                    "参数只有 file；调用方必须是该锁持有者，主 Agent 也无特权，"
-                    "不能释放其他 Agent 的锁）。"
+                    "wait_all（等待全部，无需 task_id）/ list（列出当前所有 agent "
+                    "的类型与 task_id，无需 task_id，含主 Agent）/ release（释放文件"
+                    "沙盒锁：参数只有 file；调用方必须是该锁持有者，主 Agent 也无"
+                    "特权，不能释放其他 Agent 的锁）。"
                     "task_id 必须是 sa-xxx，timeout 默认 300 秒（0 不限），wait 超时"
                     "返回 timeout=true 且任务继续运行。"
+                    "list 无需其它参数（op 传 list 即可列出当前所有 agent 的类型"
+                    "与 task_id）。"
                     "例：subagent_opt({\"task_id\": \"sa-abc123\", \"op\": \"wait\", "
                     "\"timeout\": 60})；subagent_opt({\"op\": \"release\", "
                     "\"file\": \"src/a.py\"})"
@@ -60,14 +66,18 @@ class SubagentOptFunc(Func):
                         "task_id": {
                             "type": "string",
                             "description": (
-                                "任务 ID（sa-xxx；wait_all 可省略；release 不使用"
-                                "此参数）"
+                                "任务 ID（sa-xxx；wait_all / list 可省略；release "
+                                "不使用此参数）"
                             ),
                         },
                         "op": {
                             "type": "string",
-                            "enum": ["read", "wait", "kill", "wait_all", "release"],
-                            "description": "要执行的操作（read/wait/kill/wait_all/release）",
+                            "enum": ["read", "wait", "kill", "wait_all", "list",
+                                     "release"],
+                            "description": (
+                                "要执行的操作（read/wait/kill/wait_all/list/"
+                                "release）"
+                            ),
                         },
                         "timeout": {
                             "type": "number",
@@ -92,6 +102,9 @@ class SubagentOptFunc(Func):
         op = arguments.get("op", "")
         if op == "wait_all":
             return "'wait_all'"
+        if op == "list":
+            # list 无需任务参数
+            return "'list'"
         if op == "release":
             # release 的参数只有 file（不展示 / 不使用 task_id）
             return f"'release {arguments.get('file') or ''}'"
@@ -103,7 +116,7 @@ class SubagentOptFunc(Func):
         super().__init__()
         # task_id 归一化（防御 None/缺失）：模型传 {"task_id": null} 时
         # from_args 把 None 传入（默认值不生效），后续 startswith 崩溃——
-        # 统一归一化为空串（wait_all 批量操作本就无需 task_id）。
+        # 统一归一化为空串（wait_all / list 本就无需 task_id）。
         self.task_id = task_id or ""
         self.op = op
         # op=release 的锁路径（release 必填；仅释放调用方自己持有的锁）
@@ -128,7 +141,7 @@ class SubagentOptFunc(Func):
     # ── execute ──────────────────────────────────────────
 
     async def execute(self) -> str:
-        """按 task_id 和 op 操作后台 subagent 任务，返回结果字符串。"""
+        """按 task_id 和 op 操作后台 subagent 任务（op=list 无需 task_id），返回结果字符串。"""
         from ..core.subagent import SubAgent  # 延迟导入避免模块加载循环
 
         agent = self.agent
@@ -141,6 +154,12 @@ class SubagentOptFunc(Func):
         #   处理（测试桩 / 无任务上下文时也能释放调用方自身的锁）。
         if self.op == "release":
             return self._op_release(agent)
+
+        # ★ op=list：列出当前所有 agent（无需 task_id，也不依赖任务表）——
+        #   必须在 `_subagent_tasks` 校验之前处理：调用方即使没有任务表
+        #   上下文（测试桩 / 无内核会话）也能拿到活跃 agent 快照。
+        if self.op == "list":
+            return self._op_list(agent)
 
         if agent is None or not hasattr(agent, '_subagent_tasks'):
             return "(后台 subagent 操作需要关联 Agent 上下文，当前未关联)"
@@ -178,7 +197,7 @@ class SubagentOptFunc(Func):
             return await self._op_wait(agent, rec)
         if self.op == "kill":
             return await self._op_kill(agent, rec)
-        return f"(未知操作: {self.op}。支持: read/wait/kill/wait_all/release)"
+        return f"(未知操作: {self.op}。支持: read/wait/kill/wait_all/list/release)"
 
     # ── op=release ───────────────────────────────────────
 
@@ -224,6 +243,86 @@ class SubagentOptFunc(Func):
         return (
             f"(agent {caller_id} 未持有 {file_path} 的精确锁"
             f"（若该路径由目录锁覆盖，请传目录路径释放）)"
+        )
+
+    # ── op=list ──────────────────────────────────────────
+
+    def _op_list(self, agent) -> str:
+        """列出当前所有 agent 的 agent 类型与 task_id（含主 Agent）。
+
+        ``task_id`` 是**可直接喂回本工具的句柄**（SubAgent 恒为 ``sa-xxx``，
+        主 Agent 为 ``main``），来自 Agent 自有标识 ``agent_id``，而不是内核
+        ``ctx.agents`` 注册表的记录 id（``execute-N`` / ``main-N``）——
+        后者既不能用于 read/wait/kill，又会与 ``_subagent_tasks`` 的
+        ``sa-xxx`` 键对不上而把同一子代理列成两条。
+
+        两个数据来源按 task_id 去重合并：
+
+        1. 进程内活跃 Agent 注册表 + 最近完成快照
+           （``base_agent.list_active_agents``：``_active_agents`` 的运行中
+           实例 **加上** ``_finished_agents`` 里有界历史）——主 Agent + 全部
+           SubAgent（后台 ``sa-xxx`` 与并行前台 ``agent-N``）。已完成的
+           SubAgent 在 ``run`` 收尾时登记快照，实例被 GC 后**仍会列出**
+           （status 为 completed / failed / cancelled）；
+        2. 调用方主 Agent 的 subagent 后台任务表（``_subagent_tasks``）中的
+           记录（**含已完成** ``done=True`` 的记录）——覆盖「subagent 工具已
+           返回 task_id、对应 SubAgent 实例尚未创建」的极短窗口（以及测试桩
+           等无实例场景），保证刚派发的任务能立刻列出；已完成记录的 status
+           取记录自身的 completed / cancelled / failed。
+
+        调用方主 Agent 自身也做兜底补入（注册表异常时仍能看到 main）。
+
+        Returns:
+            JSON：``{"count": N, "agents": [{task_id, agent_type,
+            description, status}, ...]}``。主 Agent 条目在最前，其次为运行中
+            的 Agent，最后为已完成 Agent（各自按 task_id 升序）。
+        """
+        from ..core.base_agent import list_active_agents
+        from ..core.sandbox_manager import resolve_agent_id
+
+        entries = list_active_agents()
+        seen = {str(item.get("task_id") or "") for item in entries}
+
+        if agent is not None:
+            caller_id = resolve_agent_id(agent)
+            if caller_id not in seen:
+                entries.append({
+                    "task_id": caller_id,
+                    "agent_type": str(getattr(agent, "agent_type", "") or "main"),
+                    "description": str(getattr(agent, "description", "") or ""),
+                    "status": "running",
+                })
+                seen.add(caller_id)
+
+        table = getattr(agent, "_subagent_tasks", None) or {}
+        for task_id, rec in list(table.items()):
+            if not isinstance(rec, dict):
+                continue
+            tid = str(task_id)
+            if tid in seen:
+                continue
+            # ★ 已完成记录同样列出（用户需求 2026-11-04）：done=True 的记录
+            #   （结果尚未被对话轮次消费 / 由工具管理）若直接跳过，模型就
+            #   看不到「刚跑完但还没取结果」的任务；status 取记录自身的
+            #   completed / cancelled / failed。
+            done = bool(rec.get("done"))
+            entries.append({
+                "task_id": tid,
+                "agent_type": str(rec.get("agent_type") or ""),
+                "description": str(rec.get("description") or ""),
+                "status": str(rec.get("status") or ("completed" if done else "running")),
+            })
+            seen.add(tid)
+
+        entries.sort(
+            key=lambda item: (
+                item["agent_type"] != "main",
+                item["status"] != "running",
+                item["task_id"],
+            ),
+        )
+        return json.dumps(
+            {"count": len(entries), "agents": entries}, ensure_ascii=False,
         )
 
     # ── op=read ──────────────────────────────────────────

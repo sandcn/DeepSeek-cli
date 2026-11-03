@@ -503,8 +503,8 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **19 个内�
 | `web_search` | ws | 网络 | ❌ | DeepSeek 官方原生联网搜索（Anthropic 兼容 Messages API + web_search_20250305），返回来源列表（标题/URL/摘要） |
 | `web_fetch` | — | 网络 | ✅ | 获取指定 URL 的网页全文（自动提取正文，SSRF 防护，仅 http/https） |
 | `user_select` | us | 交互 | ❌ | 向用户显示交互式选择界面（单选/多选/**1 分钟无操作超时**回退/非交互回退，选项为 `{label, description}` 对象、说明可多行且与选项同参数传入；支持并发提问——多个问题可同一轮同时弹出、以 tab 形式一起回答）。超时按空闲计时：每次按键/滚动重置 1 分钟倒计时，持续操作永不超时；**自定义输入编辑期间暂停计时**（标题区不显示/递减倒计时），提交或退出后恢复（外部编辑器 Ctrl+G 期间同样暂停）。TUI（对齐 Claude Code AskUserQuestion v2.1.308）：tab 栏 `← [x] 标题  [ ] 标题  √ 提交 →`（当前 tab 反色，`header` 仅用于 tab 标签）；问题页单行问题文本（无 chip / 分割线），右侧显示位置/多选已选数/倒计时；选项形如 `> 1. 标签`，选中整行背景高亮，说明写在 `options[].description` 并缩进显示在选项下方（选中项按原文多行展开、超宽自动换行；其余选项折叠单行）；多选 `[√]`/`[ ]`，列表末尾追加 `提交` 项；自定义输入为普通编号项 `其他（自定义输入…）`（Enter 进入多行编辑：`Shift+Enter`/`Ctrl+O` 换行、`Enter` 提交、`Esc` 返回；空输入框光标常显，空输入 `Enter` 提示「输入不能为空」；输入内容按原文多行显示、超宽自动换行，长内容以光标为中心滚动）；支持 `1-9` 快选（单选立即确认、多选切换勾选）、`Home/End`/`PgUp/PgDn` 导航；主提示 `Enter 选择 · Tab/←→ 切换 · Esc 取消` + 次要快捷键第二行；长列表显示 `▲ 上方 N 项 / ▼ 下方 M 项`；多选支持 `a` 全选/全不选、`c` 清空；自定义输入支持 `Ctrl+U` 清空/`Ctrl+W` 删词/`←→↑↓` 移动光标/`Ctrl+O` 换行；Submit 页为 `检查你的答案` + `• 问题 / → 答案（自定义多行答案逐行显示）` + `> 1. 提交答案 / 2. 取消`，支持 PgUp/PgDn 分页滚动与 `1-9` 跳题 |
-| `subagent` | sa | Agent | ❌ | 并行派发子 Agent 执行独立任务（支持类型：map/review/plan/execute）；直接后台执行，立即返回 `{"task_id": "sa-xxx"}` JSON，完成后结果自动插入对话（或由 subagent_opt 管理）。后台 subagent 仅主 Agent 可派发 |
-| `subagent_opt` | so | Agent | ❌ | 按 task_id 操作后台 subagent 任务（subagent 直接后台启动）：read（读取当前状态与已产生的结果，立即返回）/ wait（等待完成取结果，timeout 秒，默认 300/0 无限）/ kill（取消后台 subagent 任务）/ wait_all（等待**所有**后台 subagent 任务完成，返回每个任务结果的 JSON 数组，无需 task_id）。仅主 Agent 可用 |
+| `subagent` | sa | Agent | ❌ | 并行派发子 Agent 执行独立任务（支持类型：map/review/plan/execute）；直接后台执行，立即返回 `{"task_id": "sa-xxx"}` JSON，完成后结果自动插入对话（或由 subagent_opt 管理）。后台 subagent 仅主 Agent 可派发；**在主 Agent 所有运行模式（空/简单/标准）与所有 preset（standard/minimal/code）下均可用，不被屏蔽** |
+| `subagent_opt` | so | Agent | ❌ | 按 task_id 操作后台 subagent 任务（subagent 直接后台启动）：read（读取当前状态与已产生的结果，立即返回）/ wait（等待完成取结果，timeout 秒，默认 300/0 无限）/ kill（取消后台 subagent 任务）/ wait_all（等待**所有**后台 subagent 任务完成，返回每个任务结果的 JSON 数组，无需 task_id）/ list（列出当前所有 agent 的 agent 类型与 task_id，无需 task_id，含主 Agent；返回 `{"count": N, "agents": [{task_id, agent_type, description, status}, ...]}`）/ release（释放调用方自己持有的文件沙盒锁）。仅主 Agent 可用；**在主 Agent 所有运行模式与所有 preset 下均可用，不被屏蔽** |
 | `skill` | sk | 技能 | ✅ | 加载技能（skill）的完整指令（技能目录随系统提示词注入，任务与技能匹配或点名技能时调用） |
 
 ### 工具分类
@@ -539,6 +539,7 @@ def can_use(cls, tool_name: str, agent_type: str = "execute", path: str | None =
 - **agent_type 注入** — SubAgent 在 `_handle_tool_calls()` 中自动注入 `func.agent_type = self.agent_type`
 - **排除规则** — 定义在 `src/core/subagent.py` 的 `_TOOL_EXCLUSION_MAP`（详见下方 SubAgent 类型表）
 - **路径白名单** — `FileToolBase._validate_path_and_size()` 对 plan Agent 实施路径限制，仅允许写入 `~/.chat/plan/` 目录，防止误写项目源码
+- **主 Agent 委派工具恒可用** — `subagent` / `subagent_opt` 在主 Agent 的所有运行模式（空/简单/标准，Ctrl+B 切换）与所有 preset（`standard`/`minimal`/`code`）下均不被屏蔽：空模式过滤（`filter_schemas_for_empty_mode`）与 preset 过滤（`PresetsService.apply_to_agent`）都对其豁免，名单单一真源为 `src/core/agent_types.py::DELEGATION_TOOLS`，内置 preset 声明也不再排除它们（SubAgent 类型排除表边界不变）
 
 ---
 
