@@ -50,6 +50,9 @@
 
 并锁定空模式「修改前发现与现有逻辑冲突」的提问口子：落盘前一次列全全部冲突点，
 同一轮并发 `user_select` 让用户选择是否解决，禁止先改后问 / 边改边逐个问 / 自行绕过。
+
+并锁定空模式「需求方向选择必须弹 `user_select`」的提问形态：⑥ 类决策点与并发问齐
+条款都禁止只用纯文本提问；「纯文本答复同样有效」只约束用户答复形态，不约束模型提问形态。
 """
 
 from __future__ import annotations
@@ -310,6 +313,34 @@ def test_empty_prompt_batches_undetermined_requirement_points() -> None:
     assert "不视为重复确认" in content
     # 提问轮用尽后按推荐默认项推进，不得停摆。
     assert "⑥：按各问题的 `default_options`（推荐方案）执行" in content
+
+
+def test_empty_prompt_requirement_decisions_must_use_user_select() -> None:
+    """需求方向选择必须弹 `user_select`；纯文本只用于用户答复。
+
+    防回归：empty 版曾只在远处的通用条款里提 `user_select`，⑥ 条本体没有
+    绑定工具，且「纯文本答复同样有效」条款可被读成允许纯文本提问——模型
+    遇到需求方向选择时会用纯文本问而不调用工具。
+    """
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    # ⑥ 条本体直接绑定工具，禁止纯文本提问。
+    assert "一旦判定为 ⑥ 类决策点，必须调用 `user_select` 弹窗提问（禁止只用纯文本问一句）" in content
+
+    # 并发问齐条款同样排除纯文本逐条问。
+    assert "**必须用 `user_select` 弹窗提问——禁止只用纯文本问一句，也禁止用纯文本逐条问。**" in content
+
+    # 纯文本条款收窄为「只约束答复形态」；提问形态仍必须弹窗。
+    assert "**需求澄清的纯文本答复同样有效（仅约束用户答复形态，不约束模型提问形态）**" in content
+    assert "**但提问仍必须调用 `user_select` 弹窗（禁止只用纯文本问一句），纯文本只用于用户答复**" in content
+
+    # 用户答复形态的既有语义不得被收窄误伤。
+    assert "禁止要求「请在弹窗中选择」" in content
+
+    # 决策与默认项、示例仍与「必须弹窗」口径一致。
+    assert "时用 `user_select` 让用户选（**禁止只用纯文本问一句**）" in content
+    assert "①（互斥方向选择）、⑥（需求未确定决策点）或 ⑦（修改前发现与现有逻辑冲突）时用 `user_select` 让用户选" in content
+    assert "例 6｜一轮问完（需求未确定点）" in content
 
 
 def test_empty_prompt_asks_before_resolving_logic_conflicts() -> None:
