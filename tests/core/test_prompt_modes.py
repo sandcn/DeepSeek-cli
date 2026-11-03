@@ -47,6 +47,9 @@
 并锁定空模式的修复层级口径：上层与底层都能修同一缺陷时一律改底层（根因层），
 仅在底层不可改或会破坏既有对外契约时改上层并写明理由；改底层须核对全部调用方与边界，
 授权范围外先申请扩权。
+
+并锁定空模式「修改前发现与现有逻辑冲突」的提问口子：落盘前一次列全全部冲突点，
+同一轮并发 `user_select` 让用户选择是否解决，禁止先改后问 / 边改边逐个问 / 自行绕过。
 """
 
 from __future__ import annotations
@@ -307,6 +310,34 @@ def test_empty_prompt_batches_undetermined_requirement_points() -> None:
     assert "不视为重复确认" in content
     # 提问轮用尽后按推荐默认项推进，不得停摆。
     assert "⑥：按各问题的 `default_options`（推荐方案）执行" in content
+
+
+def test_empty_prompt_asks_before_resolving_logic_conflicts() -> None:
+    """修改代码时发现与现有逻辑冲突，必须在落盘前一次性并发 user_select 让用户选。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    # ⑦ 是提问清单的显式扩项：限定「动手修改前（落盘前）」，冲突点一次列全。
+    assert "⑦ **修改代码前发现与现有逻辑冲突**" in content
+    assert "必须在**动手修改前（落盘前）**一次性列全所有冲突点" in content
+    assert "同一轮并发 `user_select` 让用户选择是否解决" in content
+
+    # 禁止先改后问、边改边问或自行绕过冲突。
+    assert "不得先改后问、不得边改边逐个问、不得自行决定忽略或绕过冲突" in content
+
+    # 默认项取推荐方案「解决冲突」；越权改文件仍走 ⑤ 扩权。
+    assert "默认项取推荐方案（解决冲突）" in content
+    assert "解决冲突需改授权范围外文件时按 ⑤ 单独扩权" in content
+    # 解决冲突不得成为绕过安全红线的通道。
+    assert "解决过程涉及破坏性 / 不可逆 / 远程操作时，按 ② 与〈安全红线〉显式确认" in content
+
+    # 与既有提问轮次口径一致：一次问齐、收尾按默认项执行。
+    assert "按 ⑥ / ⑦ 提问时" in content
+    assert "⑦：按各问题的 `default_options`（推荐方案「解决冲突」）执行" in content
+
+    # 决策与默认项 / 工作方式 / 示例同步，避免规则只在一处成立。
+    assert "⑦（修改前发现与现有逻辑冲突）" in content
+    assert "**改前冲突检查（修改代码时强制）**" in content
+    assert "场景（修改前发现与现有逻辑冲突）" in content
 
 
 def test_empty_prompt_execution_path_conflicts_removed() -> None:
