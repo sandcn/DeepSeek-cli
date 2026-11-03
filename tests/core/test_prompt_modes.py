@@ -39,8 +39,9 @@
 并锁定空模式未完成清单的长上下文全量口径：未完成清单汇总从会话开始到本次
 回复结束的全部未结清项，不得只列本轮新增的增量未完成项。
 
-并锁定空模式「新增 / 修改代码须可维护、可改进」条款：职责单一与边界清晰、
-复用既有实现与抽象、接口向后可扩展但不过度设计，且不得借可维护性扩大重构范围。
+并锁定空模式「新增 / 修改代码须可维护、可改进并实现完整」条款：职责单一与边界清晰、
+复用既有实现与抽象、接口向后可扩展但不过度设计，实现完整性覆盖需求、计划项与同一
+根因下的全部调用方与边界，且不得借可维护性 / 实现完整性扩大重构范围。
 """
 
 from __future__ import annotations
@@ -885,12 +886,12 @@ def test_empty_prompt_incomplete_list_is_long_context_full() -> None:
     assert "把此前已登记、至今仍未结清的旧项漏掉" in content
 
 
-def test_empty_prompt_requires_maintainable_and_improvable_code() -> None:
-    """空模式：新增 / 修改代码必须同时满足可维护性与可改进性（防退化为只求能跑）。"""
+def test_empty_prompt_requires_maintainable_improvable_and_complete_code() -> None:
+    """空模式：新增 / 修改代码必须同时满足可维护性、可改进性与实现完整性。"""
     content = builder._load_prompt("prompts_export_main_empty")
 
     # 「可维护性」写成对结构 / 命名 / 复用 / 依赖方向的强制要求，不是口号。
-    assert "**可维护性与可改进性（写码要求）**" in content
+    assert "**可维护性、可改进性与实现完整性（写码要求）**" in content
     assert "职责单一、边界清晰" in content
     assert "复用项目里已有的实现与抽象" in content
     assert "禁止复制粘贴出第二份同类逻辑" in content
@@ -904,14 +905,23 @@ def test_empty_prompt_requires_maintainable_and_improvable_code() -> None:
     assert "不做投机性过度设计" in content
     assert "明知有问题而本次不改的部分写入交付说明或未完成清单" in content
 
+    # 「实现完整性」同样约束每一次新增 / 修改代码，且不得另立标准。
+    assert "**实现完整性**" in content
+    assert "必须完整覆盖需求与已列计划项" in content
+    assert "禁止占位符、stub、TODO、空实现、假数据、mock 冒充" in content
+    assert "同一根因下的全部调用方与全部边界" in content
+    assert "不得只让示例路径走通、只让报错消失或只让用例变绿" in content
+    assert "与本节「实现完整性（红线）」「禁止最小化方案（红线）」同一口径，不另立标准" in content
+
     # 例外口径收敛：语言 / 框架强制、兼容性硬约束，且必须写明后续改进路径。
     assert "语言 / 框架强制" in content
     assert "兼容性硬约束" in content
     assert "须在交付说明写明原因、影响面与后续改进路径" in content
 
-    # 不得借「可维护性 / 可改进性」扩大范围。
-    assert "**禁止借可维护性之名扩大范围**" in content
+    # 不得借「可维护性 / 实现完整性」扩大范围。
+    assert "**禁止借可维护性 / 实现完整性之名扩大范围**" in content
     assert "不做与当前需求无关的重构" in content
+    assert "实现完整性只覆盖本次授权范围内同一根因下的调用方与边界" in content
     assert "按〈授权范围〉申请扩权，未获授权只报告不动手" in content
 
     # 既有约束不得被新条款顶掉。
