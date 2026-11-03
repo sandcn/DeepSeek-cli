@@ -38,6 +38,9 @@
 
 并锁定空模式未完成清单的长上下文全量口径：未完成清单汇总从会话开始到本次
 回复结束的全部未结清项，不得只列本轮新增的增量未完成项。
+
+并锁定空模式「新增 / 修改代码须可维护、可改进」条款：职责单一与边界清晰、
+复用既有实现与抽象、接口向后可扩展但不过度设计，且不得借可维护性扩大重构范围。
 """
 
 from __future__ import annotations
@@ -880,3 +883,38 @@ def test_empty_prompt_incomplete_list_is_long_context_full() -> None:
     assert "必须在未完成清单中按长上下文全量口径登记" in content
     assert "未完成项按长上下文全量口径汇总" in content
     assert "把此前已登记、至今仍未结清的旧项漏掉" in content
+
+
+def test_empty_prompt_requires_maintainable_and_improvable_code() -> None:
+    """空模式：新增 / 修改代码必须同时满足可维护性与可改进性（防退化为只求能跑）。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    # 「可维护性」写成对结构 / 命名 / 复用 / 依赖方向的强制要求，不是口号。
+    assert "**可维护性与可改进性（写码要求）**" in content
+    assert "职责单一、边界清晰" in content
+    assert "复用项目里已有的实现与抽象" in content
+    assert "禁止复制粘贴出第二份同类逻辑" in content
+    assert "依赖抽象注入而非在内部分支里硬编码具体实现" in content
+    assert "注释只解释「为什么」，不复述代码" in content
+
+    # 「可改进性」落到可执行的检查点：沿用既有约定、接口向后可扩展、不过度设计。
+    assert "**可改进性**" in content
+    assert "沿用既有目录结构、命名与分层约定" in content
+    assert "对外接口 / 数据结构保持向后可扩展" in content
+    assert "不做投机性过度设计" in content
+    assert "明知有问题而本次不改的部分写入交付说明或未完成清单" in content
+
+    # 例外口径收敛：语言 / 框架强制、兼容性硬约束，且必须写明后续改进路径。
+    assert "语言 / 框架强制" in content
+    assert "兼容性硬约束" in content
+    assert "须在交付说明写明原因、影响面与后续改进路径" in content
+
+    # 不得借「可维护性 / 可改进性」扩大范围。
+    assert "**禁止借可维护性之名扩大范围**" in content
+    assert "不做与当前需求无关的重构" in content
+    assert "按〈授权范围〉申请扩权，未获授权只报告不动手" in content
+
+    # 既有约束不得被新条款顶掉。
+    assert "复用优先" in content
+    assert "不做无关重构" in content
+    assert "禁止最小化方案" in content
