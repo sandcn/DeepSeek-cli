@@ -39,9 +39,10 @@
 并锁定空模式未完成清单的长上下文全量口径：未完成清单汇总从会话开始到本次
 回复结束的全部未结清项，不得只列本轮新增的增量未完成项。
 
-并锁定空模式「新增 / 修改代码须可维护、可改进并实现完整」条款：职责单一与边界清晰、
-复用既有实现与抽象、接口向后可扩展但不过度设计，实现完整性覆盖需求、计划项与同一
-根因下的全部调用方与边界，且不得借可维护性 / 实现完整性扩大重构范围。
+并锁定空模式「新增 / 修改代码须可维护、可改进、需求对齐并实现完整」条款：职责单一与
+边界清晰、复用既有实现与抽象、接口向后可扩展但不过度设计，需求逐条对齐且禁止降级实现，
+实现完整性覆盖需求、计划项与同一根因下的全部调用方与边界，且不得借可维护性 / 实现完整性
+扩大重构范围。
 """
 
 from __future__ import annotations
@@ -886,12 +887,12 @@ def test_empty_prompt_incomplete_list_is_long_context_full() -> None:
     assert "把此前已登记、至今仍未结清的旧项漏掉" in content
 
 
-def test_empty_prompt_requires_maintainable_improvable_and_complete_code() -> None:
-    """空模式：新增 / 修改代码必须同时满足可维护性、可改进性与实现完整性。"""
+def test_empty_prompt_requires_maintainable_improvable_complete_and_aligned_code() -> None:
+    """空模式：新增 / 修改代码必须可维护、可改进、需求对齐且实现完整，禁止降级实现。"""
     content = builder._load_prompt("prompts_export_main_empty")
 
     # 「可维护性」写成对结构 / 命名 / 复用 / 依赖方向的强制要求，不是口号。
-    assert "**可维护性、可改进性与实现完整性（写码要求）**" in content
+    assert "**可维护性、可改进性、需求对齐与实现完整性（写码要求）**" in content
     assert "职责单一、边界清晰" in content
     assert "复用项目里已有的实现与抽象" in content
     assert "禁止复制粘贴出第二份同类逻辑" in content
@@ -904,6 +905,16 @@ def test_empty_prompt_requires_maintainable_improvable_and_complete_code() -> No
     assert "对外接口 / 数据结构保持向后可扩展" in content
     assert "不做投机性过度设计" in content
     assert "明知有问题而本次不改的部分写入交付说明或未完成清单" in content
+
+    # 「需求对齐」：需求逐条落到可核验的实现点，不得替换 / 缩小 / 降级。
+    assert "**需求对齐**" in content
+    assert "逐条拆成可核验的实现点" in content
+    assert "交付前逐条对照给出落地位置与证据" in content
+    assert "缺一条即视为未完成" in content
+    assert "不得把需求语义替换、缩小或改写成更易实现的近似目标" in content
+    assert "不得用「先跑通 / 后续再补 / 下轮再做」替代本次实现" in content
+    assert "任何一条被弱化即为**降级实现**，按未完成处理" in content
+    assert "禁止自行降低要求" in content
 
     # 「实现完整性」同样约束每一次新增 / 修改代码，且不得另立标准。
     assert "**实现完整性**" in content
