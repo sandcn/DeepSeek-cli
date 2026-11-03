@@ -148,9 +148,11 @@ def test_user_select_summary_matches_live_path() -> None:
     one = json.dumps({"selected": ["唯一项"], "action": "confirmed"})
     assert format_tool_message_content("user_select", one) == "已选择: 唯一项"
 
+    # ★ 2026-11-04（用户需求：工具卡显示完整所有用户选择、不能省略）：
+    #   多选结果逐项全量列出，不再截断为前 3 项 +「... 还有 N 项」。
     many = json.dumps({"selected": ["a", "b", "c", "d"], "action": "confirmed"})
     assert format_tool_message_content("user_select", many) == (
-        "已选择 4 项:\n- a\n- b\n- c\n... 还有 1 项"
+        "已选择 4 项:\n- a\n- b\n- c\n- d"
     )
 
     # ★ 2026-10-23（用户需求：输入完了要显示所有的输入（多行））：

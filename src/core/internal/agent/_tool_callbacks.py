@@ -359,13 +359,16 @@ class ToolCallbackChain:
                             f"  {line}" for line in lines[1:]
                         )
                 else:
+                    # ★ 2026-11-04（用户需求：user_select 工具卡显示完整所有
+                    #   用户选择、不能省略）：多选结果**逐项全量列出**——修复前
+                    #   只列前 3 项并以「... 还有 N 项」占位，工具卡上看不到
+                    #   全部已选项。与回放路径
+                    #   ``tool_output_display._format_user_select`` 保持同格式。
                     parts = [f"已选择 {len(selected)} 项:"]
-                    for item in selected[:3]:
+                    for item in selected:
                         lines = _lines(item)
                         parts.append(f"- {lines[0]}")
                         parts.extend(f"  {line}" for line in lines[1:])
-                    if len(selected) > 3:
-                        parts.append(f"... 还有 {len(selected) - 3} 项")
                     text = "\n".join(parts)
             else:
                 text = "未选择任何项"

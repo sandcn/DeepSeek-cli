@@ -180,13 +180,15 @@ def _format_user_select(data: dict) -> str:
         return "已选择: " + lines[0] + "\n" + "\n".join(
             f"  {line}" for line in lines[1:]
         )
+    # ★ 2026-11-04（用户需求：user_select 工具卡显示完整所有用户选择、
+    #   不能省略）：多选结果**逐项全量列出**——修复前只列前 3 项并以
+    #   「... 还有 N 项」占位，回放（/load、/editmsg）的工具卡看不全已选项。
+    #   与实时路径 ``_tool_callbacks._emit_user_select_output`` 保持同格式。
     out: list = [f"已选择 {len(selected)} 项:"]
-    for item in selected[:3]:
+    for item in selected:
         lines = _lines(item)
         out.append(f"- {lines[0]}")
         out.extend(f"  {line}" for line in lines[1:])
-    if len(selected) > 3:
-        out.append(f"... 还有 {len(selected) - 3} 项")
     return "\n".join(out)
 
 

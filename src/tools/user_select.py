@@ -613,23 +613,18 @@ class UserSelectFunc(Func):
                         )
 
             others = [x for x in selected if str(x) != custom] if custom else list(selected)
+            # ★ 2026-11-04（用户需求：user_select 工具卡显示完整所有用户
+            #   选择、不能省略）：多选结果**逐项全量列出**——修复前只列前 3
+            #   项并以「... 还有 N 项」占位。与实时/回放工具卡路径口径一致。
             if custom:
                 _emit_value("+ 自定义输入: ", custom)
                 if others:
-                    _emit_items(f"+ 同时选择 {len(others)} 项:", others[:3])
-                    if len(others) > 3:
-                        Func._publish_tool_text(
-                            f"  {DIM}  ... 还有 {len(others)-3} 项{RESET}"
-                        )
+                    _emit_items(f"+ 同时选择 {len(others)} 项:", others)
             elif selected:
                 if len(selected) == 1:
                     _emit_value("+ 已选择: ", selected[0])
                 else:
-                    _emit_items(f"+ 已选择 {len(selected)} 项:", selected[:3])
-                    if len(selected) > 3:
-                        Func._publish_tool_text(
-                            f"  {DIM}  ... 还有 {len(selected)-3} 项{RESET}"
-                        )
+                    _emit_items(f"+ 已选择 {len(selected)} 项:", selected)
             else:
                 Func._publish_tool_text(f"  {YELLOW}未选择任何项{RESET}")
         elif action == "cancel":
