@@ -179,7 +179,16 @@ def SessionsView(props) -> object:
         pane = "detail"
 
     left_w, right_w = split_panes(width, fallback=(32, 50))
-    extra_rows = (1 if search_mode else 0) + (1 if rename_mode else 0) + (1 if status_message else 0)
+    # ★ 2026-11-04（「到顶少一行」修复配套）：底部状态行在「搜索已执行
+    #   （pattern，退出输入模式后仍显示计数）/ 操作反馈 / 加载中提示」任一
+    #   存在时渲染——与下方 ``status_runs`` 的输入同源；漏计会导致视口多占
+    #   1 行而内容溢出终端。
+    status_line = bool(pattern or status_message or loading)
+    extra_rows = (
+        (1 if search_mode else 0)
+        + (1 if rename_mode else 0)
+        + (1 if status_line else 0)
+    )
     vh = max(4, viewport_rows() - extra_rows)
 
     # ── 右栏内容（帮助 / 预览） ──

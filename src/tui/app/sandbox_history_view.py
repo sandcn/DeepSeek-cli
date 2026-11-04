@@ -158,7 +158,9 @@ def SandboxHistoryView(props) -> object:
         pane = "detail"
 
     left_w, right_w = split_panes(width, fallback=(34, 48))
-    extra_rows = (1 if search_mode else 0) + (1 if status_message else 0)
+    # 状态行：已执行搜索（pattern）或操作反馈存在即渲染。
+    status_line = bool(pattern or status_message)
+    extra_rows = (1 if search_mode else 0) + (1 if status_line else 0)
     vh = max(4, viewport_rows() - extra_rows)
 
     # ── 右栏内容（**单一** use_memo：hook 调用必须无条件且数量恒定）──

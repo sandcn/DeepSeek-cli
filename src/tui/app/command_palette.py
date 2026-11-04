@@ -439,7 +439,12 @@ def CommandPalette(props) -> object:
     rows = _rank_entries(entries, query, recent)
     total = len(rows)
     left_w, right_w = split_panes(width, left_ratio=0.46, min_left=24, min_right=28, fallback=(40, 50))
-    vh = max(5, viewport_rows(reserved=5, minimum=5))
+    # ★ 2026-11-04（「到顶少一行」修复）：固定占用 = header 1 行 + 搜索行 1 行，
+    #   另有底部状态行（最近命令 / 当前草稿提示，动态）。修复前 reserved=5
+    #   恒扣 5 行（含不存在的 3 行），内容区比可用高度少 2~3 行。此处只扣
+    #   固定 2 行 + 动态状态行，总行数 = 2 + vh + status = 终端高度。
+    _has_status = bool(recent) or bool(getattr(model, "input_text", ""))
+    vh = max(5, viewport_rows(reserved=2, minimum=5) - (1 if _has_status else 0))
 
     cur = max(0, min(int(selected or 0), total - 1)) if total else 0
     max_scroll = max(0, total - vh)

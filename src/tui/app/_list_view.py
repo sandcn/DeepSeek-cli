@@ -139,7 +139,14 @@ def use_list_view(
         pane = "detail"
 
     left_w, right_w = split_panes(max(0, int(width)), fallback=fallback)
-    reserved = (1 if search_mode else 0) + (1 if status_message else 0) + extra_rows
+    # 状态行：已执行搜索（pattern，退出输入模式后仍显示 ``/xxx n/m``）或
+    # 操作反馈存在即渲染——两者均需占 1 行（★ 2026-11-04「到顶少一行」修复：
+    # 漏计 pattern 会让视口多占 1 行、内容溢出终端）。
+    reserved = (
+        (1 if search_mode else 0)
+        + (1 if (pattern or status_message) else 0)
+        + extra_rows
+    )
     viewport = max(4, viewport_rows() - reserved)
 
     def _content_rows() -> list:

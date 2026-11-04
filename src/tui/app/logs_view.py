@@ -437,7 +437,12 @@ def LogsView(props) -> object:
         pane = "detail"
 
     left_w, right_w = split_panes(width, fallback=(36, 46))
-    extra_rows = (1 if search_mode else 0) + (1 if status_message else 0)
+    # 状态行：已执行搜索（pattern）/ 操作反馈 / 校验结果（✓ 一致 / ✗ 不一致）
+    # 任一存在即渲染——与会话底部 ``status_runs`` 的输入同源。
+    status_line = bool(
+        pattern or status_message or (getattr(lv, "verify_ok", None) is not None)
+    )
+    extra_rows = (1 if search_mode else 0) + (1 if status_line else 0)
     vh = max(4, viewport_rows() - extra_rows)
 
     # ── 右栏内容（**单一** use_memo：hook 调用必须无条件且数量恒定）──

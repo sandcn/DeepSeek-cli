@@ -144,11 +144,16 @@ _MODEL_FIELD = "model"
 
 
 def _viewport_rows() -> int:
-    """主区可见行数（终端高度自适应；无高度上下文回退 16）。"""
+    """主区可见行数（终端高度自适应；无高度上下文回退 16）。
+
+    ★ 2026-11-04（「到顶少一行」修复）：只预留固定头部标题栏 1 行；底部
+    提示 / 详情 / 编辑 / 搜索行的实际行数由调用方按当前状态精确扣除
+    （修复前固定预留 3 行，再叠加模式行预算，主区比可用高度少 2~3 行）。
+    """
     try:
         from src.tui._screen import TerminalWidthCache
         h_ = TerminalWidthCache.get_default().get_height()
-        return max(6, int(h_) - 3)
+        return max(6, int(h_) - 1)
     except Exception:
         return 16
 
@@ -1351,13 +1356,21 @@ def ModelView(props) -> object:
     # ── 状态行 / 详情行 / 视口 ──
     status_text = "" if (editing or search_mode) else _status_text(mv, filter_active)
     show_detail = bool(total > 0 and not editing and not help_open and not search_mode)
-    extra_rows = (1 if search_mode else 0) + (1 if status_text else 0)
-    if editing:
-        extra_rows += 2 if edit_mode == "field" else 1
+    # ★ 2026-11-04（「到顶少一行」修复）：底部行数按实际渲染行精确计算——
+    #   底部恒有 1 行（提示 / 状态 / 消息互斥）；字段编辑模式额外 1 行
+    #   （字段输入行 + 提示，共 2 行）；搜索输入 1 行；详情面板 1 行。
+    #   修复前用 status_text 叠加（状态行本已占用基础行）+ 编辑模式多算
+    #   （select/confirm/form 各 1 行），叠加固定预留 3 行后主区恒少 2~3 行。
+    extra_rows = 1
+    if editing and edit_mode == "field":
+        extra_rows += 1
+    if search_mode:
+        extra_rows += 1
     if show_detail:
         extra_rows += 1
     vh = max(4, _viewport_rows() - extra_rows)
-    list_h = max(1, vh - 1)
+    # 主列表直接占满扣除底部行后的高度（详情行已计入 extra_rows）。
+    list_h = max(1, vh)
 
     # ── 行渲染器 ──
     _matched_ids = None

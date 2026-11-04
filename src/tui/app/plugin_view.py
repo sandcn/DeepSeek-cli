@@ -73,8 +73,9 @@ _S_HELP_KEY = Style(fg=214)                # 帮助面板键位（黄）
 _S_HELP_GROUP = Style(fg=110, bold=True)   # 帮助面板分组标题
 _S_HELP_DESC = Style(fg=252)               # 帮助面板说明
 
-#: 视图可见行预算预留（头部 1 行 + 底部余量）
-_VIEWPORT_RESERVED = 2
+#: 仅预留头部标题行 1 行；底部状态 / 搜索行由 ``extra_rows`` 另行扣除
+#: （★ 2026-11-04「到顶少一行」修复：原值 2 导致内容恒少 1 行）。
+_VIEWPORT_RESERVED = 1
 #: 右栏详情内容行全量生成上限（超限截断 + 提示行）
 _MAX_DETAIL_ROWS = 4000
 #: 搜索输入长度上限（渲染行按宽度截断，无上限累积只浪费内存）
@@ -414,7 +415,10 @@ def PluginView(props) -> object:
         left_w, right_w = 30, 50
 
     # 底部行预算（状态行 / 搜索输入行各占一行）
-    extra_rows = (1 if search_mode else 0) + (1 if status_message else 0)
+    # 状态行：已执行搜索（pattern）/ 状态过滤 / 分类过滤 / 操作反馈任一存在
+    # 即渲染（与下方 ``status_parts`` 的构造同源）。
+    status_line = bool(pattern or filter_state or filter_kind or status_message)
+    extra_rows = (1 if search_mode else 0) + (1 if status_line else 0)
     vh = max(4, _viewport_rows() - extra_rows)
 
     # ── 右栏内容（帮助 / 关系 / 详情）+ 光标/滚动协调 ──

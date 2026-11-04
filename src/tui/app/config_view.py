@@ -111,15 +111,15 @@ _UNDO_MAX = 20
 def _viewport_rows() -> int:
     """配置视图可见行数（终端高度自适应；无高度上下文回退 16）。
 
-    ★ 模态全屏视图：ConfigView 整屏渲染——可用高度 = 终端高 - 头部标题栏
-    1 行 - 底部编辑/消息行 1 行 ≈ ``h - 2``（列表视口）。
+    ★ 模态全屏视图：ConfigView 整屏渲染——只预留固定头部标题栏 1 行；
+    底部提示 / 编辑 / 搜索行的实际行数由调用方按当前模式精确扣除
+    （★ 2026-11-04「到顶少一行」修复：修复前固定预留 3 行，再叠加模式
+    行预算，内容区比可用高度少 2~3 行）。
     """
     try:
         from src.tui._screen import TerminalWidthCache
         h = TerminalWidthCache.get_default().get_height()
-        # 预算 = header 1 行 + 底部提示/错误最多 2 行（json 模式）→ 预留 3 行，
-        # 避免窄终端 list_h 溢出。
-        return max(8, int(h) - 3)
+        return max(8, int(h) - 1)
     except Exception:
         return 16
 
@@ -1582,12 +1582,27 @@ def ConfigView(props) -> object:
     status_text = (
         "" if editing else _config_status_text(cv, filter_active, len(matches))
     )
-    extra_rows = (1 if search_mode else 0) + (1 if status_text else 0)
-    # ★ 2026-10-07 第三批（编辑 diff 预览）：编辑态底部占 3 行（编辑行 + diff
-    #   + 错误/提示）——从视口额外扣除 2 行（list_h 已扣 1 行）。
-    if editing:
-        extra_rows += 2
-    vh = max(4, _viewport_rows() - extra_rows)
+    # ★ 2026-11-04（「到顶少一行」修复）：底部行数按**当前模式实际渲染行**精确
+    #   计算（与下方 ``bottom_rows`` 的构造逐分支对齐）——修复前只按状态行/
+    #   搜索行估算，编辑 / 撤销 / 导入等模式漏计，叠加固定预留 3 行后内容区
+    #   恒少 2~3 行（列表到顶时底部空行、末项被裁）。
+    if undo_mode:
+        bottom_rows_n = 1 + (1 if (cv is not None and cv.message) else 0)
+    elif import_mode:
+        bottom_rows_n = 2          # 路径输入行 + 错误/提示
+    elif pick_mode:
+        bottom_rows_n = 1
+    elif json_mode:
+        bottom_rows_n = 1 + (1 if (cv is not None and cv.edit_error) else 0)
+    elif json_input_mode:
+        bottom_rows_n = 3          # 编辑行 + diff + 错误/提示
+    elif editing:
+        bottom_rows_n = 3          # 编辑行 + diff + 错误/提示
+    else:
+        bottom_rows_n = 1          # 状态 / 消息 / 操作提示（互斥，恒有 1 行）
+    if search_mode:
+        bottom_rows_n += 1         # 底部搜索输入行
+    vh = max(4, _viewport_rows() - bottom_rows_n)
 
     # ── 行渲染器（模块级工厂；P1-1 拆分自组件内闭包） ──
     # ★ 2026-10-07（config 搜索高亮）：匹配项 id 集合 + 当前匹配项 id。
@@ -1711,12 +1726,11 @@ def ConfigView(props) -> object:
             header_runs.append(StyledRun("\u2500" * pad, _S_SEP_ROW))
 
     # ── 主列表区 ──
-    # ★ P2（review 2026-08-20）：修复前 ``vh - (1 if editing else 1)`` 恒等于
-    #   ``vh - 1``（冗余条件表达式）——编辑模式与浏览模式底部行同为 1 行。
-    #   ★ P2（review）：下限由 4 改为 1——修复前 ``max(4, vh - 1)`` 在矮终端
-    #   时总行数（header 1 + list ≥4 + 底部提示 ≤2）可能超终端高（溢出/裁剪）；
-    #   与 editmsg_select/user_select 等模态弹窗的下限处置一致。
-    list_h = max(1, vh - 1)
+    # ★ 2026-11-04（「到顶少一行」修复）：``vh`` 已扣除底部实际行数，主列表
+    #   直接占满其余高度——修复前再减 1 行（历史遗留的底部提示重复预留），
+    #   列表可视行数比可用高度少 1。
+    # ★ P2（review）：下限 1——矮终端时避免列表高度为 0。
+    list_h = max(1, vh)
     if pick_mode:
         ledger = h(ListView, {
             "items": list(cv.edit_options or []),

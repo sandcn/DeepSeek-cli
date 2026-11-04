@@ -191,7 +191,11 @@ def UsageView(props) -> object:
     else:
         content_rows = _content_rows(sections, width if width > 0 else 80)
     total = len(content_rows)
-    vh = max(4, viewport_rows())
+    # ★ 2026-11-04（「到顶少一行」修复）：底部状态行占 1 行时必须从视口
+    #   扣除——修复前固定 ``viewport_rows()``（已含预留），有状态行时
+    #   header + vh + status = 终端高度 + 1 溢出；扣除后总行数恒为终端高度。
+    status_message = (getattr(uv, "status_message", "") or "") if uv is not None else ""
+    vh = max(4, viewport_rows() - (1 if status_message else 0))
     try:
         scroll = int(getattr(uv, "scroll", 0) or 0)
     except (TypeError, ValueError):
@@ -264,7 +268,6 @@ def UsageView(props) -> object:
             "styled": runs if runs else [StyledRun(" ", None)],
             "height": 1, "key": f"uv-{scroll + i}",
         }))
-    status_message = (getattr(uv, "status_message", "") or "") if uv is not None else ""
     sruns = status_runs([], style=_S_HINT, message=status_message,
                         message_style=_S_OK, width=width)
     if sruns:

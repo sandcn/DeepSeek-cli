@@ -473,7 +473,18 @@ def ChangesView(props) -> object:
         pane = "detail"
 
     left_w, right_w = split_panes(width, fallback=(34, 48))
-    extra_rows = (1 if search_mode else 0) + (1 if status_message else 0)
+    # ★ 2026-11-04（「到顶少一行」修复）：底部行预算必须覆盖全部实际渲染行
+    #   （状态 / 导出反馈 / 回滚输入 / 搜索输入各自一行）——修复前漏计
+    #   export_message / restore_mode，视口则恒多预留 1 行，列表到顶时底部空行。
+    # 状态行：已执行搜索（pattern，退出输入模式后仍显示计数）或操作反馈
+    # 任一存在即渲染（与 ``status_runs`` 的输入同源）。
+    status_line = bool(pattern or status_message)
+    extra_rows = (
+        (1 if search_mode else 0)
+        + (1 if status_line else 0)
+        + (1 if export_message else 0)
+        + (1 if restore_mode else 0)
+    )
     vh = max(4, viewport_rows() - extra_rows)
 
     # ── 右栏内容（**单一** use_memo：hook 调用必须无条件且数量恒定）──
