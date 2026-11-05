@@ -56,6 +56,10 @@
 
 并锁定空模式的「强制前置闸门」：只要任务涉及代码，必须先一次性输出从程序入口起的
 全量调用链，之后才允许开始分析或做修复 / 修改；未出链先分析或先落盘一律按流程违规处理。
+
+并锁定空模式「链 → 计划 → 执行」的三步强制顺序：先一次性输出从程序入口起的全量调用链，
+再依据该链一次性列出编号计划，最后按编号计划落盘并验证；未出链不得列计划，未列计划
+不得落盘。
 """
 
 from __future__ import annotations
@@ -703,6 +707,44 @@ def test_empty_prompt_call_chain_gate_precedes_analysis_and_fix() -> None:
     assert "本条款是〈工作方式〉「全量调用链与计划（强制 · 涉及代码的一切任务）」前置要求的顶层声明" in content
     assert "分析与修复一律以该链为前置条件" in content
     assert "不是交付阶段的补充材料" in content
+
+
+def test_empty_prompt_orders_chain_plan_execution() -> None:
+    """「链 → 计划 → 执行」是强制顺序：未出链不得列计划，未列计划不得落盘。"""
+    content = builder._load_prompt("prompts_export_main_empty")
+
+    # 三步顺序在「强制前置闸门」里显式成条，且顺序不可颠倒。
+    assert "**三步执行顺序（强制 · 链 → 计划 → 执行）**" in content
+    assert "禁止跳步、颠倒或边做边补" in content
+    assert "**先出全量调用链**" in content
+    assert "**再列编号计划**" in content
+    assert "**最后执行**" in content
+    assert "未出链不得进入第二步" in content
+    assert "未列计划不得进入第三步" in content
+
+    # 计划必须依据调用链与已读代码，每个落点能在链上找到位置。
+    assert "依据上一步的调用链与已读代码" in content
+    assert "目标、步骤、涉及文件、影响范围、验证方式" in content
+    assert "计划中的每个落点都必须能在调用链上找到对应位置" in content
+
+    # 执行中发现链 / 计划与现状不符时必须重出，不得先做后补。
+    assert "停下重新输出完整调用链与完整计划后再继续" in content
+    assert "禁止先做后补" in content
+
+    # 顺序违规按流程违规处理，与闸门既有违反后果口径闭环。
+    assert "**顺序违规的处理**" in content
+    assert "未出链就开始分析 / 列计划 / 落盘，或未列计划就落盘" in content
+    assert "均按流程违规处理" in content
+
+    # 〈工作方式〉条目同步该顺序，避免只在闸门一处成立。
+    assert "再按计划顺序执行——三步顺序见〈强制前置闸门（全量调用链先于分析与修复）〉" in content
+    assert "计划未列全前，不得落盘" in content
+
+    # 示例锁定该顺序的正例 / 反例。
+    assert "例 18｜涉及代码的任务强制全量调用链（先链后事）" in content
+    assert "场景（链 → 计划 → 执行）" in content
+    assert "三步各自完整，不交叉、不跳步" in content
+    assert "出链后不列计划直接动手" in content
 
 
 def test_simple_prompt_allows_push_by_default() -> None:
